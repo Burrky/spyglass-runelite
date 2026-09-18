@@ -1,0 +1,59 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenLocal()
+    maven {
+        url = 'https://repo.runelite.net'
+        content {
+            includeGroupByRegex("net\\.runelite.*")
+        }
+    }
+    mavenCentral()
+}
+
+def runeLiteVersion = 'latest.release'
+
+dependencies {
+    compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
+
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    testImplementation 'junit:junit:4.12'
+    testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
+    testImplementation group: 'net.runelite', name: 'jshell', version: runeLiteVersion
+}
+
+group = 'com.osrstelemetry'
+version = '0.1.0-SNAPSHOT'
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release.set(11)
+}
+
+test {
+    useJUnit()
+}
+
+// FIX: this project had no development-launch task at all — that's
+// the direct cause of `gradlew run` failing with "Task 'run' not
+// found". Not the Gradle `application` plugin (that would default to
+// sourceSets.main.runtimeClasspath, which lacks net.runelite:client
+// since it's intentionally compileOnly there for the production
+// artifact — correct for Plugin Hub submission, wrong for running a
+// full client). Uses the test source set's runtime classpath instead,
+// since that's where net.runelite:client is actually resolvable
+// (testImplementation, already present, untouched here) — same
+// classpath the existing `test` task already uses successfully.
+// See src/test/java/com/osrstelemetry/plugin/OsrsTelemetryPluginTest.java.
+tasks.register('run', JavaExec) {
+    group = 'application'
+    description = 'Launches a local RuneLite client with this plugin loaded, for manual testing.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass.set('com.osrstelemetry.plugin.OsrsTelemetryPluginTest')
+    jvmArgs "-ea"
+    args "--developer-mode", "--debug"
+}

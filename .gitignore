@@ -1,0 +1,39 @@
+# --- Build output ---
+.gradle/
+build/
+out/
+*.class
+
+# --- Local dev-run / debug transcripts (not source) ---
+build-output.txt
+run-output.txt
+runelite-dev-launch.txt
+spyglass-freeze-1.txt
+spyglass-freeze-2.txt
+spyglass-freeze-3.txt
+spyglass-freeze-thread-dump.txt
+
+# --- Internal engineering / audit scratch (not public plugin docs) ---
+Claude outputs/
+ACTIVITY_EVIDENCE_STRENGTH_ARCHITECTURE_AUDIT.md
+PHASE5_HANDOFF_REPORT.md
+PLAYER_FACING_UI_ARCHITECTURE_BLUEPRINT.md
+STEP6_*.md
+
+# --- Downstream/internal tooling package (out of scope for the RuneLite plugin repo) ---
+telemetry_state/
+
+# --- Known accidental backup/archive files ---
+zifGqxzr
+zizf4tmo
+
+# --- IDE / OS ---
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Logs (generic safety net for future local runs) ---
+*.log
+hs_err_pid*.log
