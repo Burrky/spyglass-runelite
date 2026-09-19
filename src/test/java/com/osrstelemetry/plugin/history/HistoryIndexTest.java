@@ -3,6 +3,7 @@ package com.osrstelemetry.plugin.history;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.session.ActivityIdentity;
 import com.osrstelemetry.plugin.session.ActivityType;
 import com.osrstelemetry.plugin.session.Session;
@@ -34,6 +35,7 @@ public class HistoryIndexTest
 	private static final Instant NOW = Instant.parse("2026-01-15T12:00:00Z");
 	private static final ActivityIdentity GARGOYLES =
 		new ActivityIdentity(ActivityType.SLAYER, "gargoyles:catacombs", "Gargoyles");
+	private static final Gson TEST_GSON = new Gson();
 
 	private LocalStateStore store;
 	private SessionPersistence persistence;
@@ -42,7 +44,7 @@ public class HistoryIndexTest
 	public void setUp()
 	{
 		deleteAccountDir(TEST_ACCOUNT_HASH);
-		store = new LocalStateStore();
+		store = new LocalStateStore(TEST_GSON);
 		store.start();
 		persistence = new SessionPersistence(store);
 	}

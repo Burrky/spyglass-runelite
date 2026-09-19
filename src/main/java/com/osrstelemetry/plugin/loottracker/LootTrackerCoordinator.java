@@ -1,5 +1,6 @@
 package com.osrstelemetry.plugin.loottracker;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.events.TelemetryEventListener;
@@ -88,15 +89,16 @@ public final class LootTrackerCoordinator implements TelemetryEventListener
 
 	private static final long NO_ACCOUNT = -1L;
 
-	private final LootTrackerPersistence persistence = new LootTrackerPersistence();
+	private final LootTrackerPersistence persistence;
 
 	private volatile LootTrackerIndex index = new LootTrackerIndex();
 	private volatile long currentAccountHash = NO_ACCOUNT;
 	private ExecutorService rebuildExecutor;
 
 	@Inject
-	public LootTrackerCoordinator()
+	public LootTrackerCoordinator(Gson gson)
 	{
+		this.persistence = new LootTrackerPersistence(gson);
 	}
 
 	/** Paired with {@link #shutdown()} -- same start()/shutdown() lifecycle convention as EventLedger/LocalStateStore. */

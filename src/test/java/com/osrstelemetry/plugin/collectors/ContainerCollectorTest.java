@@ -107,8 +107,8 @@ public class ContainerCollectorTest
 	{
 		// Same rationale as LootCollectorTest's equivalent test: exercise
 		// the exact serialization mechanism EventLedger.append() actually
-		// uses (a plain `new Gson()`), isolated from Client/EventBus/file
-		// I/O, rather than duplicating EventLedger's own tested logic.
+		// uses (RuneLite's injected Gson), isolated from Client/EventBus/
+		// file I/O, rather than duplicating EventLedger's own tested logic.
 		Gson gson = new Gson();
 		EventPayloads.SeedVaultSnapshot payload = ContainerCollector.buildSeedVaultSnapshotPayload("seed_vault", 7);
 
@@ -123,6 +123,7 @@ public class ContainerCollectorTest
 	// =====================================================================
 
 	private static long nextAccountHash = 700_000_001L;
+	private static final Gson LIFECYCLE_TEST_GSON = new Gson();
 
 	private long accountHash;
 	private LocalStateStore store;
@@ -139,10 +140,10 @@ public class ContainerCollectorTest
 		accountHash = nextAccountHash++;
 		deleteAccountDir(accountHash);
 
-		store = new LocalStateStore();
+		store = new LocalStateStore(LIFECYCLE_TEST_GSON);
 		store.start();
 
-		eventLedger = new EventLedger();
+		eventLedger = new EventLedger(LIFECYCLE_TEST_GSON);
 		eventLedger.start();
 
 		scheduledExecutor = Executors.newSingleThreadScheduledExecutor();

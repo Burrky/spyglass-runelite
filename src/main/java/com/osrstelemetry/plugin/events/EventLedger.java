@@ -17,6 +17,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 
@@ -39,9 +40,15 @@ import lombok.extern.slf4j.Slf4j;
 @Singleton
 public class EventLedger
 {
-	private final Gson gson = new Gson();
+	private final Gson gson;
 	private ExecutorService executor;
 	private volatile String sessionId = UUID.randomUUID().toString();
+
+	@Inject
+	public EventLedger(Gson gson)
+	{
+		this.gson = gson;
+	}
 
 	// See TelemetryEventListener's javadoc for the full contract.
 	// CopyOnWriteArrayList: registration/

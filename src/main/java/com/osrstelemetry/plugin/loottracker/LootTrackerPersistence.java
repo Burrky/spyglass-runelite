@@ -68,7 +68,17 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public final class LootTrackerPersistence
 {
-	private final Gson gson = new Gson();
+	private final Gson gson;
+
+	/**
+	 * @param gson RuneLite's injected Gson (passed down from
+	 * LootTrackerCoordinator's own constructor injection) -- this class
+	 * is not itself Guice-managed, so it is not annotated {@code @Inject}.
+	 */
+	public LootTrackerPersistence(Gson gson)
+	{
+		this.gson = gson;
+	}
 
 	/**
 	 * Reads {@code events.jsonl} for {@code accountHash} line by line

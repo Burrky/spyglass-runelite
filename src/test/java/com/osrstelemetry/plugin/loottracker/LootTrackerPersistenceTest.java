@@ -3,6 +3,7 @@ package com.osrstelemetry.plugin.loottracker;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -31,15 +32,16 @@ import org.junit.Test;
 public class LootTrackerPersistenceTest
 {
 	private static final long TEST_ACCOUNT_HASH = 999_222_444L;
+	private static final Gson TEST_GSON = new Gson();
 
 	private EventLedger ledger;
-	private final LootTrackerPersistence persistence = new LootTrackerPersistence();
+	private final LootTrackerPersistence persistence = new LootTrackerPersistence(TEST_GSON);
 
 	@Before
 	public void setUp() throws Exception
 	{
 		deleteAccountDir();
-		ledger = new EventLedger();
+		ledger = new EventLedger(TEST_GSON);
 		ledger.start();
 	}
 

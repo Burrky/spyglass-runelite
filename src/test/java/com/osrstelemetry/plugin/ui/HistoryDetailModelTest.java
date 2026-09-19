@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.collectors.LoadoutArchive;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.session.ActivityIdentity;
@@ -38,6 +39,7 @@ public class HistoryDetailModelTest
 	private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
 	private static final ActivityIdentity GARGOYLES =
 		new ActivityIdentity(ActivityType.SLAYER, "gargoyles:catacombs", "Gargoyles");
+	private static final Gson TEST_GSON = new Gson();
 
 	@Before
 	public void setUp()
@@ -165,7 +167,7 @@ public class HistoryDetailModelTest
 		// pattern) rather than Session's package-private setter, which
 		// this ui-package test has no access to -- see Session's own
 		// javadoc on why mutation is deliberately package-private.
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		store.start();
 		try
 		{

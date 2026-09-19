@@ -7,6 +7,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import java.io.File;
@@ -45,6 +46,7 @@ public class SessionRuntimeCoordinatorTest
 	private static final long ACCOUNT_B = 700_100_300L;
 
 	private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
+	private static final Gson GSON = new Gson();
 
 	private LocalStateStore store;
 	private SessionRuntimeCoordinator coordinator;
@@ -54,7 +56,7 @@ public class SessionRuntimeCoordinatorTest
 	{
 		deleteAccountDir(ACCOUNT_A);
 		deleteAccountDir(ACCOUNT_B);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		coordinator = new SessionRuntimeCoordinator(store);
 	}

@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
@@ -40,6 +41,7 @@ import org.junit.Test;
 public class EventLedgerTest
 {
 	private static final long TEST_ACCOUNT_HASH = 999_000_111L;
+	private static final Gson TEST_GSON = new Gson();
 
 	private EventLedger ledger;
 
@@ -47,7 +49,7 @@ public class EventLedgerTest
 	public void setUp() throws Exception
 	{
 		deleteAccountDir();
-		ledger = new EventLedger();
+		ledger = new EventLedger(TEST_GSON);
 		// EventLedger now requires
 		// start() before append() will do anything (see its
 		// lifecycle javadoc) — this test was calling append() against
@@ -151,7 +153,7 @@ public class EventLedgerTest
 	@Test
 	public void appendBeforeStartIsSafeNoOp() throws Exception
 	{
-		EventLedger neverStarted = new EventLedger();
+		EventLedger neverStarted = new EventLedger(TEST_GSON);
 		neverStarted.append(TEST_ACCOUNT_HASH, EventType.LEVEL_UP,
 			new EventPayloads.LevelUp("WOODCUTTING", 89, 90, 5346332));
 		awaitQuiescence();
@@ -225,7 +227,7 @@ public class EventLedgerTest
 	@Test
 	public void appendAndWait_beforeStartReturnsFalseAndWritesNothing() throws Exception
 	{
-		EventLedger neverStarted = new EventLedger();
+		EventLedger neverStarted = new EventLedger(TEST_GSON);
 		boolean success = neverStarted.appendAndWait(
 			TEST_ACCOUNT_HASH, EventType.LEVEL_UP,
 			new EventPayloads.LevelUp("WOODCUTTING", 1, 2, 10), 2000);

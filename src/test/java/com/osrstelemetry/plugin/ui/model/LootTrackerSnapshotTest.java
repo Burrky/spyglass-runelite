@@ -3,7 +3,7 @@ package com.osrstelemetry.plugin.ui.model;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.loottracker.LootTrackerIndex;
 import com.osrstelemetry.plugin.loottracker.LootTrackerItem;
 import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
@@ -46,7 +46,7 @@ public class LootTrackerSnapshotTest
 	public void setUp() throws Exception
 	{
 		deleteAccountDir();
-		preferences = new LootTrackerPreferences(new LocalStateStore());
+		preferences = new LootTrackerPreferences(new LocalStateStore(new Gson()));
 		preferences.loadForAccount(TEST_ACCOUNT_HASH);
 	}
 

@@ -6,6 +6,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.loottracker.LootTrackerIndex;
 import com.osrstelemetry.plugin.loottracker.LootTrackerItem;
 import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
@@ -49,6 +50,7 @@ public class LootTrackerViewTest
 {
 	private static final long TEST_ACCOUNT_HASH = 424_242_424L;
 	private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
+	private static final Gson TEST_GSON = new Gson();
 
 	private LootTrackerPreferences preferences;
 
@@ -56,7 +58,7 @@ public class LootTrackerViewTest
 	public void setUp() throws Exception
 	{
 		deleteAccountDir();
-		preferences = new LootTrackerPreferences(new LocalStateStore());
+		preferences = new LootTrackerPreferences(new LocalStateStore(TEST_GSON));
 		preferences.loadForAccount(TEST_ACCOUNT_HASH);
 	}
 

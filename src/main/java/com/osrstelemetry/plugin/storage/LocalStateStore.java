@@ -1,7 +1,6 @@
 package com.osrstelemetry.plugin.storage;
 
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,6 +11,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 
@@ -42,8 +42,21 @@ import lombok.extern.slf4j.Slf4j;
 @Singleton
 public class LocalStateStore
 {
-	private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+	private final Gson gson;
 	private ExecutorService writeExecutor;
+
+	/**
+	 * @param injectedGson RuneLite's shared, DI-managed Gson. Derived
+	 * (never replaced) via {@link Gson#newBuilder()} to add pretty-
+	 * printing for these on-disk documents, per the terminal-API rule
+	 * against ever constructing a fresh {@code Gson}/{@code GsonBuilder}
+	 * of this class's own.
+	 */
+	@Inject
+	public LocalStateStore(Gson injectedGson)
+	{
+		this.gson = injectedGson.newBuilder().setPrettyPrinting().create();
+	}
 
 	public synchronized void start()
 	{

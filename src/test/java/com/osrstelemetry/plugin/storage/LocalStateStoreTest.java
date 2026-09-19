@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import java.io.File;
 import java.nio.file.Files;
 import java.util.concurrent.TimeUnit;
@@ -52,6 +53,8 @@ public class LocalStateStoreTest
 		}
 	}
 
+	private static final Gson TEST_GSON = new Gson();
+
 	private File targetFile;
 
 	@Before
@@ -70,7 +73,7 @@ public class LocalStateStoreTest
 	@Test
 	public void writeBeforeStartIsSafeNoOp() throws Exception
 	{
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		// Deliberately not calling start() — simulates a caller bug,
 		// which must not throw.
 		store.write(targetFile, new Doc("should not be written"));
@@ -81,7 +84,7 @@ public class LocalStateStoreTest
 	@Test
 	public void writeAfterShutdownIsSafeNoOp() throws Exception
 	{
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		store.start();
 		store.shutdown();
 
@@ -93,7 +96,7 @@ public class LocalStateStoreTest
 	@Test
 	public void shutdownDrainsQueuedWrites() throws Exception
 	{
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		store.start();
 		store.write(targetFile, new Doc("hello"));
 		// No sleep — shutdown() itself is what must wait for this
@@ -106,7 +109,7 @@ public class LocalStateStoreTest
 	@Test
 	public void enableDisableEnableCycleProducesAWorkingStoreEachTime() throws Exception
 	{
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 
 		store.start();
 		store.write(targetFile, new Doc("first"));
@@ -129,7 +132,7 @@ public class LocalStateStoreTest
 		// returns false), and the dependent callback must NOT run —
 		// this is exactly the bug that could have let a BANK_SNAPSHOT
 		// event reference a file that never reached disk.
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		store.start();
 
 		File badTarget = new File(
@@ -150,7 +153,7 @@ public class LocalStateStoreTest
 	@Test
 	public void writeAndWaitReturnsFalseOnFailureAndTrueOnSuccess() throws Exception
 	{
-		LocalStateStore store = new LocalStateStore();
+		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		store.start();
 
 		File badTarget = new File(

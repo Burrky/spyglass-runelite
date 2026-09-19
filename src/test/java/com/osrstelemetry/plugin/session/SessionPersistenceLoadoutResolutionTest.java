@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.collectors.LoadoutArchive;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
@@ -51,6 +52,7 @@ public class SessionPersistenceLoadoutResolutionTest
 	private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
 	private static final ActivityIdentity GARGOYLES =
 		new ActivityIdentity(ActivityType.SLAYER, "gargoyles:catacombs", "Gargoyles");
+	private static final Gson GSON = new Gson();
 
 	private LocalStateStore store;
 	private LoadoutArchive archive;
@@ -60,7 +62,7 @@ public class SessionPersistenceLoadoutResolutionTest
 	public void setUp()
 	{
 		deleteAccountDir(TEST_ACCOUNT_HASH);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		archive = new LoadoutArchive();
 		persistence = new SessionPersistence(store, archive);

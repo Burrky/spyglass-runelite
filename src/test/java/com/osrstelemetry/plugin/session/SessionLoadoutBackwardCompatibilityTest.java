@@ -58,7 +58,7 @@ public class SessionLoadoutBackwardCompatibilityTest
 	public void setUp()
 	{
 		deleteAccountDir(TEST_ACCOUNT_HASH);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		persistence = new SessionPersistence(store);
 	}

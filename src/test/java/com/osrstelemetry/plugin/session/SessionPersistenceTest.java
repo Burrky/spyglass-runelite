@@ -45,7 +45,7 @@ public class SessionPersistenceTest
 	{
 		deleteAccountDir(TEST_ACCOUNT_HASH);
 		deleteAccountDir(OTHER_ACCOUNT_HASH);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		persistence = new SessionPersistence(store);
 	}
@@ -280,7 +280,7 @@ public class SessionPersistenceTest
 		Session suspended = engine.advanceTime(T0.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT)).getCurrent();
 		persistence.persistCurrent(TEST_ACCOUNT_HASH, suspended);
 		store.shutdown(); // single, non-chained write — safe to drain via shutdown()
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		persistence = new SessionPersistence(store);
 
@@ -301,7 +301,7 @@ public class SessionPersistenceTest
 		persistence.persistFinalized(TEST_ACCOUNT_HASH, toFinalize, null);
 		store.shutdown();
 
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		Session stillCurrent = store.readIfExists(TelemetryPaths.sessionStateFile(TEST_ACCOUNT_HASH), Session.class);
 		assertNotNull("a failed finalized-record write must never clear the only surviving copy of the session",

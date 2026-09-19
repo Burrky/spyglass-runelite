@@ -22,11 +22,12 @@ import lombok.ToString;
  * timestamp field in this project (StorageState.lastObservedAt,
  * SlayerState.lastUpdated, TelemetryEvent.occurredAt) rather than a
  * java.time.Instant field directly. This is a deliberate choice, not
- * an oversight: LocalStateStore serializes with a plain `new Gson()`/
- * `GsonBuilder` with no registered TypeAdapters (see its own javadoc
- * for why it isn't being redesigned), and Gson cannot
- * reliably round-trip java.time.Instant by reflection alone across
- * JDK versions. Storing Strings keeps Session directly compatible with
+ * an oversight: LocalStateStore serializes with RuneLite's own
+ * injected Gson (derived via `gson.newBuilder().setPrettyPrinting()
+ * .create()` -- see its own javadoc), which has no registered
+ * TypeAdapters for java.time.Instant, and Gson cannot reliably
+ * round-trip java.time.Instant by reflection alone across JDK
+ * versions. Storing Strings keeps Session directly compatible with
  * LocalStateStore's existing write()/writeAndWait()/readIfExists()
  * with zero changes to that class. The convenience *Instant()
  * accessors below exist so SessionLifecycleEngine/SessionPersistence

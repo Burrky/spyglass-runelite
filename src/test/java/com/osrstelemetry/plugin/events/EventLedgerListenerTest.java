@@ -3,6 +3,7 @@ package com.osrstelemetry.plugin.events;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import java.io.File;
 import java.nio.file.Files;
@@ -30,6 +31,7 @@ import org.junit.Test;
 public class EventLedgerListenerTest
 {
 	private static final long TEST_ACCOUNT_HASH = 999_222_333L;
+	private static final Gson TEST_GSON = new Gson();
 
 	private EventLedger ledger;
 
@@ -37,7 +39,7 @@ public class EventLedgerListenerTest
 	public void setUp() throws Exception
 	{
 		deleteAccountDir();
-		ledger = new EventLedger();
+		ledger = new EventLedger(TEST_GSON);
 		ledger.start();
 	}
 
@@ -186,7 +188,7 @@ public class EventLedgerListenerTest
 	@Test
 	public void appendBeforeStart_neverNotifiesListeners()
 	{
-		EventLedger neverStarted = new EventLedger();
+		EventLedger neverStarted = new EventLedger(TEST_GSON);
 		AtomicInteger count = new AtomicInteger();
 		neverStarted.addListener((accountHash, type, payload, observedAt) -> count.incrementAndGet());
 

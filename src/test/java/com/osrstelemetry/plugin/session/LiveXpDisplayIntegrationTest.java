@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot;
@@ -35,6 +36,7 @@ public class LiveXpDisplayIntegrationTest
 	private static final Instant T0 = Instant.parse("2026-01-01T00:00:00Z");
 	private static final long ACCOUNT_LIVE_XP_TEST = 701_100_200L;
 	private static final long ACCOUNT_LIVE_XP_TEST_B = 701_100_201L;
+	private static final Gson GSON = new Gson();
 
 	private LocalStateStore store;
 	private SessionRuntimeCoordinator coordinator;
@@ -44,7 +46,7 @@ public class LiveXpDisplayIntegrationTest
 	{
 		deleteAccountDir(ACCOUNT_LIVE_XP_TEST);
 		deleteAccountDir(ACCOUNT_LIVE_XP_TEST_B);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		coordinator = new SessionRuntimeCoordinator(store);
 	}

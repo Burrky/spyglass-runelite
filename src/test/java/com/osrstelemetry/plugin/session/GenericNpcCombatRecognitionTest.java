@@ -5,6 +5,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
@@ -687,6 +688,7 @@ public class GenericNpcCombatRecognitionTest
 	// ----------------------------------------------------------------
 
 	private static final long ACCOUNT_NPC_TEST = 700_900_100L;
+	private static final Gson GSON = new Gson();
 
 	private LocalStateStore store;
 	private SessionRuntimeCoordinator coordinator;
@@ -695,7 +697,7 @@ public class GenericNpcCombatRecognitionTest
 	public void setUpCoordinator() throws Exception
 	{
 		deleteAccountDir(ACCOUNT_NPC_TEST);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 		coordinator = new SessionRuntimeCoordinator(store);
 	}

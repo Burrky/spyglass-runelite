@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.Gson;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
@@ -132,6 +133,7 @@ public class BankSnapshotBaselineTest
 
 	private static final long TEST_ACCOUNT_HASH = 888_777_111L;
 	private static final long OTHER_ACCOUNT_HASH = 888_777_222L;
+	private static final Gson GSON = new Gson();
 
 	private LocalStateStore store;
 
@@ -140,7 +142,7 @@ public class BankSnapshotBaselineTest
 	{
 		deleteAccountDir(TEST_ACCOUNT_HASH);
 		deleteAccountDir(OTHER_ACCOUNT_HASH);
-		store = new LocalStateStore();
+		store = new LocalStateStore(GSON);
 		store.start();
 	}
 
