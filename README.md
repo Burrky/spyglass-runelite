@@ -61,7 +61,7 @@ see [Known Limitations](#known-limitations).
   name, so a name change never orphans your history):
 
   ```
-  .runelite/plugin-data/osrstelemetry/<accountHash>/
+  .runelite/plugin-data/spyglass/<accountHash>/
   ```
 
   (Older installs used `.runelite/osrs-telemetry/<accountHash>/` — RuneLite

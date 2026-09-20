@@ -64,15 +64,11 @@ import net.runelite.client.util.ImageUtil;
 // @ConfigGroup, deliberately untouched), the Java package name, or any
 // other compatibility-sensitive identifier.
 // ADDED (Plugin Hub maintainer review -- Filepath migration).
-// internalName is REQUIRED by Plugin.getPluginDirectory() (it throws
-// IllegalArgumentException without one) -- chosen to match this
-// project's own already-established non-display identity elsewhere
-// (the "osrstelemetry" @ConfigGroup, the com.osrstelemetry.plugin
-// package), deliberately NOT the presentation-only display name
-// ("Spyglass") or the old storage directory name ("osrs-telemetry",
-// which lives on unchanged as legacyDataDirectory below). It is a
-// permanent, filesystem-only identifier: once shipped, it must never
-// change, or a later "migration" would be needed all over again.
+// Filepath requires a Plugin Hub internal name. Plugin Hub validates this
+// against the real internal name assigned by the Hub entry, so this must be
+// "spyglass" to match plugins/spyglass. This is intentionally independent of
+// the existing "osrstelemetry" config group and Java package, which remain
+// unchanged for compatibility.
 // legacyDataDirectory = "osrs-telemetry" is the exact literal old
 // TelemetryPaths.ROOT_DIR_NAME -- see TelemetryPaths' own class
 // javadoc for the one-time automatic move RuneLite's own
@@ -82,7 +78,7 @@ import net.runelite.client.util.ImageUtil;
 	name = "Spyglass — Activity & Loot Tracker",
 	description = "Passively records account state to local files for read-only AI/tool consumption.",
 	tags = {"telemetry", "export", "json", "spyglass"},
-	internalName = "osrstelemetry",
+	internalName = "spyglass",
 	legacyDataDirectory = "osrs-telemetry"
 )
 @PluginDependency(SlayerPlugin.class)
