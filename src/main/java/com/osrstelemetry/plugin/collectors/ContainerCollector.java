@@ -7,7 +7,6 @@ import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
-import java.io.File;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -36,6 +35,7 @@ import net.runelite.api.gameval.InventoryID;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ClientShutdown;
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.util.Filepath;
 
 /**
  * CONFIRMED CONSTANTS: InventoryID.INV / .WORN / .BANK / .SEED_VAULT
@@ -496,8 +496,7 @@ public class ContainerCollector
 		}
 		catch (InterruptedException e)
 		{
-			Thread.currentThread().interrupt();
-			log.warn("Interrupted waiting for an already-in-flight bank finalization during shutdown");
+			log.warn("Interrupted waiting for an already-in-flight bank finalization during shutdown; proceeding without it");
 		}
 		catch (ExecutionException | TimeoutException e)
 		{
@@ -1005,7 +1004,7 @@ public class ContainerCollector
 		snapshot.setLastObservedAt(nowIso);
 		snapshot.setContinuouslyObservable(false);
 		snapshot.setLatestSnapshotId(snapshotId);
-		File snapshotFile = TelemetryPaths.bankSnapshotFile(accountHash, snapshotId);
+		Filepath snapshotFile = TelemetryPaths.bankSnapshotFile(accountHash, snapshotId);
 
 		// ORDERING: nested
 		// onWritten callbacks, each of which only fires on confirmed
@@ -1134,7 +1133,7 @@ public class ContainerCollector
 		snapshot.setLastObservedAt(nowIso);
 		snapshot.setContinuouslyObservable(false);
 		snapshot.setLatestSnapshotId(snapshotId);
-		File snapshotFile = TelemetryPaths.bankSnapshotFile(accountHash, snapshotId);
+		Filepath snapshotFile = TelemetryPaths.bankSnapshotFile(accountHash, snapshotId);
 
 		if (!store.writeAndWait(snapshotFile, snapshot, DURABLE_WRITE_TIMEOUT_MS))
 		{
@@ -1221,7 +1220,7 @@ public class ContainerCollector
 		pointer.setContinuouslyObservable(false);
 		pointer.setLatestSnapshotId(snapshotId);
 
-		File target = TelemetryPaths.stateFile(accountHash, "bank");
+		Filepath target = TelemetryPaths.stateFile(accountHash, "bank");
 		if (blocking)
 		{
 			return store.writeAndWait(target, pointer, DURABLE_WRITE_TIMEOUT_MS);

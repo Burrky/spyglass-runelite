@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot;
 import java.io.File;
 import java.nio.file.Files;
@@ -61,7 +62,7 @@ public class LiveXpDisplayIntegrationTest
 
 	private void deleteAccountDir(long accountHash) throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(accountHash);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(accountHash));
 		if (dir.exists())
 		{
 			File sessionsDir = new File(dir, "sessions");

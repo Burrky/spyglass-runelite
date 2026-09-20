@@ -61,8 +61,12 @@ see [Known Limitations](#known-limitations).
   name, so a name change never orphans your history):
 
   ```
-  .runelite/osrs-telemetry/<accountHash>/
+  .runelite/plugin-data/osrstelemetry/<accountHash>/
   ```
+
+  (Older installs used `.runelite/osrs-telemetry/<accountHash>/` — RuneLite
+  itself moves this automatically, once, the first time you run an
+  updated Spyglass; nothing is lost and no action is needed.)
 
 - Typical stored information includes your activity/session records, XP,
   loot, and inventory/equipment/storage snapshots — the same kind of data

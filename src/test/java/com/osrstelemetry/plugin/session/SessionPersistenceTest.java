@@ -9,6 +9,7 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.time.Instant;
 import org.junit.After;
@@ -60,7 +61,7 @@ public class SessionPersistenceTest
 
 	private static void deleteAccountDir(long accountHash)
 	{
-		deleteRecursively(TelemetryPaths.accountDir(accountHash));
+		deleteRecursively(TestFilepaths.file(TelemetryPaths.accountDir(accountHash)));
 	}
 
 	private static void deleteRecursively(File dir)
@@ -225,10 +226,10 @@ public class SessionPersistenceTest
 		persistence.persistFinalized(TEST_ACCOUNT_HASH, finalized, null);
 		awaitAsyncChain();
 
-		File expected = TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, finalized.getSessionId());
+		File expected = TestFilepaths.file(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, finalized.getSessionId()));
 		assertTrue("finalized record must exist at sessions/{sessionId}.json", expected.exists());
 
-		Session reloaded = store.readIfExists(expected, Session.class);
+		Session reloaded = store.readIfExists(TestFilepaths.fromFile(expected), Session.class);
 		assertEquals(SessionState.FINALIZED, reloaded.getState());
 		assertEquals(finalized.getSessionId(), reloaded.getSessionId());
 	}
@@ -288,7 +289,7 @@ public class SessionPersistenceTest
 		// LocalStateStoreTest uses for its own failure test (a parent
 		// directory that cannot be created because a same-named file
 		// already occupies that path).
-		File accountDir = TelemetryPaths.accountDir(TEST_ACCOUNT_HASH);
+		File accountDir = TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
 		File sessionsDirBlocker = new File(accountDir, "sessions");
 		deleteRecursively(sessionsDirBlocker);
 		sessionsDirBlocker.delete();

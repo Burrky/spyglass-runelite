@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
 import java.time.Instant;
@@ -52,7 +53,7 @@ public class EventLedgerListenerTest
 
 	private void deleteAccountDir() throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(TEST_ACCOUNT_HASH);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
 		if (dir.exists())
 		{
 			File[] files = dir.listFiles();
@@ -144,7 +145,7 @@ public class EventLedgerListenerTest
 
 		awaitQuiescence();
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals("the durable telemetry event must be written regardless of a failing listener", 1, lines.size());
 	}
 
@@ -291,7 +292,7 @@ public class EventLedgerListenerTest
 
 		awaitQuiescence();
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals("an AssertionError thrown by a listener must never prevent the durable write either",
 			1, lines.size());
 	}

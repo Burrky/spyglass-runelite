@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.UUID;
@@ -20,6 +19,7 @@ import java.util.concurrent.TimeoutException;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.client.util.Filepath;
 
 /**
  * Append-only, one JSON object per line, per account.
@@ -282,8 +282,7 @@ public class EventLedger
 		}
 		catch (InterruptedException e)
 		{
-			Thread.currentThread().interrupt();
-			log.warn("appendAndWait() interrupted while waiting to append {}", type);
+			log.warn("appendAndWait() interrupted while waiting to append {}; treating as not durably written", type);
 			return false;
 		}
 		catch (ExecutionException | TimeoutException e)
@@ -320,8 +319,7 @@ public class EventLedger
 	{
 		try
 		{
-			Files.write(
-				TelemetryPaths.eventsFile(accountHash).toPath(),
+			TelemetryPaths.eventsFile(accountHash).write(
 				(json + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),
 				StandardOpenOption.CREATE, StandardOpenOption.APPEND
 			);
@@ -349,14 +347,12 @@ public class EventLedger
 		{
 			if (!executor.awaitTermination(2, TimeUnit.SECONDS))
 			{
-				log.warn("EventLedger writer did not drain in time; forcing shutdown");
-				executor.shutdownNow();
+				log.warn("EventLedger writer did not drain within the graceful window; it will keep draining in the background rather than being forcibly interrupted");
 			}
 		}
 		catch (InterruptedException e)
 		{
-			Thread.currentThread().interrupt();
-			executor.shutdownNow();
+			log.warn("Interrupted while awaiting graceful drain of the EventLedger writer; leaving it to keep draining in the background");
 		}
 	}
 }

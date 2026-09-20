@@ -23,8 +23,10 @@ import com.osrstelemetry.plugin.loottracker.LootTrackerCoordinator;
 import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
 import com.osrstelemetry.plugin.session.SessionRuntimeCoordinator;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
+import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.ui.OsrsTelemetryPanel;
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -43,6 +45,7 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.slayer.SlayerPlugin;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.util.Filepath;
 import net.runelite.client.util.ImageUtil;
 
 /**
@@ -60,10 +63,27 @@ import net.runelite.client.util.ImageUtil;
 // group id (that stays "osrstelemetry" -- see OsrsTelemetryConfig's
 // @ConfigGroup, deliberately untouched), the Java package name, or any
 // other compatibility-sensitive identifier.
+// ADDED (Plugin Hub maintainer review -- Filepath migration).
+// internalName is REQUIRED by Plugin.getPluginDirectory() (it throws
+// IllegalArgumentException without one) -- chosen to match this
+// project's own already-established non-display identity elsewhere
+// (the "osrstelemetry" @ConfigGroup, the com.osrstelemetry.plugin
+// package), deliberately NOT the presentation-only display name
+// ("Spyglass") or the old storage directory name ("osrs-telemetry",
+// which lives on unchanged as legacyDataDirectory below). It is a
+// permanent, filesystem-only identifier: once shipped, it must never
+// change, or a later "migration" would be needed all over again.
+// legacyDataDirectory = "osrs-telemetry" is the exact literal old
+// TelemetryPaths.ROOT_DIR_NAME -- see TelemetryPaths' own class
+// javadoc for the one-time automatic move RuneLite's own
+// getPluginDirectory() performs using this value, and
+// PLUGIN_HUB_FILEPATH_MIGRATION_REPORT for the full audit.
 @PluginDescriptor(
 	name = "Spyglass — Activity & Loot Tracker",
 	description = "Passively records account state to local files for read-only AI/tool consumption.",
-	tags = {"telemetry", "export", "json", "spyglass"}
+	tags = {"telemetry", "export", "json", "spyglass"},
+	internalName = "osrstelemetry",
+	legacyDataDirectory = "osrs-telemetry"
 )
 @PluginDependency(SlayerPlugin.class)
 public class OsrsTelemetryPlugin extends Plugin
@@ -287,8 +307,22 @@ public class OsrsTelemetryPlugin extends Plugin
 	}
 
 	@Override
-	protected void startUp()
+	protected void startUp() throws IOException
 	{
+		// ADDED (Plugin Hub maintainer review -- Filepath migration).
+		// Establishes the ONE root every TelemetryPaths call resolves
+		// against, before anything else below can possibly touch
+		// storage (store.start()/every collector's own I/O all go
+		// through TelemetryPaths). getPluginDirectory() is RuneLite's
+		// own Filepath API (Plugin.getPluginDirectory(), declared to
+		// throw IOException -- allowed to propagate here: a plugin that
+		// cannot establish its own storage root has nothing safe to do,
+		// so failing this enable outright is correct, not a
+		// papered-over fallback). Idempotent to call again on every
+		// startUp() -- see TelemetryPaths.init()'s own javadoc.
+		Filepath pluginDirectory = getPluginDirectory();
+		TelemetryPaths.init(pluginDirectory);
+
 		// FIX for review item 9: executors are (re)created here, not
 		// assumed to exist from construction — safe across repeated
 		// enable/disable/enable within one client process.

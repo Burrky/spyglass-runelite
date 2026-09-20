@@ -7,7 +7,6 @@ import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.model.ActivityState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
-import java.io.File;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Map;
@@ -223,7 +222,7 @@ public class ActivityKillCountCollector
 		state.setLastUpdatedAt(Instant.now().toString());
 
 		store.write(
-			new File(TelemetryPaths.activitiesDir(client.getAccountHash()), activityId + ".json"),
+			TelemetryPaths.activityFile(client.getAccountHash(), activityId),
 			state
 		);
 	}

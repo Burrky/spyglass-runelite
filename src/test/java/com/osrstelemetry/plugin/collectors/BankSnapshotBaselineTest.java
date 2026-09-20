@@ -9,13 +9,17 @@ import com.google.gson.Gson;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
-import java.io.File;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
+import net.runelite.client.util.Filepath;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -136,12 +140,22 @@ public class BankSnapshotBaselineTest
 	private static final Gson GSON = new Gson();
 
 	private LocalStateStore store;
+	private Path tempRoot;
 
+	/**
+	 * A brand-new temp directory per test, rooted via TestFilepaths
+	 * (see its own javadoc for why Filepath.Unchecked is justified here
+	 * and nowhere else) and installed as TelemetryPaths' shared root
+	 * BEFORE the test body runs -- this gives every test full account
+	 * isolation for free, without the old fixed-account-hash
+	 * delete-before-and-after dance the previous java.io.File-based
+	 * version of this test needed.
+	 */
 	@Before
 	public void setUp() throws Exception
 	{
-		deleteAccountDir(TEST_ACCOUNT_HASH);
-		deleteAccountDir(OTHER_ACCOUNT_HASH);
+		tempRoot = Files.createTempDirectory("bank-snapshot-baseline-test");
+		TelemetryPaths.init(TestFilepaths.rooted(tempRoot));
 		store = new LocalStateStore(GSON);
 		store.start();
 	}
@@ -150,31 +164,19 @@ public class BankSnapshotBaselineTest
 	public void tearDown() throws Exception
 	{
 		store.shutdown();
-		deleteAccountDir(TEST_ACCOUNT_HASH);
-		deleteAccountDir(OTHER_ACCOUNT_HASH);
+		deleteRecursively(tempRoot);
 	}
 
-	private void deleteAccountDir(long accountHash) throws Exception
+	private static void deleteRecursively(Path path) throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(accountHash);
-		deleteRecursively(dir);
-	}
-
-	private void deleteRecursively(File dir)
-	{
-		File[] files = dir.listFiles();
-		if (files != null)
+		if (!Files.exists(path))
 		{
-			for (File f : files)
-			{
-				if (f.isDirectory())
-				{
-					deleteRecursively(f);
-				}
-				f.delete();
-			}
+			return;
 		}
-		dir.delete();
+		try (Stream<Path> walk = Files.walk(path))
+		{
+			walk.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+		}
 	}
 
 	/** Writes a fixture snapshot + a bank.json pointer referencing it, exactly matching what ContainerCollector itself produces. */
@@ -307,8 +309,8 @@ public class BankSnapshotBaselineTest
 
 		// Write genuinely malformed JSON directly, bypassing the store,
 		// to simulate corruption (a truncated write, a bad upgrade, etc).
-		File snapshotFile = TelemetryPaths.bankSnapshotFile(TEST_ACCOUNT_HASH, snapshotId);
-		Files.write(snapshotFile.toPath(), "{ this is not valid json".getBytes(StandardCharsets.UTF_8));
+		Filepath snapshotFile = TelemetryPaths.bankSnapshotFile(TEST_ACCOUNT_HASH, snapshotId);
+		snapshotFile.write("{ this is not valid json".getBytes(StandardCharsets.UTF_8));
 
 		BankSnapshotBaseline loaded = BankSnapshotBaseline.loadFrom(store, TEST_ACCOUNT_HASH);
 		assertFalse("malformed JSON must fail open, not throw", loaded.isPresent());

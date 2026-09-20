@@ -1,12 +1,10 @@
 package com.osrstelemetry.plugin.storage;
 
 import com.google.gson.Gson;
-import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -14,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.client.util.Filepath;
 
 /**
  * Writes state documents to disk.
@@ -37,6 +36,14 @@ import lombok.extern.slf4j.Slf4j;
  * within that process, and each toggle needs a live executor. Calling
  * write() before start() or after shutdown() is a caller bug, not a
  * state this class tries to paper over.
+ *
+ * SHUTDOWN IS NON-INTERRUPTING (Plugin Hub maintainer review): shutdown()
+ * never forcibly terminates the executor or re-asserts this thread's own
+ * interrupt status -- both are forms of thread interruption this
+ * project's Plugin Hub review disallows outright. A write that is still
+ * running when the graceful drain window elapses is left to finish on
+ * its own, in the background, on its own (already-daemon) thread rather
+ * than being forcibly interrupted -- see shutdown()'s own javadoc.
  */
 @Slf4j
 @Singleton
@@ -72,7 +79,7 @@ public class LocalStateStore
 		});
 	}
 
-	public void write(File target, Object document)
+	public void write(Filepath target, Object document)
 	{
 		write(target, document, () -> { });
 	}
@@ -87,7 +94,7 @@ public class LocalStateStore
 	 * this method — each level only proceeds if the one before it
 	 * actually succeeded.
 	 */
-	public void write(File target, Object document, Runnable onWritten)
+	public void write(Filepath target, Object document, Runnable onWritten)
 	{
 		ExecutorService executor = this.writeExecutor;
 		if (executor == null || executor.isShutdown())
@@ -116,7 +123,7 @@ public class LocalStateStore
 	 * exclusively from the plugin's own shutDown(), never from an
 	 * event handler on the client thread.
 	 */
-	public boolean writeAndWait(File target, Object document, long timeoutMs)
+	public boolean writeAndWait(Filepath target, Object document, long timeoutMs)
 	{
 		ExecutorService executor = this.writeExecutor;
 		if (executor == null || executor.isShutdown())
@@ -139,13 +146,12 @@ public class LocalStateStore
 	}
 
 	/** @return true if the file was successfully and durably written. */
-	private boolean writeNow(File target, String json)
+	private boolean writeNow(Filepath target, String json)
 	{
-		Path targetPath = target.toPath();
-		Path tmp = target.toPath().resolveSibling(target.getName() + ".tmp");
+		Filepath tmp = target.getParent().joinSegment(target.getFileName() + ".tmp");
 		try
 		{
-			Files.write(tmp, json.getBytes(StandardCharsets.UTF_8));
+			tmp.write(json.getBytes(StandardCharsets.UTF_8));
 		}
 		catch (IOException e)
 		{
@@ -160,16 +166,15 @@ public class LocalStateStore
 			// same-volume moves, which this always is since tmp and
 			// target share a parent directory). Falls back to a
 			// plain (non-atomic) replace only where the OS/filesystem
-			// genuinely cannot do better — File.renameTo() gave no
-			// such guarantee or fallback at all.
-			Files.move(tmp, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			// genuinely cannot do better.
+			tmp.moveTo(target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 			return true;
 		}
 		catch (AtomicMoveNotSupportedException e)
 		{
 			try
 			{
-				Files.move(tmp, targetPath, StandardCopyOption.REPLACE_EXISTING);
+				tmp.moveTo(target, StandardCopyOption.REPLACE_EXISTING);
 				return true;
 			}
 			catch (IOException e2)
@@ -187,9 +192,17 @@ public class LocalStateStore
 
 	/**
 	 * Graceful drain: stop accepting new work, wait briefly for
-	 * queued writes to finish, and only force-terminate if they don't.
-	 * Closing RuneLite a moment after an event fires should not
-	 * silently drop it.
+	 * queued writes to finish, and only log a warning if they don't --
+	 * this never forcibly terminates the executor and never
+	 * re-asserts this thread's own interrupt status if it is itself
+	 * interrupted while waiting, per this project's Plugin Hub review
+	 * requirement against any active thread interruption. A write that
+	 * outlives the drain window keeps running to completion in the
+	 * background on its own (already-daemon, so it can never keep the
+	 * JVM alive) thread instead of being forcibly killed mid-write --
+	 * a slower worst case than before, but one that can never leave a
+	 * half-written file, and never interrupts I/O that may itself be
+	 * mid-syscall.
 	 */
 	public void shutdown()
 	{
@@ -203,14 +216,12 @@ public class LocalStateStore
 		{
 			if (!executor.awaitTermination(2, TimeUnit.SECONDS))
 			{
-				log.warn("LocalStateStore writer did not drain in time; forcing shutdown");
-				executor.shutdownNow();
+				log.warn("LocalStateStore writer did not drain within the graceful window; it will keep draining in the background rather than being forcibly interrupted");
 			}
 		}
 		catch (InterruptedException e)
 		{
-			Thread.currentThread().interrupt();
-			executor.shutdownNow();
+			log.warn("Interrupted while awaiting graceful drain of the LocalStateStore writer; leaving it to keep draining in the background");
 		}
 	}
 
@@ -228,15 +239,15 @@ public class LocalStateStore
 	 * loading for why that's an accepted, bounded, one-time cost
 	 * rather than something this method tries to offload itself).
 	 */
-	public <T> T readIfExists(File file, Class<T> type)
+	public <T> T readIfExists(Filepath file, Class<T> type)
 	{
 		if (!file.exists())
 		{
 			return null;
 		}
-		try
+		try (InputStream in = file.openInputStream())
 		{
-			String json = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+			String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
 			return gson.fromJson(json, type);
 		}
 		catch (Exception e)

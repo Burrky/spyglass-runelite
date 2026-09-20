@@ -10,6 +10,7 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
 import java.time.Duration;
@@ -71,7 +72,7 @@ public class SessionRuntimeCoordinatorTest
 
 	private void deleteAccountDir(long accountHash) throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(accountHash);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(accountHash));
 		if (dir.exists())
 		{
 			File sessionsDir = new File(dir, "sessions");

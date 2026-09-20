@@ -1,10 +1,13 @@
 package com.osrstelemetry.plugin.collectors;
 
-import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.client.util.Filepath;
 
 /**
  * Bounds disk usage for one account's bank_snapshots/ directory.
@@ -71,47 +74,60 @@ final class BankSnapshotRetention
 	 * was just written) is never deleted, even if every other file is
 	 * gone and the directory is still above targetBytes as a result.
 	 *
-	 * Ordering source: File.lastModified() — these are immutable
-	 * snapshot files, written exactly once and never modified again,
-	 * so mtime is a reliable proxy for "when was this snapshot taken"
-	 * without needing to parse each file's JSON body (which would also
-	 * make pruning itself fail-prone on a corrupt file). Ties (rare —
-	 * millisecond-resolution writes) are broken by filename for fully
-	 * deterministic ordering.
+	 * Ordering source: each file's last-modified time — these are
+	 * immutable snapshot files, written exactly once and never modified
+	 * again, so mtime is a reliable proxy for "when was this snapshot
+	 * taken" without needing to parse each file's JSON body (which
+	 * would also make pruning itself fail-prone on a corrupt file).
+	 * Ties (rare — millisecond-resolution writes) are broken by
+	 * filename for fully deterministic ordering.
 	 *
 	 * Safety: only files matching *.json under snapshotsDir count
 	 * toward size or are eligible for deletion — anything else
 	 * (unexpected files, subdirectories, partial .tmp files left by an
 	 * interrupted write elsewhere) is silently ignored, never counted,
-	 * never deleted, never crashes pruning. Each individual delete
-	 * failure is caught, logged, and skipped — pruning continues with
-	 * the next file rather than aborting, and a deletion failure never
-	 * invalidates the snapshot that was just successfully written.
+	 * never deleted, never crashes pruning. Each individual size/mtime
+	 * read or delete failure is caught, logged, and skipped — pruning
+	 * continues with the next file rather than aborting, and a
+	 * deletion failure never invalidates the snapshot that was just
+	 * successfully written.
 	 */
-	static void pruneIfNeeded(File snapshotsDir, String protectedSnapshotId, long maxBytes, long targetBytes)
+	static void pruneIfNeeded(Filepath snapshotsDir, String protectedSnapshotId, long maxBytes, long targetBytes)
 	{
 		try
 		{
-			File[] listed = snapshotsDir.listFiles();
-			if (listed == null || listed.length == 0)
+			List<Filepath> listed;
+			// walk(1): snapshotsDir itself (depth 0) plus its immediate
+			// children (depth 1) only, filtered to files -- matches the
+			// old File.listFiles()'s flat, single-level, files-and-dirs
+			// listing, minus the directories (filtered below exactly as
+			// before). A missing directory is exactly the old
+			// "listFiles() == null" no-op case.
+			try (Stream<Filepath> walk = snapshotsDir.walk(1))
+			{
+				listed = walk.filter(Filepath::isFile).collect(Collectors.toList());
+			}
+			catch (IOException e)
+			{
+				return;
+			}
+			if (listed.isEmpty())
 			{
 				return;
 			}
 
-			List<File> snapshotFiles = new ArrayList<>();
+			List<Filepath> snapshotFiles = new ArrayList<>();
 			long total = 0;
-			for (File f : listed)
+			for (Filepath f : listed)
 			{
-				if (f == null || f.isDirectory() || !f.getName().endsWith(".json"))
+				if (!f.getFileName().endsWith(".json"))
 				{
-					// Malformed/unexpected entries (subdirectories, a
-					// stray .tmp from an interrupted write elsewhere,
-					// OS metadata files, etc.) are simply not part of
-					// the accounting.
+					// Malformed/unexpected entries (a stray .tmp from an
+					// interrupted write elsewhere, OS metadata files,
+					// etc.) are simply not part of the accounting.
 					continue;
 				}
-				long length = f.length();
-				total += length;
+				total += sizeOrZero(f);
 				snapshotFiles.add(f);
 			}
 
@@ -121,16 +137,16 @@ final class BankSnapshotRetention
 			}
 
 			snapshotFiles.sort(Comparator
-				.comparingLong(File::lastModified)
-				.thenComparing(File::getName));
+				.comparingLong(BankSnapshotRetention::lastModifiedMillisOrZero)
+				.thenComparing(Filepath::getFileName));
 
-			for (File f : snapshotFiles)
+			for (Filepath f : snapshotFiles)
 			{
 				if (total <= targetBytes)
 				{
 					break;
 				}
-				String snapshotId = stripJsonExtension(f.getName());
+				String snapshotId = stripJsonExtension(f.getFileName());
 				if (snapshotId.equals(protectedSnapshotId))
 				{
 					// Never delete the file bank.json currently points
@@ -139,13 +155,14 @@ final class BankSnapshotRetention
 					continue;
 				}
 
-				long length = f.length();
+				long length = sizeOrZero(f);
 				boolean deleted;
 				try
 				{
-					deleted = f.delete();
+					f.delete();
+					deleted = true;
 				}
-				catch (SecurityException e)
+				catch (IOException | SecurityException e)
 				{
 					deleted = false;
 					log.warn("Failed deleting old bank snapshot {} during retention pruning", f, e);
@@ -167,6 +184,40 @@ final class BankSnapshotRetention
 			// caller that just successfully wrote a new snapshot —
 			// fail safe/non-fatal on literally anything unexpected.
 			log.warn("Bank snapshot retention pruning failed unexpectedly for {}; leaving files as-is", snapshotsDir, e);
+		}
+	}
+
+	/**
+	 * Filepath.size()/getLastModifiedTime() throw IOException where
+	 * File.length()/lastModified() silently returned 0 -- these two
+	 * helpers restore that exact fail-safe-to-zero behavior so a single
+	 * unreadable file's size/mtime can never abort the whole pruning
+	 * pass (the outer try/catch would otherwise turn one bad file into
+	 * "leaving files as-is" for every file).
+	 */
+	private static long sizeOrZero(Filepath f)
+	{
+		try
+		{
+			return f.size();
+		}
+		catch (IOException e)
+		{
+			log.warn("Failed reading size of {} during retention pruning; treating as 0 bytes", f, e);
+			return 0;
+		}
+	}
+
+	private static long lastModifiedMillisOrZero(Filepath f)
+	{
+		try
+		{
+			return f.getLastModifiedTime().toMillis();
+		}
+		catch (IOException e)
+		{
+			log.warn("Failed reading last-modified time of {} during retention pruning; sorting as oldest", f, e);
+			return 0;
 		}
 	}
 

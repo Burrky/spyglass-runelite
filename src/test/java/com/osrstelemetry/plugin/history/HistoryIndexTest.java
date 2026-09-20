@@ -11,6 +11,7 @@ import com.osrstelemetry.plugin.session.SessionLifecycleEngine;
 import com.osrstelemetry.plugin.session.SessionPersistence;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -58,7 +59,7 @@ public class HistoryIndexTest
 
 	private static void deleteAccountDir(long accountHash)
 	{
-		deleteRecursively(TelemetryPaths.accountDir(accountHash));
+		deleteRecursively(TestFilepaths.file(TelemetryPaths.accountDir(accountHash)));
 	}
 
 	private static void deleteRecursively(File dir)
@@ -97,7 +98,7 @@ public class HistoryIndexTest
 			+ "\"accumulatedActiveDurationMillis\":60000,"
 			+ "\"aggregates\":{\"xpGainedBySkill\":{},\"lootDrops\":[]}"
 			+ "}";
-		Files.write(TelemetryPaths.sessionFile(accountHash, sessionId).toPath(), json.getBytes(StandardCharsets.UTF_8));
+		Files.write(TestFilepaths.path(TelemetryPaths.sessionFile(accountHash, sessionId)), json.getBytes(StandardCharsets.UTF_8));
 	}
 
 	@Test
@@ -160,7 +161,7 @@ public class HistoryIndexTest
 	public void refresh_malformedFile_skippedWithoutCrashingOtherEntries() throws Exception
 	{
 		writeSessionFileDirect(TEST_ACCOUNT_HASH, "session-good", "2026-01-15T10:00:00Z");
-		Files.write(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "session-corrupt").toPath(),
+		Files.write(TestFilepaths.path(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "session-corrupt")),
 			"{ not valid json at all".getBytes(StandardCharsets.UTF_8));
 
 		HistoryIndex index = new HistoryIndex();
@@ -184,7 +185,7 @@ public class HistoryIndexTest
 		// re-parsing it, this second call would now fail to find it (or
 		// throw); since it must never re-read an already-indexed file,
 		// the cached entry is untouched and still present.
-		Files.write(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "session-1").toPath(),
+		Files.write(TestFilepaths.path(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "session-1")),
 			"{ corrupted after first index".getBytes(StandardCharsets.UTF_8));
 
 		List<HistoryEntry> result = index.refresh(TEST_ACCOUNT_HASH, persistence, Duration.ofDays(10), NOW);
@@ -239,7 +240,7 @@ public class HistoryIndexTest
 	@Test
 	public void refresh_skippedMalformedFile_retriedOnNextRefresh() throws Exception
 	{
-		File corruptFile = TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "session-fixable");
+		File corruptFile = TestFilepaths.file(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "session-fixable"));
 		Files.write(corruptFile.toPath(), "{ not valid json".getBytes(StandardCharsets.UTF_8));
 
 		HistoryIndex index = new HistoryIndex();

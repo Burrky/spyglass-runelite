@@ -14,6 +14,7 @@ import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -162,7 +163,7 @@ public class ContainerCollectorTest
 
 	private static void deleteAccountDir(long accountHash) throws IOException
 	{
-		File dir = TelemetryPaths.accountDir(accountHash);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(accountHash));
 		deleteRecursively(dir);
 	}
 
@@ -192,7 +193,7 @@ public class ContainerCollectorTest
 
 	private List<String> readEventLines() throws IOException
 	{
-		File eventsFile = TelemetryPaths.eventsFile(accountHash);
+		File eventsFile = TestFilepaths.file(TelemetryPaths.eventsFile(accountHash));
 		if (!eventsFile.exists())
 		{
 			return new ArrayList<>();
@@ -216,7 +217,7 @@ public class ContainerCollectorTest
 
 	private int countSnapshotFiles()
 	{
-		File[] files = TelemetryPaths.bankSnapshotsDir(accountHash).listFiles();
+		File[] files = TestFilepaths.file(TelemetryPaths.bankSnapshotsDir(accountHash)).listFiles();
 		return files == null ? 0 : files.length;
 	}
 
@@ -235,7 +236,7 @@ public class ContainerCollectorTest
 		assertNotNull("bank.json must exist the instant finalizeBankSnapshotBlocking() returns", pointer);
 		assertNotNull("bank.json must point at a snapshot id", pointer.getLatestSnapshotId());
 
-		File snapshotFile = TelemetryPaths.bankSnapshotFile(accountHash, pointer.getLatestSnapshotId());
+		File snapshotFile = TestFilepaths.file(TelemetryPaths.bankSnapshotFile(accountHash, pointer.getLatestSnapshotId()));
 		assertTrue("the immutable snapshot file bank.json points to must actually exist", snapshotFile.exists());
 
 		List<String> bankSnapshotEvents = bankSnapshotEventLines();
@@ -385,7 +386,7 @@ public class ContainerCollectorTest
 		// file underneath it (bank_snapshots/<uuid>.json) then fails
 		// deterministically, because a path component that is a regular
 		// file can never behave as a directory.
-		File accountDir = TelemetryPaths.accountDir(accountHash);
+		File accountDir = TestFilepaths.file(TelemetryPaths.accountDir(accountHash));
 		File bankSnapshotsAsFile = new File(accountDir, "bank_snapshots");
 		deleteRecursively(bankSnapshotsAsFile);
 		Files.write(bankSnapshotsAsFile.toPath(), "not a directory".getBytes());
@@ -411,7 +412,7 @@ public class ContainerCollectorTest
 		// file. LocalStateStore.writeNow()'s Files.move(tmp, target,
 		// REPLACE_EXISTING, ATOMIC_MOVE) can never replace a directory
 		// with a regular file, so this fails deterministically.
-		File accountDir = TelemetryPaths.accountDir(accountHash);
+		File accountDir = TestFilepaths.file(TelemetryPaths.accountDir(accountHash));
 		File bankJsonAsDir = new File(accountDir, "bank.json");
 		deleteRecursively(bankJsonAsDir);
 		assertTrue(bankJsonAsDir.mkdir());
@@ -491,7 +492,7 @@ public class ContainerCollectorTest
 		assertNotNull("bank.json pointer must be durable", pointer);
 		assertNotNull(pointer.getLatestSnapshotId());
 
-		File snapshotFile = TelemetryPaths.bankSnapshotFile(accountHash, pointer.getLatestSnapshotId());
+		File snapshotFile = TestFilepaths.file(TelemetryPaths.bankSnapshotFile(accountHash, pointer.getLatestSnapshotId()));
 		assertTrue("the immutable snapshot the pointer references must exist", snapshotFile.exists());
 
 		assertEquals(

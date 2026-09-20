@@ -8,6 +8,7 @@ import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
 import java.time.Instant;
@@ -54,7 +55,7 @@ public class LootTrackerPersistenceTest
 
 	private void deleteAccountDir() throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(TEST_ACCOUNT_HASH);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
 		if (dir.exists())
 		{
 			File[] files = dir.listFiles();

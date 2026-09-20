@@ -76,7 +76,7 @@ public class LocalStateStoreTest
 		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		// Deliberately not calling start() — simulates a caller bug,
 		// which must not throw.
-		store.write(targetFile, new Doc("should not be written"));
+		store.write(TestFilepaths.fromFile(targetFile), new Doc("should not be written"));
 		TimeUnit.MILLISECONDS.sleep(100);
 		assertFalse("write before start() must not produce a file", targetFile.exists());
 	}
@@ -88,7 +88,7 @@ public class LocalStateStoreTest
 		store.start();
 		store.shutdown();
 
-		store.write(targetFile, new Doc("should not be written either"));
+		store.write(TestFilepaths.fromFile(targetFile), new Doc("should not be written either"));
 		TimeUnit.MILLISECONDS.sleep(100);
 		assertFalse("write after shutdown() must not produce a file", targetFile.exists());
 	}
@@ -98,7 +98,7 @@ public class LocalStateStoreTest
 	{
 		LocalStateStore store = new LocalStateStore(TEST_GSON);
 		store.start();
-		store.write(targetFile, new Doc("hello"));
+		store.write(TestFilepaths.fromFile(targetFile), new Doc("hello"));
 		// No sleep — shutdown() itself is what must wait for this
 		// queued write to complete before returning.
 		store.shutdown();
@@ -112,14 +112,14 @@ public class LocalStateStoreTest
 		LocalStateStore store = new LocalStateStore(TEST_GSON);
 
 		store.start();
-		store.write(targetFile, new Doc("first"));
+		store.write(TestFilepaths.fromFile(targetFile), new Doc("first"));
 		store.shutdown();
 		assertEquals("first", readValue(targetFile));
 
 		// Re-enable — this must not throw RejectedExecutionException,
 		// and must produce a live writer again.
 		store.start();
-		store.write(targetFile, new Doc("second"));
+		store.write(TestFilepaths.fromFile(targetFile), new Doc("second"));
 		store.shutdown();
 		assertEquals("second", readValue(targetFile));
 	}
@@ -141,7 +141,7 @@ public class LocalStateStoreTest
 		);
 
 		final boolean[] callbackRan = {false};
-		store.write(badTarget, new Doc("irrelevant"), () -> callbackRan[0] = true);
+		store.write(TestFilepaths.fromFile(badTarget), new Doc("irrelevant"), () -> callbackRan[0] = true);
 		TimeUnit.MILLISECONDS.sleep(200);
 
 		assertFalse("write to a path with a missing parent directory must fail", badTarget.exists());
@@ -160,8 +160,8 @@ public class LocalStateStoreTest
 			new File(System.getProperty("java.io.tmpdir"), "osrs-telemetry-nonexistent-" + System.nanoTime()),
 			"file.json"
 		);
-		assertFalse(store.writeAndWait(badTarget, new Doc("irrelevant"), 1000));
-		assertTrue(store.writeAndWait(targetFile, new Doc("ok"), 1000));
+		assertFalse(store.writeAndWait(TestFilepaths.fromFile(badTarget), new Doc("irrelevant"), 1000));
+		assertTrue(store.writeAndWait(TestFilepaths.fromFile(targetFile), new Doc("ok"), 1000));
 		assertEquals("ok", readValue(targetFile));
 
 		store.shutdown();

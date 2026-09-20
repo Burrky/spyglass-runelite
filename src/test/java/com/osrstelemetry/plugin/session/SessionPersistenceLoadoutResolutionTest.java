@@ -9,6 +9,7 @@ import com.osrstelemetry.plugin.collectors.LoadoutArchive;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.time.Instant;
 import java.util.Collections;
@@ -77,7 +78,7 @@ public class SessionPersistenceLoadoutResolutionTest
 
 	private static void deleteAccountDir(long accountHash)
 	{
-		deleteRecursively(TelemetryPaths.accountDir(accountHash));
+		deleteRecursively(TestFilepaths.file(TelemetryPaths.accountDir(accountHash)));
 	}
 
 	private static void deleteRecursively(File dir)

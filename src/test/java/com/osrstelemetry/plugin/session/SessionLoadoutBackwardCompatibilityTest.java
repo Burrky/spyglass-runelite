@@ -9,6 +9,7 @@ import com.google.gson.Gson;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -72,7 +73,7 @@ public class SessionLoadoutBackwardCompatibilityTest
 
 	private static void deleteAccountDir(long accountHash)
 	{
-		deleteRecursively(TelemetryPaths.accountDir(accountHash));
+		deleteRecursively(TestFilepaths.file(TelemetryPaths.accountDir(accountHash)));
 	}
 
 	private static void deleteRecursively(File dir)
@@ -143,7 +144,7 @@ public class SessionLoadoutBackwardCompatibilityTest
 	@Test
 	public void oldShapeFile_onRealDisk_loadsThroughSessionPersistence() throws Exception
 	{
-		File sessionFile = TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "old-session-1");
+		File sessionFile = TestFilepaths.file(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "old-session-1"));
 		Files.write(sessionFile.toPath(), OLD_SHAPE_FINALIZED_JSON.getBytes(StandardCharsets.UTF_8));
 
 		Session reloaded = persistence.loadFinalized(TEST_ACCOUNT_HASH, "old-session-1");
@@ -255,7 +256,7 @@ public class SessionLoadoutBackwardCompatibilityTest
 	@Test
 	public void loadFinalized_malformedFile_returnsNullRatherThanThrowing() throws Exception
 	{
-		File sessionFile = TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "corrupt-session");
+		File sessionFile = TestFilepaths.file(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "corrupt-session"));
 		Files.write(sessionFile.toPath(), "{ this is not valid json".getBytes(StandardCharsets.UTF_8));
 
 		Session reloaded = persistence.loadFinalized(TEST_ACCOUNT_HASH, "corrupt-session");

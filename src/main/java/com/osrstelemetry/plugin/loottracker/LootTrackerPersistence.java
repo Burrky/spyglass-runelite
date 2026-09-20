@@ -7,15 +7,14 @@ import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.client.util.Filepath;
 
 /**
  * Durable rebuild: reads this account's {@code events.jsonl} directly (the SAME
@@ -95,7 +94,7 @@ public final class LootTrackerPersistence
 	 */
 	public int rebuild(long accountHash, LootTrackerIndex index, Instant minObservedAt)
 	{
-		File eventsFile = TelemetryPaths.eventsFile(accountHash);
+		Filepath eventsFile = TelemetryPaths.eventsFile(accountHash);
 		if (!eventsFile.exists())
 		{
 			return 0;
@@ -104,7 +103,7 @@ public final class LootTrackerPersistence
 		int applied = 0;
 		int lineNumber = 0;
 		try (BufferedReader reader = new BufferedReader(
-			new InputStreamReader(Files.newInputStream(eventsFile.toPath()), StandardCharsets.UTF_8)))
+			new InputStreamReader(eventsFile.openInputStream(), StandardCharsets.UTF_8)))
 		{
 			String line;
 			while ((line = reader.readLine()) != null)

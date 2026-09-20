@@ -128,13 +128,12 @@ public final class LootTrackerCoordinator implements TelemetryEventListener
 		{
 			if (!executor.awaitTermination(2, TimeUnit.SECONDS))
 			{
-				executor.shutdownNow();
+				log.warn("LootTrackerCoordinator rebuild executor did not drain within the graceful window; it will keep draining in the background rather than being forcibly interrupted");
 			}
 		}
 		catch (InterruptedException e)
 		{
-			Thread.currentThread().interrupt();
-			executor.shutdownNow();
+			log.warn("Interrupted while awaiting graceful drain of the LootTrackerCoordinator rebuild executor; leaving it to keep draining in the background");
 		}
 	}
 

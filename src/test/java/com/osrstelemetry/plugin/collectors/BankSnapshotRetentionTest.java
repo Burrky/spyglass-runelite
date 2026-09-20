@@ -3,6 +3,8 @@ package com.osrstelemetry.plugin.collectors;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.osrstelemetry.plugin.storage.TestFilepaths;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -62,7 +64,7 @@ public class BankSnapshotRetentionTest
 		fixture("a", 100, 1_000);
 		fixture("b", 100, 2_000);
 
-		BankSnapshotRetention.pruneIfNeeded(dir, "b", 1000, 900);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(dir), "b", 1000, 900);
 
 		assertEquals("nothing should be pruned when total is already under max", 2, countFiles());
 	}
@@ -78,7 +80,7 @@ public class BankSnapshotRetentionTest
 		fixture("newest", 100, 4_000);
 
 		// max=300 (so 400 > 300 triggers pruning), target=200.
-		BankSnapshotRetention.pruneIfNeeded(dir, "newest", 300, 200);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(dir), "newest", 300, 200);
 
 		assertEquals("must prune down to at or under the 200-byte target", 200, totalBytes());
 		assertTrue("the two oldest files must be the ones removed",
@@ -97,7 +99,7 @@ public class BankSnapshotRetentionTest
 		fixture("c", 100, 3_000);
 		fixture("d", 100, 4_000);
 
-		BankSnapshotRetention.pruneIfNeeded(dir, "protected-oldest", 300, 100);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(dir), "protected-oldest", 300, 100);
 
 		assertTrue("the protected snapshot must survive pruning no matter its age",
 			exists("protected-oldest"));
@@ -126,7 +128,7 @@ public class BankSnapshotRetentionTest
 		Files.write(new File(weirdDir, "inner.json").toPath(), "irrelevant".getBytes(StandardCharsets.UTF_8));
 
 		// max=1 forces an attempt to prune everything possible.
-		BankSnapshotRetention.pruneIfNeeded(dir, "b", 1, 0);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(dir), "b", 1, 0);
 
 		assertTrue("the stray non-.json file must be left alone", stray.exists());
 		assertTrue("the directory entry must be left alone, not crash pruning", weirdDir.exists());
@@ -142,7 +144,7 @@ public class BankSnapshotRetentionTest
 		fixture("aaa", 100, 5_000);
 		fixture("mmm", 100, 5_000);
 
-		BankSnapshotRetention.pruneIfNeeded(dir, "zzz", 200, 100);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(dir), "zzz", 200, 100);
 
 		// "aaa" sorts first alphabetically, so with all mtimes tied it
 		// must be the one pruned first.
@@ -165,7 +167,7 @@ public class BankSnapshotRetentionTest
 		fixture("newest", 100, 9_000);
 
 		// Must not throw even if some deletes fail.
-		BankSnapshotRetention.pruneIfNeeded(dir, "newest", 200, 50);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(dir), "newest", 200, 50);
 
 		assertTrue("pruning must complete without throwing regardless of individual delete outcomes", true);
 		assertTrue("the protected/newest snapshot must always survive", exists("newest"));
@@ -179,7 +181,7 @@ public class BankSnapshotRetentionTest
 		File missing = new File(dir, "does-not-exist");
 		// Must not throw for a nonexistent directory (listFiles()
 		// returns null there).
-		BankSnapshotRetention.pruneIfNeeded(missing, "whatever", 100, 50);
+		BankSnapshotRetention.pruneIfNeeded(TestFilepaths.fromFile(missing), "whatever", 100, 50);
 	}
 
 	private boolean exists(String snapshotId)

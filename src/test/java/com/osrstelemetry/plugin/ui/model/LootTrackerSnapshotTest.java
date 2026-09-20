@@ -10,6 +10,7 @@ import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
 import com.osrstelemetry.plugin.loottracker.LootTrackerRecord;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
 import java.time.Instant;
@@ -58,7 +59,7 @@ public class LootTrackerSnapshotTest
 
 	private void deleteAccountDir() throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(TEST_ACCOUNT_HASH);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
 		if (dir.exists())
 		{
 			File[] files = dir.listFiles();

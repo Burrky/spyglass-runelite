@@ -9,6 +9,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
 import java.util.List;
@@ -68,7 +69,7 @@ public class EventLedgerTest
 
 	private void deleteAccountDir() throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(TEST_ACCOUNT_HASH);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
 		if (dir.exists())
 		{
 			File[] files = dir.listFiles();
@@ -93,7 +94,7 @@ public class EventLedgerTest
 
 		awaitQuiescence();
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals(2, lines.size());
 
 		JsonObject first = new JsonParser().parse(lines.get(0)).getAsJsonObject();
@@ -114,7 +115,7 @@ public class EventLedgerTest
 
 		awaitQuiescence();
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals(1, lines.size());
 
 		JsonObject event = new JsonParser().parse(lines.get(0)).getAsJsonObject();
@@ -141,7 +142,7 @@ public class EventLedgerTest
 			new EventPayloads.QuestCompleted(3, "QUEST_C", "Quest C"));
 		awaitQuiescence();
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		String sessionA = new JsonParser().parse(lines.get(0)).getAsJsonObject().get("sessionId").getAsString();
 		String sessionB = new JsonParser().parse(lines.get(1)).getAsJsonObject().get("sessionId").getAsString();
 		String sessionC = new JsonParser().parse(lines.get(2)).getAsJsonObject().get("sessionId").getAsString();
@@ -178,7 +179,7 @@ public class EventLedgerTest
 			new EventPayloads.LevelUp("FISHING", 2, 3, 300));
 		awaitQuiescence();
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals("both the pre- and post-restart appends must have been written", 2, lines.size());
 	}
 
@@ -199,7 +200,7 @@ public class EventLedgerTest
 		// No awaitQuiescence() sleep here at all — the entire point of
 		// appendAndWait() is that the event is already durable the
 		// instant it returns.
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals(1, lines.size());
 		JsonObject event = new JsonParser().parse(lines.get(0)).getAsJsonObject();
 		assertEquals("LEVEL_UP", event.get("eventType").getAsString());
@@ -212,7 +213,7 @@ public class EventLedgerTest
 			TEST_ACCOUNT_HASH, EventType.QUEST_COMPLETED,
 			new EventPayloads.QuestCompleted(9001, "A_QUEST", "A Quest"), 2000);
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals(1, lines.size());
 		JsonObject event = new JsonParser().parse(lines.get(0)).getAsJsonObject();
 
@@ -266,7 +267,7 @@ public class EventLedgerTest
 
 		assertTrue(success);
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals(2, lines.size());
 		JsonObject firstPayload = new JsonParser().parse(lines.get(0)).getAsJsonObject().getAsJsonObject("payload");
 		JsonObject secondPayload = new JsonParser().parse(lines.get(1)).getAsJsonObject().getAsJsonObject("payload");
@@ -289,7 +290,7 @@ public class EventLedgerTest
 			TEST_ACCOUNT_HASH, EventType.LEVEL_UP,
 			new EventPayloads.LevelUp("FISHING", 2, 3, 300), 2000));
 
-		List<String> lines = Files.readAllLines(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH).toPath());
+		List<String> lines = Files.readAllLines(TestFilepaths.path(TelemetryPaths.eventsFile(TEST_ACCOUNT_HASH)));
 		assertEquals("both the pre- and post-restart appendAndWait() calls must have succeeded and persisted", 2, lines.size());
 	}
 

@@ -16,6 +16,7 @@ import com.osrstelemetry.plugin.session.SessionLifecycleEngine;
 import com.osrstelemetry.plugin.session.SessionPersistence;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.time.Instant;
 import java.util.Collections;
@@ -55,7 +56,7 @@ public class HistoryDetailModelTest
 
 	private static void deleteAccountDir()
 	{
-		deleteRecursively(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
+		deleteRecursively(TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH)));
 	}
 
 	private static void deleteRecursively(File dir)

@@ -13,9 +13,11 @@ import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
 import com.osrstelemetry.plugin.loottracker.LootTrackerRecord;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import com.osrstelemetry.plugin.storage.TestFilepaths;
 import com.osrstelemetry.plugin.ui.model.LootTrackerSnapshot;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -53,24 +55,28 @@ public class LootTrackerViewTest
 	private static final Gson TEST_GSON = new Gson();
 
 	private LootTrackerPreferences preferences;
+	private Path testRoot;
 
 	@Before
-	public void setUp() throws Exception
-	{
-		deleteAccountDir();
-		preferences = new LootTrackerPreferences(new LocalStateStore(TEST_GSON));
-		preferences.loadForAccount(TEST_ACCOUNT_HASH);
-	}
+public void setUp() throws Exception
+{
+testRoot = Files.createTempDirectory("loot-tracker-view-test");
+TelemetryPaths.init(TestFilepaths.rooted(testRoot));
+deleteAccountDir();
+preferences = new LootTrackerPreferences(new LocalStateStore(TEST_GSON));
+preferences.loadForAccount(TEST_ACCOUNT_HASH);
+}
 
 	@After
-	public void tearDown() throws Exception
-	{
-		deleteAccountDir();
-	}
+public void tearDown() throws Exception
+{
+deleteAccountDir();
+Files.deleteIfExists(testRoot);
+}
 
 	private void deleteAccountDir() throws Exception
 	{
-		File dir = TelemetryPaths.accountDir(TEST_ACCOUNT_HASH);
+		File dir = TestFilepaths.file(TelemetryPaths.accountDir(TEST_ACCOUNT_HASH));
 		if (dir.exists())
 		{
 			File[] files = dir.listFiles();

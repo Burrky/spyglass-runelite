@@ -3,7 +3,7 @@ package com.osrstelemetry.plugin.history;
 import com.osrstelemetry.plugin.session.Session;
 import com.osrstelemetry.plugin.session.SessionPersistence;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
-import java.io.File;
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -11,7 +11,10 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.client.util.Filepath;
 
 /**
  * History's discovery/index (spec Part R): a lightweight, in-memory cache
@@ -73,25 +76,40 @@ public final class HistoryIndex
 	 */
 	public List<HistoryEntry> refresh(long accountHash, SessionPersistence persistence, Duration window, Instant now)
 	{
-		File[] files = TelemetryPaths.sessionsDir(accountHash).listFiles((dir, name) -> name.endsWith(".json"));
-		if (files != null)
+		List<Filepath> files;
+		// walk(1): the sessions/ directory itself (depth 0) plus its
+		// immediate children (depth 1) only -- never recurses into a
+		// subdirectory, matching the old File.listFiles()'s flat,
+		// single-level listing exactly. A missing/unreadable directory
+		// (NoSuchFileException or any other IOException) is treated
+		// exactly like the old File.listFiles() == null case: nothing
+		// new to index this pass, not a failure.
+		try (Stream<Filepath> walk = TelemetryPaths.sessionsDir(accountHash).walk(1))
 		{
-			for (File file : files)
+			files = walk.filter(Filepath::isFile)
+				.filter(f -> f.getFileName().endsWith(".json"))
+				.collect(Collectors.toList());
+		}
+		catch (IOException e)
+		{
+			files = java.util.Collections.emptyList();
+		}
+
+		for (Filepath file : files)
+		{
+			String sessionId = stripJsonExtension(file.getFileName());
+			if (sessionId == null || entries.containsKey(sessionId))
 			{
-				String sessionId = stripJsonExtension(file.getName());
-				if (sessionId == null || entries.containsKey(sessionId))
-				{
-					continue;
-				}
-				Session session = persistence.loadFinalized(accountHash, sessionId);
-				HistoryEntry entry = HistoryEntry.from(session);
-				if (entry == null)
-				{
-					log.warn("Skipping unparseable/incomplete session file for History: {}", file.getName());
-					continue;
-				}
-				entries.put(sessionId, entry);
+				continue;
 			}
+			Session session = persistence.loadFinalized(accountHash, sessionId);
+			HistoryEntry entry = HistoryEntry.from(session);
+			if (entry == null)
+			{
+				log.warn("Skipping unparseable/incomplete session file for History: {}", file.getFileName());
+				continue;
+			}
+			entries.put(sessionId, entry);
 		}
 		return snapshot(window, now);
 	}

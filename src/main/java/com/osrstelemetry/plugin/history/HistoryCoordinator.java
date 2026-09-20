@@ -105,13 +105,12 @@ public class HistoryCoordinator
 		{
 			if (!toShutdown.awaitTermination(2, TimeUnit.SECONDS))
 			{
-				toShutdown.shutdownNow();
+				log.warn("HistoryCoordinator index executor did not drain within the graceful window; it will keep draining in the background rather than being forcibly interrupted");
 			}
 		}
 		catch (InterruptedException e)
 		{
-			Thread.currentThread().interrupt();
-			toShutdown.shutdownNow();
+			log.warn("Interrupted while awaiting graceful drain of the HistoryCoordinator index executor; leaving it to keep draining in the background");
 		}
 	}
 
