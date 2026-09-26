@@ -649,36 +649,80 @@ Files.deleteIfExists(testRoot);
 	}
 
 	// ------------------------------------------------------------------
-	// LOOT_ITEMS_PER_ROW (Part G -- sidebar width/clipping fix)
+	// Shared loot-grid geometry (Loot tab 3-column regression fix)
 	// ------------------------------------------------------------------
 
 	@Test
-	public void lootItemsPerRow_gridWidthFitsWithinWorstCaseSidebarBudget()
+	public void lootItemsPerRow_isTheSameSharedColumnCountCurrentSessionUses()
 	{
-		// See LOOT_ITEMS_PER_ROW's own javadoc for the full,
-		// constants-grounded derivation of this 185px worst-case budget
-		// (RuneLite's own PANEL_WIDTH/SCROLLBAR_WIDTH constants and
-		// content's/a source card's own borders -- this class no longer
-		// owns an inner scrollbar of its own, so that term dropped out of the
-		// budget; see the javadoc's own note on why LOOT_ITEMS_PER_ROW
-		// itself was deliberately left at 3 regardless). LootGridCell's
-		// CELL_SIZE (40) and GridLayout's own column gap (4) are
-		// duplicated here as literals deliberately -- both are private
-		// implementation details of their own classes, and re-deriving
-		// the same arithmetic independently here is exactly what should
-		// catch a future regression (e.g. someone bumping
-		// LOOT_ITEMS_PER_ROW back up without re-checking the width
-		// budget).
-		int cellSize = 40;
-		int gap = 4;
-		int worstCaseAvailableWidth = 185;
+		assertEquals("Loot tab (Grouped + Individual) must use the same shared column count as Current Session",
+			LootGridCell.GRID_COLUMNS, LootTrackerView.LOOT_ITEMS_PER_ROW);
+		assertEquals(5, LootGridCell.GRID_COLUMNS);
+		java.awt.GridLayout layout = LootGridCell.newGridLayout();
+		assertEquals(0, layout.getRows());
+		assertEquals(LootGridCell.GRID_COLUMNS, layout.getColumns());
+		assertTrue("each call must return a fresh LayoutManager", layout != LootGridCell.newGridLayout());
+	}
 
-		int gridWidth = LootTrackerView.LOOT_ITEMS_PER_ROW * cellSize + (LootTrackerView.LOOT_ITEMS_PER_ROW - 1) * gap;
+	/**
+	 * Real (headless-safe, non-mocked) Swing layout of a Loot-tab-shaped
+	 * item grid -- heightBoundedPanel() + the shared GridLayout + real
+	 * LootGridCells -- inside a BoxLayout column of a given width, which
+	 * is how buildSourceCard() hosts both the Grouped grid and each
+	 * Individual record's grid. Returns the laid-out cells.
+	 */
+	private static java.util.List<java.awt.Component> layOutLootGrid(int availableWidth, int cellCount)
+	{
+		javax.swing.JPanel card = new javax.swing.JPanel();
+		card.setLayout(new javax.swing.BoxLayout(card, javax.swing.BoxLayout.Y_AXIS));
+		javax.swing.JPanel grid = LootTrackerView.heightBoundedPanel();
+		grid.setLayout(LootGridCell.newGridLayout());
+		grid.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+		for (int i = 0; i < cellCount; i++)
+		{
+			grid.add(new LootGridCell(null, i + 2, "item " + i));
+		}
+		card.add(grid);
+		card.setSize(availableWidth, 1000);
+		card.doLayout();
+		grid.doLayout();
+		return java.util.Arrays.asList(grid.getComponents());
+	}
 
-		assertTrue("item grid width (" + gridWidth + "px) must fit within the worst-case available "
-				+ "card width (" + worstCaseAvailableWidth + "px) or it clips against the sidebar edge "
-				+ "-- see LOOT_ITEMS_PER_ROW's own javadoc",
-			gridWidth <= worstCaseAvailableWidth);
+	@Test
+	public void lootGrid_atNormalSidebarWidth_fitsFiveAcross_noClipping_noHorizontalOverflow()
+	{
+		// 185px = the worst-case card-interior width at RuneLite's normal
+		// 225px PluginPanel width (see LOOT_ITEMS_PER_ROW's own javadoc).
+		int width = 185;
+		java.util.List<java.awt.Component> cells = layOutLootGrid(width, 7);
+
+		int firstRowY = cells.get(0).getY();
+		for (int i = 0; i < 5; i++)
+		{
+			assertEquals("cells 0..4 must share the first row", firstRowY, cells.get(i).getY());
+		}
+		assertTrue("the 6th item must wrap to a second row", cells.get(5).getY() > firstRowY);
+		for (java.awt.Component cell : cells)
+		{
+			assertTrue("no cell may extend past the available width (no clipping / horizontal scroll)",
+				cell.getX() + cell.getWidth() <= width);
+			assertTrue("cells must stay a readable, sprite-sized slot (>= 32px wide)", cell.getWidth() >= 32);
+		}
+	}
+
+	@Test
+	public void lootGrid_reflowsWithAvailableWidth_neverOverflows()
+	{
+		for (int width : new int[] {150, 185, 220, 260})
+		{
+			java.util.List<java.awt.Component> cells = layOutLootGrid(width, 5);
+			java.awt.Component last = cells.get(4);
+			assertEquals("all 5 must stay on one row at width " + width, cells.get(0).getY(), last.getY());
+			assertTrue("no overflow at width " + width, last.getX() + last.getWidth() <= width);
+		}
+		assertTrue("cells grow with a wider container",
+			layOutLootGrid(260, 5).get(0).getWidth() > layOutLootGrid(185, 5).get(0).getWidth());
 	}
 
 	/**

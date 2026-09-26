@@ -3,6 +3,7 @@ package com.osrstelemetry.plugin.ui;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics;
+import java.awt.GridLayout;
 import javax.swing.BorderFactory;
 import javax.swing.JPanel;
 import net.runelite.client.ui.FontManager;
@@ -23,6 +24,29 @@ import net.runelite.client.util.QuantityFormatter;
 final class LootGridCell extends JPanel
 {
 	private static final int CELL_SIZE = 40;
+
+	/**
+	 * SHARED LOOT-GRID GEOMETRY -- the one column count/gap every loot
+	 * item grid (Current Session's LOOT card and the Loot tab's Grouped
+	 * AND Individual source cards) builds its {@link GridLayout} from, via
+	 * {@link #newGridLayout()}, so the two surfaces can never drift apart
+	 * again. {@code GridLayout} divides the ACTUAL available width evenly
+	 * among its columns -- CELL_SIZE is only each cell's preferred size,
+	 * not a floor -- so at the normal sidebar width a 5-column grid
+	 * renders ~33px cells (exactly what Current Session has always
+	 * shown), and a narrower/wider container shrinks/grows the cells
+	 * rather than clipping or scrolling horizontally.
+	 */
+	static final int GRID_COLUMNS = 5;
+
+	/** Horizontal and vertical gap between cells, in pixels. */
+	static final int GRID_GAP = 4;
+
+	/** A fresh layout per grid (LayoutManagers are not shared between containers). */
+	static GridLayout newGridLayout()
+	{
+		return new GridLayout(0, GRID_COLUMNS, GRID_GAP, GRID_GAP);
+	}
 
 	private final AsyncBufferedImage icon;
 	private final String quantityText;

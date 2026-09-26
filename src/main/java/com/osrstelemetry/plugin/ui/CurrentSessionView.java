@@ -1,5 +1,6 @@
 package com.osrstelemetry.plugin.ui;
 
+import com.osrstelemetry.plugin.CurrentSessionSectionOrder;
 import com.osrstelemetry.plugin.LootValuationMode;
 import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.session.SessionAggregates;
@@ -10,7 +11,7 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
-import java.awt.GridLayout;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -231,8 +232,9 @@ final class CurrentSessionView extends JPanel
 	}
 
 	/**
-	 * LAYOUT: 1. activity header/hero, 2. optional Slayer status, 3. one
-	 * card per actively-gaining skill, 4. loot. Each section collapses
+	 * LAYOUT: 1. activity header/hero, 2. optional Slayer status, 3./4.
+	 * one card per actively-gaining skill, and loot -- in the order chosen
+	 * by config.currentSessionSectionOrder() (default: XP then loot). Each section collapses
 	 * away entirely when it has nothing to show -- there is no "no loot
 	 * recorded yet" / "no Slayer task" placeholder text.
 	 */
@@ -248,12 +250,78 @@ final class CurrentSessionView extends JPanel
 		{
 			renderHeader(snapshot);
 			renderSlayerSection(snapshot);
-			renderSkillCards(snapshot);
-			renderLootSection(snapshot);
+			// XP / Loot order is a live, player-facing config choice. The
+			// SAME two renderers run either way -- only their insertion
+			// order changes (see orderedSections()).
+			renderSections(orderedSections(config.currentSessionSectionOrder()),
+				section -> section == Section.XP
+					? !snapshot.getXpEntries().isEmpty()
+					: !snapshot.getLootEntries().isEmpty(),
+				section ->
+				{
+					if (section == Section.XP)
+					{
+						renderSkillCards(snapshot);
+					}
+					else
+					{
+						renderLootSection(snapshot);
+					}
+				},
+				() -> content.add(Box.createVerticalStrut(SECTION_GAP)));
 		}
 
 		content.revalidate();
 		content.repaint();
+	}
+
+	/** The two reorderable Current Session sections. */
+	enum Section
+	{
+		XP,
+		LOOT
+	}
+
+	/**
+	 * Pure, testable mapping from the config choice to section insertion
+	 * order. Null (defensive; RuneLite always supplies the default) keeps
+	 * the original production order, XP then Loot.
+	 */
+	static List<Section> orderedSections(CurrentSessionSectionOrder order)
+	{
+		return order == CurrentSessionSectionOrder.LOOT_FIRST
+			? Arrays.asList(Section.LOOT, Section.XP)
+			: Arrays.asList(Section.XP, Section.LOOT);
+	}
+
+	/** Vertical gap between the two major sections (XP and Loot), in either order. */
+	static final int SECTION_GAP = 6;
+
+	/**
+	 * Renders the reorderable sections in `order`, skipping any with
+	 * nothing to show, and inserting exactly ONE {@code addGap} between
+	 * two sections that both render -- never before the first, never
+	 * after the last, and the same rule for XP_FIRST and LOOT_FIRST.
+	 * Pure w.r.t. Swing (all effects go through the callbacks), so the
+	 * boundary rule is directly unit-testable.
+	 */
+	static void renderSections(List<Section> order, java.util.function.Predicate<Section> hasContent,
+		java.util.function.Consumer<Section> render, Runnable addGap)
+	{
+		boolean anyRendered = false;
+		for (Section section : order)
+		{
+			if (!hasContent.test(section))
+			{
+				continue;
+			}
+			if (anyRendered)
+			{
+				addGap.run();
+			}
+			render.accept(section);
+			anyRendered = true;
+		}
 	}
 
 	private void renderEmptyState()
@@ -263,8 +331,10 @@ final class CurrentSessionView extends JPanel
 		title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-		JLabel subtitle = new JLabel("<html><div style='text-align:center;width:180px;'>"
-			+ "Start playing normally and activity will appear here.</div></html>");
+		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
+		// javadoc for why the previous fixed CSS width:180px (really ~233px
+		// in Swing's HTML engine) clipped against the sidebar edge.
+		JLabel subtitle = new WrappingHtmlLabel("Start playing normally and activity will appear here.", true);
 		subtitle.setFont(FontManager.getRunescapeSmallFont());
 		subtitle.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		subtitle.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -484,47 +554,24 @@ final class CurrentSessionView extends JPanel
 			textColumn.setLayout(new BoxLayout(textColumn, BoxLayout.Y_AXIS));
 			textColumn.setOpaque(false);
 
-			// "{remaining} remaining" is the primary figure; the
-			// authoritative kill/task-unit count plus its
-			// active-duration-only rate follow directly underneath --
-			// reuses
-			// CurrentSessionSnapshot#getSlayerProgressDelta()/#getSlayerKillsPerHour(),
-			// the exact same exact-once-accumulated counter
-			// SessionAggregateUpdater already maintains from each
-			// SLAYER_TASK_PROGRESS event's own taskUnitsConsumed (never
-			// NPC_DEATH, never a second counter -- see that field's own
-			// javadoc). Omitted entirely until at least one kill has
-			// actually been observed this session.
-			//
-			// Each label is its own left-aligned row in the
-			// BoxLayout.Y_AXIS textColumn (the same pattern the
-			// XP-remaining line below uses) so horizontal overlap between
-			// the remaining-count and kills/rate text is structurally
-			// impossible regardless of text length -- no absolute/fixed
-			// positioning, ordinary layout-managed components only.
+			// "{remaining} remaining" is the primary figure -- see
+			// CurrentSessionSnapshot#getSlayerCurrentRemaining()'s own
+			// javadoc. REMOVED (Slayer task-unit/physical-kill semantics
+			// audit): this card no longer renders a "kills / rate" line
+			// underneath it. slayerProgressDelta is a Slayer TASK-UNIT
+			// total, not a physical NPC-kill count -- game mechanics can
+			// make one physical kill consume more or fewer than one task
+			// unit, so a count/rate derived from it must never be
+			// labeled "kills"/"kills/hr". No reliable, independent
+			// physical-player-kill signal exists for an ordinary Slayer
+			// session (see NpcDeathCollector's own javadoc), so the
+			// honest choice is to omit the figure entirely rather than
+			// mislabel or fabricate one.
 			JLabel remainingLabel = new JLabel(snapshot.getSlayerCurrentRemaining() + " remaining");
 			remainingLabel.setFont(FontManager.getRunescapeBoldFont());
 			remainingLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 			remainingLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 			textColumn.add(remainingLabel);
-
-			Integer kills = snapshot.getSlayerProgressDelta();
-			if (kills != null && kills > 0)
-			{
-				StringBuilder killsText = new StringBuilder()
-					.append(kills)
-					.append(kills == 1 ? " kill" : " kills");
-				Long killsPerHour = snapshot.getSlayerKillsPerHour();
-				if (killsPerHour != null)
-				{
-					killsText.append("   •   ").append(killsPerHour).append("/hr");
-				}
-				JLabel killsLabel = new JLabel(killsText.toString());
-				killsLabel.setFont(FontManager.getRunescapeSmallFont());
-				killsLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
-				killsLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
-				textColumn.add(killsLabel);
-			}
 
 			// Compact muted "~X Slayer XP remaining" directly underneath
 			// the remaining-count row -- see
@@ -563,12 +610,22 @@ final class CurrentSessionView extends JPanel
 			return;
 		}
 
+		// Same 6px between skill cards as before; the trailing strut that
+		// used to follow the LAST card is gone -- the gap after the XP
+		// section is now SECTION_GAP, added by renderSections() only when
+		// another section actually follows (so XP_FIRST looks identical
+		// to before, and LOOT_FIRST gets the same gap above the XP block).
 		String primarySkill = snapshot.getPrimarySkill();
+		boolean first = true;
 		for (CurrentSessionSnapshot.XpEntry entry : snapshot.getXpEntries())
 		{
+			if (!first)
+			{
+				content.add(Box.createVerticalStrut(6));
+			}
 			boolean isPrimary = primarySkill != null && primarySkill.equals(entry.getSkill());
 			content.add(skillCard(entry, isPrimary));
-			content.add(Box.createVerticalStrut(6));
+			first = false;
 		}
 	}
 
@@ -796,12 +853,14 @@ final class CurrentSessionView extends JPanel
 		headerRow.setOpaque(false);
 		headerRow.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-		// "LOOT ×36" -- the same authoritative counter used for Slayer
-		// (getSlayerProgressDelta()), generalized to also cover a
-		// non-Slayer session's own reliable boss-kill counter
-		// (getReliableCount()) so this header is not Slayer-only. Never a
-		// second/new counter, and omitted entirely (no "x0") whenever
-		// neither is available -- see
+		// "LOOT ×36" -- a genuine PHYSICAL-KILL count only, from the
+		// existing reliable boss-kill counter (getReliableCount()'s
+		// sessionOccurrences). Deliberately never Slayer's own
+		// slayerProgressDelta (a TASK-UNIT total, not a physical-kill
+		// count -- see that field's own javadoc): an ordinary Slayer
+		// session with no independently-authoritative kill count renders
+		// a plain "LOOT" header instead, never a fabricated or
+		// mislabeled count -- see
 		// CurrentSessionSnapshot#getLootHeaderKillCount().
 		Integer killCount = snapshot.getLootHeaderKillCount();
 		JLabel titleLabel = new JLabel(killCount == null ? "LOOT" : "LOOT  ×" + killCount);
@@ -817,7 +876,7 @@ final class CurrentSessionView extends JPanel
 		section.add(headerRow);
 		section.add(Box.createVerticalStrut(6));
 
-		JPanel grid = new JPanel(new GridLayout(0, LOOT_ITEMS_PER_ROW, 4, 4));
+		JPanel grid = new JPanel(LootGridCell.newGridLayout());
 		grid.setOpaque(false);
 		grid.setAlignmentX(Component.LEFT_ALIGNMENT);
 		grid.setMaximumSize(new Dimension(Integer.MAX_VALUE, Short.MAX_VALUE));
@@ -832,8 +891,8 @@ final class CurrentSessionView extends JPanel
 		content.add(section);
 	}
 
-	// Target density: 5 items per row.
-	private static final int LOOT_ITEMS_PER_ROW = 5;
+	// Target density: see LootGridCell.GRID_COLUMNS (shared with the Loot tab).
+	static final int LOOT_ITEMS_PER_ROW = LootGridCell.GRID_COLUMNS;
 
 	/**
 	 * One loot grid cell: authentic item sprite (still

@@ -193,4 +193,19 @@ public interface OsrsTelemetryConfig extends Config
 	{
 		return LootValuationMode.GRAND_EXCHANGE;
 	}
+
+	// Player-facing display setting (tester request), read live by
+	// CurrentSessionView on every render like lootValuationMode() above.
+	// Default XP_FIRST == the existing production order (skill cards,
+	// then loot), so updating changes nothing until a player opts in.
+	@ConfigItem(
+		keyName = "currentSessionSectionOrder",
+		name = "XP / Loot order",
+		description = "Whether Current Session shows the XP section or the Loot section first.",
+		position = 15
+	)
+	default CurrentSessionSectionOrder currentSessionSectionOrder()
+	{
+		return CurrentSessionSectionOrder.XP_FIRST;
+	}
 }

@@ -125,7 +125,28 @@ final class BossTaskAffinity
 			return false;
 		}
 		String ownTask = BOSS_OWN_TASK_NORMALIZED.get(bossActivityKey);
-		return ownTask != null && ownTask.equals(normalize(taskName));
+		if (ownTask != null && ownTask.equals(normalize(taskName)))
+		{
+			return true;
+		}
+		// GENERIC BOSS-ON-MATCHING-TASK RULE (Kraken / Cave Kraken live
+		// regression). The explicit table above only covers bosses whose
+		// Slayer-task family data does NOT already name them (Grotesque
+		// Guardians is catalogued under its Dawn/Dusk NPCs; Shellbane
+		// Gryphon is not a "Gryphons" family member). Every other boss
+		// that the existing, RuneLite-derived SlayerTaskFamilyRegistry
+		// already lists as a member of the named task's family (Kraken
+		// under "Cave kraken", Cerberus under "Hellhounds", Vorkath under
+		// "Blue dragons", ...) is, by that same data, a boss whose own
+		// kills consume that task -- so its SLAYER_TASK_PROGRESS is the
+		// identical, ambiguous self-consumption event and must go through
+		// the same suppress-and-disambiguate path, never an immediate
+		// switch to the regular Slayer identity. No per-boss name branch:
+		// one membership lookup against data this codebase already owns.
+		// bossActivityKey is ActivitySignalClassifier.bossIdentity()'s own
+		// trimmed/lowercased boss name -- the same normalization
+		// belongsToTaskFamily() applies to its NPC-name argument.
+		return SlayerTaskFamilyRegistry.belongsToTaskFamily(taskName, bossActivityKey);
 	}
 
 	/**

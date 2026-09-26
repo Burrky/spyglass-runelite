@@ -577,58 +577,64 @@ public final class CurrentSessionSnapshot
 	}
 
 	/**
-	 * ADDED (Spyglass Phase 1B). Kills/task-units per hour of ACTIVE
-	 * session time only, from {@link #getSlayerProgressDelta()} -- the
-	 * same authoritative, exact-once-accumulated counter
-	 * {@code SessionAggregateUpdater} already maintains from each
-	 * SLAYER_TASK_PROGRESS event's own {@code taskUnitsConsumed} (never
-	 * NPC_DEATH -- see that field's own javadoc). Reuses
-	 * {@link #activeDurationMillis} and the same
-	 * {@link #MIN_DURATION_FOR_RATE_MILLIS} threshold every other rate on
-	 * this snapshot already gates on -- no separate timer, no separate
-	 * "long enough" rule. Null whenever there is no kill count yet, or
-	 * the session hasn't been active long enough for a rate to be
-	 * meaningful.
+	 * REMOVED (Slayer task-unit/physical-kill semantics audit): this
+	 * snapshot no longer exposes a Slayer "kills/hr" figure.
+	 * {@link #getSlayerProgressDelta()} is a Slayer TASK-UNIT total, not
+	 * a physical NPC-kill count -- game mechanics can make one physical
+	 * kill consume more or fewer than one task unit (e.g. an
+	 * expeditious-bracelet-style proc, or a bracelet-of-slaughter-style
+	 * save), so a rate derived from it is not a "kills/hr" figure and
+	 * must not be labeled or rendered as one. No reliable, independent
+	 * physical-player-kill signal exists for an ordinary Slayer
+	 * session (see NpcDeathCollector's own javadoc for why NPC_DEATH
+	 * cannot be used for this), so the honest choice is to omit the
+	 * figure entirely rather than mislabel task units as kills or
+	 * fabricate a substitute. {@link #getSlayerProgressDelta()} itself
+	 * remains available for task-unit-based calculations (e.g.
+	 * {@link #getEstimatedSlayerXpRemaining()}), which stay valid since
+	 * both their numerator and denominator are consistently task units.
 	 */
-	public Long getSlayerKillsPerHour()
-	{
-		if (slayerProgressDelta == null || slayerProgressDelta <= 0 || activeDurationMillis < MIN_DURATION_FOR_RATE_MILLIS)
-		{
-			return null;
-		}
-		return Math.round(slayerProgressDelta * 3_600_000.0 / activeDurationMillis);
-	}
 
 	/**
-	 * ADDED (Spyglass Phase 1C). Minimum authoritative kills observed
+	 * ADDED (Spyglass Phase 1C). Minimum Slayer task units observed
 	 * before {@link #getEstimatedSlayerXpRemaining()} will produce a
-	 * value -- a single kill's XP delta could be a boundary artifact
-	 * (e.g. XP that landed just before this session's own first
-	 * qualifying evidence arrived), so the average is only trusted once
-	 * it is drawn from more than one independent sample.
+	 * value -- a single task unit's XP delta could be a boundary
+	 * artifact (e.g. XP that landed just before this session's own
+	 * first qualifying evidence arrived), so the average is only
+	 * trusted once it is drawn from more than one independent sample.
+	 * Named for task units, not kills: {@link #getSlayerProgressDelta()}
+	 * is a task-unit total, never a physical NPC-kill count -- see that
+	 * field's own javadoc.
 	 */
-	public static final int MIN_SLAYER_KILLS_FOR_XP_ESTIMATE = 2;
+	public static final int MIN_SLAYER_TASK_UNITS_FOR_XP_ESTIMATE = 2;
 
 	/**
 	 * ADDED (Spyglass Phase 1C). Estimated Slayer XP remaining on the
 	 * current task, computed ENTIRELY from THIS session's own
-	 * already-observed data: (Slayer XP gained this session /
-	 * authoritative kills counted this session -- the same
-	 * {@link #getSlayerProgressDelta()} counter 1A/1B use) multiplied by
-	 * {@link #getSlayerCurrentRemaining()}. Never a hardcoded/Wiki
-	 * per-monster XP table -- this project has no such table and must
-	 * never invent one; a task with genuinely variable XP per kill simply
+	 * already-observed data: (Slayer XP gained this session / Slayer
+	 * task units consumed this session -- the same
+	 * {@link #getSlayerProgressDelta()} counter, a TASK-UNIT total,
+	 * never a physical NPC-kill count) multiplied by
+	 * {@link #getSlayerCurrentRemaining()}. Both the denominator and the
+	 * multiplied remaining value are task units, so this calculation
+	 * stays correct even when a physical kill consumes more or fewer
+	 * than one task unit (e.g. an expeditious-bracelet-style proc or a
+	 * bracelet-of-slaughter-style save) -- it naturally reflects the
+	 * observed XP-per-task-unit rate rather than assuming
+	 * XP-per-physical-kill. Never a hardcoded/Wiki per-monster XP
+	 * table -- this project has no such table and must never invent
+	 * one; a task with genuinely variable XP per task unit simply
 	 * yields a rougher estimate, which is exactly why the panel presents
 	 * this as an approximation ("~", not an exact figure). Null (render
 	 * nothing) whenever there are fewer than
-	 * {@link #MIN_SLAYER_KILLS_FOR_XP_ESTIMATE} counted kills, no
-	 * remaining count (including an already-complete task, which is
-	 * exactly {@code remaining == 0}), or no Slayer XP has actually been
-	 * observed yet this session.
+	 * {@link #MIN_SLAYER_TASK_UNITS_FOR_XP_ESTIMATE} task units
+	 * consumed, no remaining count (including an already-complete task,
+	 * which is exactly {@code remaining == 0}), or no Slayer XP has
+	 * actually been observed yet this session.
 	 */
 	public Long getEstimatedSlayerXpRemaining()
 	{
-		if (slayerProgressDelta == null || slayerProgressDelta < MIN_SLAYER_KILLS_FOR_XP_ESTIMATE
+		if (slayerProgressDelta == null || slayerProgressDelta < MIN_SLAYER_TASK_UNITS_FOR_XP_ESTIMATE
 			|| slayerCurrentRemaining == null || slayerCurrentRemaining <= 0)
 		{
 			return null;
@@ -648,29 +654,31 @@ public final class CurrentSessionSnapshot
 			return null;
 		}
 
-		double averageXpPerKill = (double) slayerXpGained / slayerProgressDelta;
-		long estimatedRemaining = Math.round(averageXpPerKill * slayerCurrentRemaining);
+		double averageXpPerTaskUnit = (double) slayerXpGained / slayerProgressDelta;
+		long estimatedRemaining = Math.round(averageXpPerTaskUnit * slayerCurrentRemaining);
 		return estimatedRemaining <= 0L ? null : estimatedRemaining;
 	}
 
 	/**
-	 * ADDED (Spyglass Phase 1D). The one reliable session kill/task-unit
-	 * count the Current Session loot header ("LOOT &#215;36") should
-	 * show, or null when nothing reliable is available -- never a
-	 * fabricated "0". Prefers the authoritative Slayer task-unit counter
-	 * (same as 1A/1B/1C, {@link #getSlayerProgressDelta()}) when this is
-	 * a Slayer session; otherwise falls back to the existing
+	 * ADDED (Spyglass Phase 1D); CORRECTED (Slayer task-unit/physical-
+	 * kill semantics audit): the reliable session PHYSICAL-KILL count
+	 * the Current Session loot header ("LOOT &#215;36") should show, or
+	 * null when nothing reliable is available -- never a fabricated
+	 * "0" and never a Slayer task-unit total standing in for a kill
+	 * count. Slayer task units ({@link #getSlayerProgressDelta()}) are
+	 * deliberately NOT used here: game mechanics can make one physical
+	 * kill consume more or fewer than one task unit (see that field's
+	 * own javadoc), so a task-unit total is not a physical-kill count
+	 * and must never be rendered as "&#215;N". Returns the existing
 	 * reliable-count mechanism (currently BOSS_KILL-sourced -- see
-	 * {@code SessionAggregates.ReliableCount}'s own javadoc) that the
-	 * header's own secondary line already surfaces. Introduces no new
-	 * counter of its own.
+	 * {@code SessionAggregates.ReliableCount}'s own javadoc) when one is
+	 * available for this session, and null otherwise -- an ordinary
+	 * Slayer session with no independently-authoritative kill count
+	 * renders a plain "LOOT" header, never a fabricated or mislabeled
+	 * count. Introduces no new counter of its own.
 	 */
 	public Integer getLootHeaderKillCount()
 	{
-		if (slayerProgressDelta != null && slayerProgressDelta > 0)
-		{
-			return slayerProgressDelta;
-		}
 		if (reliableCount != null && reliableCount.getSessionOccurrences() > 0)
 		{
 			return reliableCount.getSessionOccurrences();

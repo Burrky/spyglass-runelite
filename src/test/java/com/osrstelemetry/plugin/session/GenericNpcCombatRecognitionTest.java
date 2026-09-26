@@ -224,12 +224,25 @@ public class GenericNpcCombatRecognitionTest
 
 		assertEquals(bloodveld, engine.getCurrentSession().getActivityIdentity());
 		assertEquals(bloodveld, confirmed.getCurrent().getActivityIdentity());
-		assertEquals(spectre, confirmed.getFinalized().getActivityIdentity());
-		// T2-anchored: the old session finalizes at the CONFIRMING
-		// observation's own instant, never the first blip's T1, and
-		// never fabricates any activity time beyond what was proven.
-		assertEquals(confirmingInstant.toString(), confirmed.getFinalized().getFinalizedAt());
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the confirmed
+		// switch now PARKS spectre as the ONE resumable interrupted
+		// candidate instead of finalizing it immediately -- see
+		// SessionLifecycleEngine's own interruptedCandidate field
+		// javadoc. T2-anchoring (never the first blip's T1) still holds,
+		// it just now shows up as the parked candidate's own
+		// interruptedAt/eventual finalizedAt.
+		assertNull(confirmed.getFinalized());
+		assertEquals(spectre, engine.getInterruptedCandidate().getActivityIdentity());
+		assertEquals(confirmingInstant, engine.getInterruptedCandidateInterruptedAt());
 		assertEquals(confirmingInstant.toString(), confirmed.getCurrent().getStartedAt());
+
+		// Letting the interrupted-resume window elapse without returning
+		// proves the parked candidate eventually finalizes exactly as
+		// this test originally asserted synchronously, never fabricating
+		// any activity time beyond what was proven.
+		LifecycleResult expiry = engine.advanceTime(confirmingInstant.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(spectre, expiry.getAdditionalFinalized().getActivityIdentity());
+		assertEquals(confirmingInstant.toString(), expiry.getAdditionalFinalized().getFinalizedAt());
 	}
 
 	@Test

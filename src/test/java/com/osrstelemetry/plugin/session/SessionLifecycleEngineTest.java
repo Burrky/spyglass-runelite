@@ -228,14 +228,29 @@ public class SessionLifecycleEngineTest
 		SessionLifecycleEngine engine = new SessionLifecycleEngine();
 		String oldId = engine.onQualifyingActivity(GARGOYLES, T0).getCurrent().getSessionId();
 
-		LifecycleResult result = engine.onQualifyingActivity(ZULRAH, T0.plusSeconds(30));
+		Instant switchAt = T0.plusSeconds(30);
+		LifecycleResult result = engine.onQualifyingActivity(ZULRAH, switchAt);
 
-		assertEquals(SessionState.FINALIZED, result.getFinalized().getState());
-		assertEquals(oldId, result.getFinalized().getSessionId());
-		assertEquals(GARGOYLES, result.getFinalized().getActivityIdentity());
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): a genuine
+		// switch now PARKS the outgoing session as the ONE resumable
+		// interrupted candidate instead of finalizing it immediately --
+		// see SessionLifecycleEngine's own interruptedCandidate field
+		// javadoc. getFinalized() is null at this exact transition; the
+		// parked candidate carries what used to be asserted here.
+		assertNull(result.getFinalized());
+		assertEquals(oldId, engine.getInterruptedCandidate().getSessionId());
+		assertEquals(GARGOYLES, engine.getInterruptedCandidate().getActivityIdentity());
 		assertEquals(SessionState.ACTIVE, result.getCurrent().getState());
 		assertEquals(ZULRAH, result.getCurrent().getActivityIdentity());
 		assertNotEquals(oldId, result.getCurrent().getSessionId());
+
+		// Letting the interrupted-resume window elapse without returning
+		// proves the parked candidate eventually finalizes exactly as
+		// this test originally asserted synchronously.
+		LifecycleResult expiry = engine.advanceTime(switchAt.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(oldId, expiry.getAdditionalFinalized().getSessionId());
+		assertEquals(GARGOYLES, expiry.getAdditionalFinalized().getActivityIdentity());
 	}
 
 	@Test
@@ -263,11 +278,18 @@ public class SessionLifecycleEngineTest
 			.getCurrent().getAccumulatedActiveDurationMillis();
 
 		// A full two minutes pass before the switch to a different activity.
-		Session finalizedOld = engine.onQualifyingActivity(ZULRAH, T0.plusSeconds(11).plus(Duration.ofMinutes(2)))
-			.getFinalized();
+		engine.onQualifyingActivity(ZULRAH, T0.plusSeconds(11).plus(Duration.ofMinutes(2)));
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing
+		// session is now PARKED as the ONE interrupted candidate instead
+		// of finalized immediately -- its own accumulatedActiveDurationMillis
+		// is untouched by the switch either way (park never calls
+		// accumulate() any more than finalize ever did), so this
+		// assertion holds identically against the parked candidate.
+		Session parkedOld = engine.getInterruptedCandidate();
 
 		assertEquals("the old session's duration must stop at its own last evidence, never extended into the gap",
-			durationAtLastGargoylesHeartbeat, finalizedOld.getAccumulatedActiveDurationMillis());
+			durationAtLastGargoylesHeartbeat, parkedOld.getAccumulatedActiveDurationMillis());
 	}
 
 	// --- 16: exact resume-window boundary (event takes precedence) ---
@@ -957,22 +979,38 @@ public class SessionLifecycleEngineTest
 		LifecycleResult confirmed = engine.onQualifyingActivity(AGILITY, secondAgility,
 			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
 
-		assertEquals("a second, coherent observation of the same candidate identity confirms the switch "
-			+ "once the established session's inertia has decayed enough to allow it",
-			SessionState.FINALIZED, confirmed.getFinalized().getState());
-		assertEquals(originalId, confirmed.getFinalized().getSessionId());
-		assertEquals(GARGOYLES, confirmed.getFinalized().getActivityIdentity());
-		assertEquals("DESIGN CORRECTION: the established ACTIVE session must finalize at T2 (the "
-			+ "confirming observation's own timestamp), never backdated to T1 (the candidate's "
-			+ "first-seen instant) -- the session was genuinely still ACTIVE for the whole T1..T2 gap, "
-			+ "so no historical boundary is fabricated from ambiguous evidence",
-			secondAgility.toString(), confirmed.getFinalized().getFinalizedAt());
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the confirmed
+		// switch now PARKS Gargoyles as the ONE resumable interrupted
+		// candidate instead of finalizing it immediately at T2 -- see
+		// SessionLifecycleEngine's own interruptedCandidate field
+		// javadoc. This is deliberate, per the interrupted-resume
+		// feature's own design: the DESIGN CORRECTION this test protects
+		// (T2 anchoring, never T1) still holds -- it just now shows up as
+		// the parked candidate's own interruptedAt/eventual finalizedAt,
+		// verified below by letting its window elapse.
+		assertNull("the outgoing session is PARKED, not finalized, at the moment of confirmation",
+			confirmed.getFinalized());
+		assertEquals(originalId, engine.getInterruptedCandidate().getSessionId());
+		assertEquals(GARGOYLES, engine.getInterruptedCandidate().getActivityIdentity());
+		assertEquals("DESIGN CORRECTION preserved: the interruption instant is T2 (the confirming "
+			+ "observation's own timestamp), never backdated to T1",
+			secondAgility, engine.getInterruptedCandidateInterruptedAt());
 
 		assertEquals(SessionState.ACTIVE, confirmed.getCurrent().getState());
 		assertEquals(AGILITY, confirmed.getCurrent().getActivityIdentity());
 		assertNotEquals(originalId, confirmed.getCurrent().getSessionId());
 		assertEquals("DESIGN CORRECTION: the new session must start at T2, never T1",
 			secondAgility.toString(), confirmed.getCurrent().getStartedAt());
+
+		// Letting the interrupted-resume window elapse without returning
+		// proves the parked candidate eventually finalizes exactly as
+		// this test originally asserted synchronously, still anchored at
+		// T2, never T1.
+		LifecycleResult expiry = engine.advanceTime(secondAgility.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(originalId, expiry.getAdditionalFinalized().getSessionId());
+		assertEquals(GARGOYLES, expiry.getAdditionalFinalized().getActivityIdentity());
+		assertEquals(secondAgility.toString(), expiry.getAdditionalFinalized().getFinalizedAt());
 	}
 
 	// =====================================================================
@@ -1042,14 +1080,23 @@ public class SessionLifecycleEngineTest
 		LifecycleResult confirmed = engine.onQualifyingActivity(COOKING, secondCooking,
 			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
 
-		assertEquals("a second coherent observation confirms once the established session's inertia has "
-			+ "decayed to the floor -- materially sooner than requiring indefinitely more repetition",
-			SessionState.FINALIZED, confirmed.getFinalized().getState());
-		assertEquals(originalId, confirmed.getFinalized().getSessionId());
-		assertEquals(CRAFTING, confirmed.getFinalized().getActivityIdentity());
-		assertEquals(secondCooking.toString(), confirmed.getFinalized().getFinalizedAt());
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): PARKED, not
+		// finalized, at confirmation -- see the test above's own comment
+		// for the full rationale.
+		assertNull(confirmed.getFinalized());
+		assertEquals(originalId, engine.getInterruptedCandidate().getSessionId());
+		assertEquals(CRAFTING, engine.getInterruptedCandidate().getActivityIdentity());
+		assertEquals(secondCooking, engine.getInterruptedCandidateInterruptedAt());
 		assertEquals(SessionState.ACTIVE, confirmed.getCurrent().getState());
 		assertEquals(COOKING, confirmed.getCurrent().getActivityIdentity());
+
+		LifecycleResult expiry = engine.advanceTime(secondCooking.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals("a second coherent observation confirms once the established session's inertia has "
+			+ "decayed to the floor -- materially sooner than requiring indefinitely more repetition",
+			SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(originalId, expiry.getAdditionalFinalized().getSessionId());
+		assertEquals(CRAFTING, expiry.getAdditionalFinalized().getActivityIdentity());
+		assertEquals(secondCooking.toString(), expiry.getAdditionalFinalized().getFinalizedAt());
 	}
 
 	// Required regression: "continuing current-activity evidence
@@ -1100,9 +1147,330 @@ public class SessionLifecycleEngineTest
 		Instant finalCooking = T0.plusSeconds(105);
 		LifecycleResult confirmed = engine.onQualifyingActivity(COOKING, finalCooking,
 			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
-		assertEquals(SessionState.FINALIZED, confirmed.getFinalized().getState());
-		assertEquals(originalId, confirmed.getFinalized().getSessionId());
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): PARKED, not
+		// finalized, at confirmation.
+		assertNull(confirmed.getFinalized());
+		assertEquals(originalId, engine.getInterruptedCandidate().getSessionId());
 		assertEquals(COOKING, confirmed.getCurrent().getActivityIdentity());
+
+		LifecycleResult expiry = engine.advanceTime(finalCooking.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(originalId, expiry.getAdditionalFinalized().getSessionId());
+	}
+
+	// =====================================================================
+	// DOWNRANKING COMBAT CHALLENGE: a generic COMBAT candidate challenging
+	// an established SLAYER/BOSSING session requires
+	// ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS (3) coherent observations,
+	// flat and non-decaying -- conservative because current telemetry
+	// cannot distinguish an encounter's own subordinate NPCs (e.g. a
+	// Death Spawn) from a genuinely unrelated off-task NPC, so the same
+	// requirement applies to both. Same-rank COMBAT-vs-COMBAT and SKILLING
+	// candidates are unaffected.
+	// =====================================================================
+
+	private static final ActivityIdentity NECHRYAEL =
+		new ActivityIdentity(ActivityType.SLAYER, "nechryael:slayer tower", "Nechryael");
+
+	// Two Death Spawn observations, even 200 seconds apart, must not
+	// confirm -- proves there is no time-based decay in this requirement.
+	@Test
+	public void downrankingCombatChallenge_twoConfirmations_neverSufficesRegardlessOfElapsedTime_noTimeBasedErosion()
+	{
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		String nechryaelId = engine.onQualifyingActivity(NECHRYAEL, T0).getCurrent().getSessionId();
+		ActivityIdentity deathSpawn = ActivitySignalClassifier.genericNpcCombatIdentity("Death Spawn");
+
+		LifecycleResult afterFirst = engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(2),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		assertNull("the first Death Spawn observation only arms a candidate", afterFirst.getFinalized());
+		assertEquals(NECHRYAEL, afterFirst.getCurrent().getActivityIdentity());
+
+		LifecycleResult afterSecond = engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(200),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		assertNull("a SECOND Death Spawn observation must never be enough to displace an ACTIVE "
+			+ "Nechryael session, no matter how much wall-clock time has passed since Nechryael's own "
+			+ "last reinforcement -- ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS is a flat 3 with no "
+			+ "time-based erosion of any kind",
+			afterSecond.getFinalized());
+		assertEquals("the Nechryael session must remain completely untouched -- same identity, same "
+			+ "sessionId, no fragmentation", NECHRYAEL, afterSecond.getCurrent().getActivityIdentity());
+		assertEquals(nechryaelId, afterSecond.getCurrent().getSessionId());
+		assertEquals(SessionState.ACTIVE, afterSecond.getCurrent().getState());
+	}
+
+	// GENERALIZED OWNERSHIP/CHURN FIX (live QA cases: Nechryael/Death Spawn,
+	// and Kalphite Workers -- the second reproducing WITHOUT any subordinate
+	// actor at all, proving a flat observation count alone was the defect,
+	// not anything subordinate-specific). Three coherent Death Spawn
+	// observations landing within a handful of real seconds -- exactly what
+	// continuous combat against a recurring subordinate/family-registry-gap
+	// NPC produces -- must NOT confirm: ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS
+	// (an observation COUNT) is necessary but no longer sufficient by itself;
+	// ACTIVE_DOWNRANK_SUSTAINED_DURATION (a real elapsed-time SPAN) must also
+	// be satisfied. This test replaces the prior (incorrect) expectation that
+	// three closely-spaced observations alone were enough -- that was the
+	// live-reproduced bug.
+	@Test
+	public void downrankingCombatChallenge_thirdCoherentConfirmationButNotSustained_staysArmed_doesNotConfirm()
+	{
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		String nechryaelId = engine.onQualifyingActivity(NECHRYAEL, T0).getCurrent().getSessionId();
+		ActivityIdentity deathSpawn = ActivitySignalClassifier.genericNpcCombatIdentity("Death Spawn");
+
+		engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(2),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(4),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+
+		Instant thirdAt = T0.plusSeconds(6);
+		LifecycleResult afterThird = engine.onQualifyingActivity(deathSpawn, thirdAt,
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+
+		assertNull("a THIRD coherent Death Spawn observation, only 6 seconds after the first, "
+			+ "has not yet SPANNED ACTIVE_DOWNRANK_SUSTAINED_DURATION -- it must stay armed, not "
+			+ "confirm -- this is the exact live-QA Nechryael churn this fix closes",
+			afterThird.getFinalized());
+		assertEquals("the Nechryael session must remain completely untouched",
+			NECHRYAEL, afterThird.getCurrent().getActivityIdentity());
+		assertEquals(nechryaelId, afterThird.getCurrent().getSessionId());
+		assertEquals(SessionState.ACTIVE, afterThird.getCurrent().getState());
+		assertNull("no interrupted candidate is parked -- nothing was confirmed",
+			engine.getInterruptedCandidate());
+	}
+
+	// A downranking challenger that genuinely SUSTAINS -- its own
+	// observations spanning at least ACTIVE_DOWNRANK_SUSTAINED_DURATION,
+	// with no intervening Nechryael reinforcement -- still confirms.
+	// "Slayer + genuinely unrelated/off-task sustained combat -> eventually
+	// allowed to leave Slayer" must keep holding; the fix raises the bar, it
+	// never makes an ACTIVE Slayer/Bossing session impossible to leave.
+	@Test
+	public void downrankingCombatChallenge_thirdConfirmationGenuinelySustained_confirmsSwitch()
+	{
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		String nechryaelId = engine.onQualifyingActivity(NECHRYAEL, T0).getCurrent().getSessionId();
+		ActivityIdentity deathSpawn = ActivitySignalClassifier.genericNpcCombatIdentity("Death Spawn");
+
+		engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(2),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(30),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+
+		// Comfortably past ACTIVE_DOWNRANK_SUSTAINED_DURATION (derived from
+			// SUSPEND_TIMEOUT / 5 = 60s) measured from the FIRST observation
+			// (T0+2), never from the second.
+		Instant thirdAt = T0.plusSeconds(75);
+		LifecycleResult afterThird = engine.onQualifyingActivity(deathSpawn, thirdAt,
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+
+		assertNull("a third observation that has now genuinely SUSTAINED past the required "
+			+ "elapsed span must confirm (park, not immediately finalize)",
+			afterThird.getFinalized());
+		assertEquals(nechryaelId, engine.getInterruptedCandidate().getSessionId());
+		assertEquals(NECHRYAEL, engine.getInterruptedCandidate().getActivityIdentity());
+		assertEquals(thirdAt, engine.getInterruptedCandidateInterruptedAt());
+		assertEquals(ActivityType.COMBAT, afterThird.getCurrent().getActivityIdentity().getActivityType());
+		assertEquals(deathSpawn, afterThird.getCurrent().getActivityIdentity());
+		assertNotEquals(nechryaelId, afterThird.getCurrent().getSessionId());
+
+		LifecycleResult expiry = engine.advanceTime(thirdAt.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(nechryaelId, expiry.getAdditionalFinalized().getSessionId());
+		assertEquals(NECHRYAEL, expiry.getAdditionalFinalized().getActivityIdentity());
+		assertEquals(thirdAt.toString(), expiry.getAdditionalFinalized().getFinalizedAt());
+	}
+
+	// LIVE QA CASE 1 shape (Nechryael): periodic authoritative reinforcement
+	// (mirroring recurring SLAYER_TASK_PROGRESS heartbeats a few seconds
+	// apart) interleaved with repeated Death Spawn bursts, across several
+	// minutes of simulated continuous play. Because every reinforcing tick
+	// resets the downranking candidate's span to zero, it can never
+	// accumulate ACTIVE_DOWNRANK_SUSTAINED_DURATION of uninterrupted
+	// candidacy -- the session must never churn away from SLAYER even once.
+	@Test
+	public void liveQaCase1Shape_periodicNechryaelReinforcementBetweenDeathSpawnBursts_neverChurnsAcrossLongPlay()
+	{
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		String nechryaelId = engine.onQualifyingActivity(NECHRYAEL, T0).getCurrent().getSessionId();
+		ActivityIdentity deathSpawn = ActivitySignalClassifier.genericNpcCombatIdentity("Death Spawn");
+
+		Instant t = T0;
+		LifecycleResult afterReinforcement = null;
+		for (int cycle = 0; cycle < 20; cycle++)
+		{
+			// Two closely-spaced Death Spawn bursts (arm + one repeat),
+			// exactly like the live QA telemetry -- never a third before
+			// the next reinforcement resets them.
+			t = t.plusSeconds(3);
+			engine.onQualifyingActivity(deathSpawn, t,
+				Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+			t = t.plusSeconds(1);
+			LifecycleResult afterBurst = engine.onQualifyingActivity(deathSpawn, t,
+				Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+			assertEquals("cycle " + cycle + ": Nechryael must still be current after two Death "
+				+ "Spawn observations", nechryaelId, afterBurst.getCurrent().getSessionId());
+
+			// Authoritative Nechryael reinforcement (e.g. the next
+			// SLAYER_TASK_PROGRESS tick) resets the candidate entirely.
+			t = t.plusSeconds(3);
+			afterReinforcement = engine.onQualifyingActivity(NECHRYAEL, t);
+			assertEquals("cycle " + cycle + ": reinforcement must keep the SAME Nechryael session, "
+				+ "never fragmenting", nechryaelId, afterReinforcement.getCurrent().getSessionId());
+			assertNull("cycle " + cycle + ": nothing should ever be finalized across this entire "
+				+ "reproduction", afterReinforcement.getFinalized());
+		}
+
+		// afterReinforcement is the LAST call made to the engine (this loop's
+		// final iteration), so its own getCurrent() reflects the engine's
+		// exact final state -- the same observation mechanism every other
+		// test in this suite already uses (LifecycleResult.getCurrent()), not
+		// a standalone engine-level accessor.
+		assertEquals("after 20 full burst/reinforcement cycles (several simulated minutes of "
+			+ "continuous play), the session must still be the ONE original Nechryael session -- no "
+			+ "churn, ever", nechryaelId, afterReinforcement.getCurrent().getSessionId());
+		assertEquals(NECHRYAEL, afterReinforcement.getCurrent().getActivityIdentity());
+		assertNull("no interrupted candidate should ever have been parked", engine.getInterruptedCandidate());
+	}
+
+	// LIVE QA CASE 2 shape (Kalphite Workers): explicitly reproduced WITHOUT
+	// any subordinate/minion actor at all -- "Kalphite Worker" is simply the
+	// task's own on-task monster name, which SlayerTaskFamilyRegistry does not
+	// (and, per Josh's instruction, must not be patched to) list as an alias
+	// of "Kalphites", so every one of its combat-XP ticks is honestly
+	// proposed as an off-task ORDINARY candidate. Proves the fix is a pure
+	// evidence-precedence/timing correction, not anything parent/subordinate-
+	// specific: the SAME periodic-reinforcement-resets-the-candidate shape
+	// prevents churn here too, with zero registry changes.
+	@Test
+	public void liveQaCase2Shape_kalphiteWorkerRepeatedCombatNoSubordinateActor_neverChurnsAcrossLongPlay()
+	{
+		ActivityIdentity kalphites =
+			new ActivityIdentity(ActivityType.SLAYER, "kalphites@kalphite lair", "Kalphites");
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		String kalphitesId = engine.onQualifyingActivity(kalphites, T0).getCurrent().getSessionId();
+		ActivityIdentity kalphiteWorker = ActivitySignalClassifier.genericNpcCombatIdentity("Kalphite Worker");
+
+		Instant t = T0;
+		LifecycleResult afterReinforcement = null;
+		for (int cycle = 0; cycle < 20; cycle++)
+		{
+			t = t.plusSeconds(1);
+			engine.onQualifyingActivity(kalphiteWorker, t,
+				Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+			t = t.plusSeconds(1);
+			LifecycleResult afterBurst = engine.onQualifyingActivity(kalphiteWorker, t,
+				Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+			assertEquals("cycle " + cycle + ": Kalphites must still be current after two Kalphite "
+				+ "Worker observations", kalphitesId, afterBurst.getCurrent().getSessionId());
+
+			t = t.plusSeconds(2);
+			afterReinforcement = engine.onQualifyingActivity(kalphites, t);
+			assertEquals("cycle " + cycle + ": Slayer task-progress reinforcement must keep the SAME "
+				+ "Kalphites session, never fragmenting into generic COMBAT/Kalphite Worker",
+				kalphitesId, afterReinforcement.getCurrent().getSessionId());
+			assertEquals(ActivityType.SLAYER, afterReinforcement.getCurrent().getActivityIdentity().getActivityType());
+		}
+
+		// afterReinforcement is the LAST call made to the engine (this loop's
+		// final iteration), so its own getCurrent() reflects the engine's
+		// exact final state -- the same observation mechanism every other
+		// test in this suite already uses (LifecycleResult.getCurrent()), not
+		// a standalone engine-level accessor.
+		assertEquals("one continuous, uninterrupted Kalphites Slayer task must produce exactly "
+			+ "one session, never the SLAYER -> COMBAT -> SLAYER churn the live QA video showed",
+			kalphitesId, afterReinforcement.getCurrent().getSessionId());
+		assertNull(engine.getInterruptedCandidate());
+	}
+
+	// Owner evidence returning before the third confirmation abandons the
+	// challenger and preserves the same sessionId.
+	@Test
+	public void downrankingCombatChallenge_ownerEvidenceReturnsBeforeThirdConfirmation_abandonsChallengerPreservesSessionId()
+	{
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		String nechryaelId = engine.onQualifyingActivity(NECHRYAEL, T0).getCurrent().getSessionId();
+		ActivityIdentity deathSpawn = ActivitySignalClassifier.genericNpcCombatIdentity("Death Spawn");
+
+		// Two Death Spawn observations -- arms, then repeats, but never
+		// reaches the 3-confirmation requirement.
+		engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(2),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(4),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+
+		// Nechryael's own evidence returns (e.g. another
+		// SLAYER_TASK_PROGRESS tick) before a third Death Spawn
+		// observation ever arrives.
+		LifecycleResult reinforced = engine.onQualifyingActivity(NECHRYAEL, T0.plusSeconds(6));
+		assertNull("owner evidence returning must abandon the pending challenger, not finalize anything",
+			reinforced.getFinalized());
+		assertEquals(NECHRYAEL, reinforced.getCurrent().getActivityIdentity());
+		assertEquals(nechryaelId, reinforced.getCurrent().getSessionId());
+
+		// The abandonment must be genuine, not merely delayed: a further
+		// Death Spawn observation right after reinforcement is only the
+		// candidate's first observation since the reset, so it alone
+		// must not confirm either.
+		LifecycleResult notYetConfirmed = engine.onQualifyingActivity(deathSpawn, T0.plusSeconds(8),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		assertNull("reinforcement must genuinely reset the downranking challenger's progress -- this is "
+			+ "only its first observation since Nechryael's own evidence returned",
+			notYetConfirmed.getFinalized());
+		assertEquals(NECHRYAEL, notYetConfirmed.getCurrent().getActivityIdentity());
+		assertEquals(nechryaelId, notYetConfirmed.getCurrent().getSessionId());
+	}
+
+	// Same-rank COMBAT-vs-COMBAT is explicitly NOT a downranking
+	// challenge -- an established generic COMBAT session gets no extra
+	// inertia against another generic COMBAT candidate, exactly as before
+	// this fix (the separately-tuned generic-NPC-recognition system is
+	// left completely untouched).
+	@Test
+	public void sameRankCombatVsCombatChallenge_unaffectedByDownrankTreatment_confirmsAtFlatFloor()
+	{
+		SessionLifecycleEngine engine = new SessionLifecycleEngine();
+		ActivityIdentity cow = ActivitySignalClassifier.genericNpcCombatIdentity("Cow");
+		ActivityIdentity goat = ActivitySignalClassifier.genericNpcCombatIdentity("Goat");
+		String cowSessionId = engine.onQualifyingActivity(cow, T0).getCurrent().getSessionId();
+
+		engine.onQualifyingActivity(goat, T0.plusSeconds(2),
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+		Instant confirmAt = T0.plusSeconds(4);
+		LifecycleResult confirmed = engine.onQualifyingActivity(goat, confirmAt,
+			Collections.<MetricUpdate>emptyList(), EvidenceStrength.ORDINARY);
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): PARKED, not
+		// finalized, at confirmation.
+		assertNull("a same-rank generic-combat challenger must still confirm (park) at the flat floor "
+			+ "(2), unaffected by the downranking-challenge decay treatment -- it is never NPC-specific, "
+			+ "only rank-based, and COMBAT-vs-COMBAT is same-rank", confirmed.getFinalized());
+		assertEquals(cowSessionId, engine.getInterruptedCandidate().getSessionId());
+		assertEquals(goat, confirmed.getCurrent().getActivityIdentity());
+
+		LifecycleResult expiry = engine.advanceTime(confirmAt.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(cowSessionId, expiry.getAdditionalFinalized().getSessionId());
+	}
+
+	// isDownrankingCombatChallenge() scope: candidateType == COMBAT AND
+	// establishedType in {SLAYER, BOSSING} -- exactly, nothing broader.
+	@Test
+	public void isDownrankingCombatChallenge_scopedToGenericCombatCandidateAgainstSlayerOrBossing() throws Exception
+	{
+		Method method = SessionLifecycleEngine.class.getDeclaredMethod(
+			"isDownrankingCombatChallenge", ActivityType.class, ActivityType.class);
+		method.setAccessible(true);
+
+		assertTrue((Boolean) method.invoke(null, ActivityType.SLAYER, ActivityType.COMBAT));
+		assertTrue((Boolean) method.invoke(null, ActivityType.BOSSING, ActivityType.COMBAT));
+		assertFalse("same-rank COMBAT vs. COMBAT is not a downranking challenge",
+			(Boolean) method.invoke(null, ActivityType.COMBAT, ActivityType.COMBAT));
+		assertFalse("a SLAYER candidate is never a downranking challenge, even against BOSSING",
+			(Boolean) method.invoke(null, ActivityType.BOSSING, ActivityType.SLAYER));
+		assertFalse("a BOSSING candidate is never a downranking challenge, even against SLAYER",
+			(Boolean) method.invoke(null, ActivityType.SLAYER, ActivityType.BOSSING));
 	}
 
 	// Required regression: "suspended session requires materially less
@@ -1193,13 +1561,23 @@ public class SessionLifecycleEngineTest
 		LifecycleResult result = engine.onQualifyingActivity(AGILITY, observedAt,
 			Collections.<MetricUpdate>emptyList(), EvidenceStrength.SPECIFIC);
 
-		assertEquals("SPECIFIC evidence must never be gated behind confirmation, even against an ACTIVE "
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): "never gated
+		// behind confirmation" still holds -- SPECIFIC evidence still
+		// switches at this single observation, with no confirmation
+		// delay -- it is now PARKED rather than immediately finalized,
+		// exactly like every other genuine real switch.
+		assertNull("SPECIFIC evidence must never be gated behind confirmation, even against an ACTIVE "
 			+ "combat-branch session and even for a non-combat-branch candidate identity",
-			SessionState.FINALIZED, result.getFinalized().getState());
-		assertEquals(originalId, result.getFinalized().getSessionId());
+			result.getFinalized());
+		assertEquals(originalId, engine.getInterruptedCandidate().getSessionId());
 		assertEquals(AGILITY, result.getCurrent().getActivityIdentity());
 		assertEquals("no confirmation delay -- the switch happens at this single observation's own "
-			+ "timestamp", observedAt.toString(), result.getFinalized().getFinalizedAt());
+			+ "timestamp", observedAt, engine.getInterruptedCandidateInterruptedAt());
+
+		LifecycleResult expiry = engine.advanceTime(observedAt.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+		assertEquals(SessionState.FINALIZED, expiry.getAdditionalFinalized().getState());
+		assertEquals(originalId, expiry.getAdditionalFinalized().getSessionId());
+		assertEquals(observedAt.toString(), expiry.getAdditionalFinalized().getFinalizedAt());
 	}
 
 	// A pending ACTIVE candidate that never gets its confirming second

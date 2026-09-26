@@ -191,11 +191,55 @@ import java.util.UUID;
  * since that reinforcement grows, fully decayed by
  * ACTIVE_INERTIA_DECAY_PERIOD (derived as a fraction of the EXISTING
  * SUSPEND_TIMEOUT constant, not a new independent time value). This
- * peak/decay treatment is deliberately scoped to a non-combat-branch
- * (SKILLING) candidate identity only -- see activeRequiredConfirmations()'s
- * own javadoc for why the separately-tuned, much-faster-cadence generic-
- * NPC-recognition system (combat-branch vs. combat-branch) is left
- * completely untouched, always at the flat floor.
+ * peak/decay treatment is scoped to a non-combat-branch (SKILLING)
+ * candidate identity ONLY.
+ *
+ * DOWNRANKING COMBAT CHALLENGE: a generic COMBAT candidate challenging
+ * an established SLAYER/BOSSING session needs a flat, non-decaying
+ * ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS (3) -- conservative because
+ * current telemetry cannot distinguish an encounter's own subordinate
+ * NPCs from a genuinely unrelated off-task NPC. Same-rank COMBAT-vs-
+ * COMBAT and SKILLING candidates are unaffected.
+ *
+ * DOWNRANKING COMBAT CHALLENGE, SUSTAINED-DURATION REQUIREMENT (generalized
+ * evidence-precedence/ownership fix -- live QA: an ACTIVE SLAYER/Nechryael
+ * session was demoted to generic COMBAT/"Greater Nechryael" within ~3.5s
+ * of its own authoritative SLAYER_TASK_PROGRESS reinforcement; separately,
+ * an ACTIVE SLAYER/Kalphites session -- fought with NO subordinate/minion
+ * actor involved at all, proving this is not a parent/subordinate-specific
+ * gap -- repeatedly churned SLAYER -&gt; generic COMBAT -&gt; SLAYER across one
+ * single uninterrupted task, because "Kalphite Worker"/"Kalphite Soldier"/
+ * etc. are the task's own on-task monster names yet are not literally the
+ * task's singular-stripped display name, so every one of their ordinary
+ * combat-XP ticks is honestly proposed as an off-task ORDINARY candidate).
+ * A flat OBSERVATION COUNT alone cannot tell a genuinely sustained,
+ * deliberate off-task switch apart from a brief, incidental run of
+ * same-named evidence: during continuous combat, RAW_COMBAT_XP_OBSERVED
+ * fires on nearly every hit, so ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS (3)
+ * coherent observations of the identical candidate name can land within a
+ * handful of real seconds -- long before the established session's own
+ * next authoritative reinforcement would naturally arrive and reset it.
+ * A downranking candidate must therefore ALSO span real elapsed wall-clock
+ * time -- ACTIVE_DOWNRANK_SUSTAINED_DURATION -- between its own first-seen
+ * observation and its confirming one, on top of (never instead of) the
+ * existing observation-count floor. This is evidence-name-agnostic: it
+ * never inspects an NPC name, never consults SlayerTaskFamilyRegistry, and
+ * never special-cases Death Spawn, Kalphite Worker, or any other single
+ * identity -- it generalizes to any future parent/subordinate case (boss
+ * adds, Slayer summons/minions, multi-actor encounters) and to any current
+ * family-registry coverage gap alike, because both failure modes share the
+ * exact same shape: a challenger identity that keeps naturally recurring
+ * WHILE the established activity is still genuinely ongoing. A session that
+ * keeps receiving its OWN reinforcing evidence (a family-recognized combat
+ * tick, or an authoritative SLAYER_TASK_PROGRESS/BOSS_ACTIVITY_CONTEXT for
+ * the SAME activity) resets this candidate entirely via the pre-existing
+ * same-identity heartbeat path, long before either bar is reached in
+ * realistic play -- so a task that is genuinely still being worked stays
+ * one continuous session, while genuinely sustained, deliberate off-task
+ * combat (requirement: "eventually allowed to leave Slayer") still confirms
+ * once it has actually run long enough to prove itself. See
+ * ACTIVE_DOWNRANK_SUSTAINED_DURATION's own field javadoc for the exact
+ * value and derivation.
  *
  * This is deliberately NOT a fixed time lock: nothing here ever
  * switches a session by elapsed time alone. The decay only ever LOWERS
@@ -237,6 +281,16 @@ public final class SessionLifecycleEngine
 {
 	public static final Duration SUSPEND_TIMEOUT = Duration.ofMinutes(5);
 	public static final Duration RESUME_WINDOW = Duration.ofMinutes(30);
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). How long a
+	 * genuinely displaced ACTIVE session (see the INTERRUPTED-RESUME
+	 * CANDIDATE trio below) stays resumable after a real switch away
+	 * from it, before it permanently finalizes instead. Deliberately
+	 * an ALIAS for the existing SUSPEND_TIMEOUT constant, per explicit
+	 * instruction -- not a new, independently-tuned magic duration.
+	 */
+	public static final Duration INTERRUPTED_RESUME_WINDOW = SUSPEND_TIMEOUT;
 
 	/**
 	 * EVIDENCE-WEIGHTED HYSTERESIS (see class javadoc). SUSPENDED's own
@@ -287,6 +341,29 @@ public final class SessionLifecycleEngine
 	 * by itself -- see class javadoc's "not a fixed time lock" note.
 	 */
 	private static final Duration ACTIVE_INERTIA_DECAY_PERIOD = SUSPEND_TIMEOUT.dividedBy(5);
+
+	/**
+	 * Required confirmations for a generic COMBAT candidate downranking
+	 * an established SLAYER/BOSSING session -- flat, with no time-based
+	 * decay. Conservative because current telemetry cannot distinguish an
+	 * encounter's own subordinate NPCs (e.g. a Death Spawn) from a
+	 * genuinely unrelated off-task NPC; applies uniformly to both.
+	 */
+	private static final int ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS = 3;
+
+	/**
+	 * DOWNRANKING COMBAT CHALLENGE, SUSTAINED-DURATION REQUIREMENT (see class
+	 * javadoc). The minimum real elapsed wall-clock span, between a
+	 * downranking candidate's own first-seen observation and its would-be
+	 * confirming one, required before it may confirm -- on top of (never
+	 * instead of) ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS. Deliberately
+	 * derived as the SAME already-vetted fraction of SUSPEND_TIMEOUT this
+	 * class already uses for ACTIVE_INERTIA_DECAY_PERIOD, rather than a new,
+	 * independent magic duration -- comfortably longer than the few-second
+	 * bursts a recurring subordinate/family-registry-gap NPC produces during
+	 * continuous combat, and comfortably shorter than SUSPEND_TIMEOUT itself.
+	 */
+	private static final Duration ACTIVE_DOWNRANK_SUSTAINED_DURATION = ACTIVE_INERTIA_DECAY_PERIOD;
 
 	private Session current;
 
@@ -368,6 +445,42 @@ public final class SessionLifecycleEngine
 	 */
 	private int activeCandidateObservationCount;
 
+	/**
+	 * INTERRUPTED-RESUME CANDIDATE (A -&gt; brief B -&gt; A). At most ONE
+	 * interrupted-but-resumable PRIOR session at any time -- no stack,
+	 * no tree. Populated only by a REAL switch away from a genuinely
+	 * ACTIVE session (see applyRealSwitch()); never by a SUSPENDED
+	 * session's own real switch (that keeps its existing, completely
+	 * separate finalize-immediately behavior -- see applyRealSwitch()'s
+	 * own javadoc for why this is scoped to the ACTIVE branch only).
+	 *
+	 * This is a FULL Session object -- the exact same one that was
+	 * `current` immediately before the switch, carrying its own
+	 * sessionId/startedAt/aggregates untouched -- never finalized at
+	 * park time. It stops being "current" (getCurrentSession() no
+	 * longer returns it) but is not yet immutable History either; see
+	 * expireInterruptedCandidateIfNeeded()/tryResumeInterruptedCandidate()/
+	 * applyRealSwitch() for the three ways it is ultimately resolved:
+	 * resumed (the same identity returns within the window), expired
+	 * (the window elapses with nothing checking in), or displaced (a
+	 * SECOND real switch happens while this one is still parked -- the
+	 * one-candidate-only rule finalizes this one and the new outgoing
+	 * session becomes the sole candidate instead).
+	 *
+	 * Deliberately in-memory fields here, exactly like the two
+	 * candidate trios above -- SessionPersistence/SessionRuntimeCoordinator
+	 * own the SEPARATE, additive interrupted_candidate.json record that
+	 * makes this survive a restart; this engine itself has no I/O and
+	 * no wall-clock reads, matching every other field in this class.
+	 */
+	private Session interruptedCandidate;
+
+	/** The exact instant `interruptedCandidate` stopped being current (T1). */
+	private Instant interruptedCandidateInterruptedAt;
+
+	/** interruptedCandidateInterruptedAt + INTERRUPTED_RESUME_WINDOW -- the deterministic eligibility boundary. */
+	private Instant interruptedCandidateExpiresAt;
+
 	public SessionLifecycleEngine()
 	{
 		this.current = null;
@@ -382,6 +495,53 @@ public final class SessionLifecycleEngine
 	public Session getCurrentSession()
 	{
 		return current;
+	}
+
+	/**
+	 * The one interrupted/resumable prior session, if any -- see the
+	 * field's own javadoc. Null whenever nothing is parked. Read-only:
+	 * external code (persistence, tests) may inspect this, but only
+	 * SessionLifecycleEngine's own methods ever transition it.
+	 */
+	public Session getInterruptedCandidate()
+	{
+		return interruptedCandidate;
+	}
+
+	/** The interrupted candidate's own T1 (interruption instant), or null if none is parked. */
+	public Instant getInterruptedCandidateInterruptedAt()
+	{
+		return interruptedCandidateInterruptedAt;
+	}
+
+	/** The interrupted candidate's eligibility-expiry instant (T1 + INTERRUPTED_RESUME_WINDOW), or null if none is parked. */
+	public Instant getInterruptedCandidateExpiresAt()
+	{
+		return interruptedCandidateExpiresAt;
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). Unconditionally
+	 * resolves the ONE parked interrupted candidate, if any, by
+	 * finalizing it now, AT ITS OWN ORIGINAL INTERRUPTION INSTANT --
+	 * never at the current wall-clock time. For
+	 * SessionRuntimeCoordinator's account-switch and orderly-shutdown
+	 * paths only: "no candidate may disappear silently" -- both call
+	 * this unconditionally so a still-parked candidate is never
+	 * dropped, never silently carried over into a different account's
+	 * engine, and never attributed to a new account. Idempotent: returns
+	 * null on every call after the first (the fields are cleared here).
+	 * Never touches `current` at all.
+	 */
+	public Session flushInterruptedCandidateForAccountBoundary()
+	{
+		if (interruptedCandidate == null)
+		{
+			return null;
+		}
+		Session finalized = finalizeSession(interruptedCandidate, interruptedCandidateInterruptedAt);
+		clearInterruptedCandidate();
+		return finalized;
 	}
 
 	/**
@@ -422,6 +582,40 @@ public final class SessionLifecycleEngine
 	 * WEAK-EVIDENCE GATE, GENERALIZED TO ACTIVE" section.
 	 */
 	public LifecycleResult onQualifyingActivity(ActivityIdentity identity, Instant observedAt, List<MetricUpdate> metrics, EvidenceStrength strength)
+	{
+		return onQualifyingActivity(identity, observedAt, metrics, strength, true);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). Identical
+	 * to the 4-arg overload, except `allowInterruptedResume` controls
+	 * whether a genuine ACTIVE-branch real switch (decided exactly as
+	 * before, by the existing, untouched hysteresis/classifier rules)
+	 * is allowed to park the outgoing session as the ONE resumable
+	 * interrupted candidate (see applyRealSwitch()) rather than
+	 * finalizing it immediately, and whether a return to that parked
+	 * candidate is allowed to resume it. Pass false ONLY from the
+	 * manual "Re-evaluate Session" path -- a manual identity correction
+	 * must never manufacture a hidden resumable prior session/History
+	 * entry; every other caller (SessionRuntimeCoordinator's ordinary
+	 * signal processing) always uses true, via the 4-arg overload
+	 * above.
+	 *
+	 * Also runs the same background interrupted-candidate-expiry
+	 * housekeeping every other timestamped entry point performs (see
+	 * expireInterruptedCandidateIfNeeded()) -- unconditionally, before
+	 * the real lifecycle decision below, so a candidate whose window
+	 * has already quietly elapsed is never left dangling and never
+	 * influences this call's own switch/park/resume decision.
+	 */
+	public LifecycleResult onQualifyingActivity(ActivityIdentity identity, Instant observedAt, List<MetricUpdate> metrics, EvidenceStrength strength, boolean allowInterruptedResume)
+	{
+		Session expiredInterruptedCandidate = expireInterruptedCandidateIfNeeded(observedAt);
+		LifecycleResult result = onQualifyingActivityCore(identity, observedAt, metrics, strength, allowInterruptedResume);
+		return result.withAdditionalFinalized(expiredInterruptedCandidate);
+	}
+
+	private LifecycleResult onQualifyingActivityCore(ActivityIdentity identity, Instant observedAt, List<MetricUpdate> metrics, EvidenceStrength strength, boolean allowInterruptedResume)
 	{
 		if (current == null)
 		{
@@ -499,16 +693,31 @@ public final class SessionLifecycleEngine
 						activeCandidateObservationCount++;
 						activeCandidateMetrics.addAll(metrics);
 
-						double required = activeRequiredConfirmations(lastActiveAt, observedAt, identity);
-						if (activeCandidateObservationCount < required)
+						double required = activeRequiredConfirmations(lastActiveAt, observedAt,
+							current.getActivityIdentity().getActivityType(), identity);
+						// SUSTAINED-DURATION REQUIREMENT (see class javadoc's
+						// "DOWNRANKING COMBAT CHALLENGE, SUSTAINED-DURATION
+						// REQUIREMENT" and ACTIVE_DOWNRANK_SUSTAINED_DURATION's own
+						// field javadoc): for a downranking combat challenge ONLY, an
+						// observation count alone is not enough -- the candidate's own
+						// evidence must also genuinely SPAN real wall-clock time since
+						// its first-seen observation. Name-agnostic: never inspects
+						// candidateIdentity's own key/displayName, only its
+						// ActivityType versus the established session's.
+						boolean downrankingChallenge = isDownrankingCombatChallenge(
+							current.getActivityIdentity().getActivityType(), identity.getActivityType());
+						boolean sustainedLongEnough = !downrankingChallenge
+							|| !Duration.between(activeCandidateFirstSeenAt, observedAt)
+								.minus(ACTIVE_DOWNRANK_SUSTAINED_DURATION).isNegative();
+						if (activeCandidateObservationCount < required || !sustainedLongEnough)
 						{
-							// Not yet enough repetition to overcome the
-							// established session's current inertia -- stay
-							// armed, this observation's metrics are buffered
-							// too (not yet applied anywhere), established
-							// session left completely untouched (no
-							// accumulate() call: this is not ITS OWN
-							// reinforcing evidence).
+							// Not yet enough repetition, and/or not yet sustained
+							// for long enough, to overcome the established session's
+							// current inertia -- stay armed, this observation's
+							// metrics are buffered too (not yet applied anywhere),
+							// established session left completely untouched (no
+							// accumulate() call: this is not ITS OWN reinforcing
+							// evidence).
 							return LifecycleResult.of(current, null);
 						}
 
@@ -524,9 +733,7 @@ public final class SessionLifecycleEngine
 						// none of them.
 						List<MetricUpdate> combined = new ArrayList<>(activeCandidateMetrics);
 						clearActiveCandidate();
-						Session finalized = finalizeSession(current, observedAt);
-						current = newSession(identity, observedAt);
-						return LifecycleResult.withMetrics(current, finalized, combined);
+						return applyRealSwitch(identity, observedAt, combined, Collections.<MetricUpdate>emptyList(), allowInterruptedResume);
 					}
 
 					// ARM a fresh candidate, or REPLACE a different one --
@@ -559,13 +766,7 @@ public final class SessionLifecycleEngine
 				// OLD session that is about to finalize.
 				List<MetricUpdate> abandonedByRealSwitch = new ArrayList<>(activeCandidateMetrics);
 				clearActiveCandidate();
-				Session finalizedByRealSwitch = finalizeSession(current, observedAt);
-				current = newSession(identity, observedAt);
-				if (abandonedByRealSwitch.isEmpty())
-				{
-					return LifecycleResult.withMetrics(current, finalizedByRealSwitch, metrics);
-				}
-				return LifecycleResult.withMetricsAndContextual(current, finalizedByRealSwitch, metrics, finalizedByRealSwitch, abandonedByRealSwitch);
+				return applyRealSwitch(identity, observedAt, metrics, abandonedByRealSwitch, allowInterruptedResume);
 			}
 			else
 			{
@@ -689,8 +890,33 @@ public final class SessionLifecycleEngine
 					combined.addAll(metrics);
 					clearPendingCandidate();
 					Session finalized = finalizeSession(current, candidateStartedAt);
-					current = newSession(identity, candidateStartedAt);
-					return LifecycleResult.withMetrics(current, finalized, combined);
+					// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): this
+					// confirming observation is the SUSPENDED-branch's own
+					// two-observation weak-evidence confirmation of a real
+					// switch -- reached whenever B rehydrates SUSPENDED (always
+					// true immediately post-restart) and ORDINARY evidence for
+					// A arrives. Exactly like the other two already-confirmed-
+					// switch call sites above, check whether the confirmed
+					// identity matches the ONE parked interrupted candidate
+					// before minting a brand-new session -- anchored at
+					// candidateStartedAt (the candidate's own first-seen
+					// instant), never the later confirming event's timestamp,
+					// so no fabricated eligibility window is granted. This does
+					// NOT change whether/when this weak-evidence arm arms or
+					// confirms -- that decision above is completely untouched;
+					// this only changes what happens to an ALREADY-confirmed
+					// real switch.
+					Session resumedFromInterrupted = tryResumeInterruptedCandidate(identity, candidateStartedAt);
+					// A -> B -> C invariant (see
+					// displaceInterruptedCandidateIfPresent()'s own javadoc): a
+					// CONFIRMED switch to an identity that does NOT match the
+					// parked candidate permanently kills that candidate now, rather
+					// than leaving it dangling for time-based expiry to eventually
+					// clean up.
+					Session displacedInterruptedCandidate = resumedFromInterrupted != null
+						? null : displaceInterruptedCandidateIfPresent();
+					current = resumedFromInterrupted != null ? resumedFromInterrupted : newSession(identity, candidateStartedAt);
+					return LifecycleResult.withMetrics(current, finalized, combined).withAdditionalFinalized(displacedInterruptedCandidate);
 				}
 
 				// ARM a fresh candidate, or REPLACE a different one. A
@@ -732,12 +958,24 @@ public final class SessionLifecycleEngine
 			abandoned.addAll(pendingCandidateMetrics);
 			clearPendingCandidate();
 			Session finalized = finalizeSession(current, observedAt);
-			current = newSession(identity, observedAt);
+			// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): see
+			// tryResumeInterruptedCandidate()'s own javadoc -- a genuine
+			// return to a still-parked, still-eligible A must resume it
+			// here too, not only from the ACTIVE branch, so a restart
+			// (which always leaves `current` SUSPENDED, never ACTIVE)
+			// never strands an otherwise-still-valid candidate.
+			Session resumedFromInterrupted = tryResumeInterruptedCandidate(identity, observedAt);
+			// A -> B -> C invariant -- see
+			// displaceInterruptedCandidateIfPresent()'s own javadoc.
+			Session displacedInterruptedCandidate = resumedFromInterrupted != null
+				? null : displaceInterruptedCandidateIfPresent();
+			current = resumedFromInterrupted != null ? resumedFromInterrupted : newSession(identity, observedAt);
 			if (abandoned.isEmpty())
 			{
-				return LifecycleResult.withMetrics(current, finalized, metrics);
+				return LifecycleResult.withMetrics(current, finalized, metrics).withAdditionalFinalized(displacedInterruptedCandidate);
 			}
-			return LifecycleResult.withMetricsAndContextual(current, finalized, metrics, finalized, abandoned);
+			return LifecycleResult.withMetricsAndContextual(current, finalized, metrics, finalized, abandoned)
+				.withAdditionalFinalized(displacedInterruptedCandidate);
 		}
 		else
 		{
@@ -757,12 +995,21 @@ public final class SessionLifecycleEngine
 			abandoned.addAll(pendingCandidateMetrics);
 			clearPendingCandidate();
 			Session finalized = finalizeSession(current, resumeExpiry);
-			current = newSession(identity, observedAt);
+			// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): same
+			// resume-check as the immediate-switch branch just above --
+			// see tryResumeInterruptedCandidate()'s own javadoc.
+			Session resumedFromInterrupted = tryResumeInterruptedCandidate(identity, observedAt);
+			// A -> B -> C invariant -- see
+			// displaceInterruptedCandidateIfPresent()'s own javadoc.
+			Session displacedInterruptedCandidate = resumedFromInterrupted != null
+				? null : displaceInterruptedCandidateIfPresent();
+			current = resumedFromInterrupted != null ? resumedFromInterrupted : newSession(identity, observedAt);
 			if (abandoned.isEmpty())
 			{
-				return LifecycleResult.withMetrics(current, finalized, metrics);
+				return LifecycleResult.withMetrics(current, finalized, metrics).withAdditionalFinalized(displacedInterruptedCandidate);
 			}
-			return LifecycleResult.withMetricsAndContextual(current, finalized, metrics, finalized, abandoned);
+			return LifecycleResult.withMetricsAndContextual(current, finalized, metrics, finalized, abandoned)
+				.withAdditionalFinalized(displacedInterruptedCandidate);
 		}
 	}
 
@@ -865,44 +1112,275 @@ public final class SessionLifecycleEngine
 		activeCandidateMetrics.clear();
 	}
 
-	/**
-	 * EVIDENCE-WEIGHTED HYSTERESIS (see class javadoc). How many
-	 * observations of the SAME candidate identity ACTIVE requires to
-	 * confirm a switch, evaluated FRESH at the instant of THIS
-	 * observation (never cached from when the candidate first armed).
-	 *
-	 * SCOPING (deliberate, along an axis this codebase already uses
-	 * everywhere -- ActivityPrecedence.isCombatBranch() -- never a
-	 * per-activity special case): the extra peak/decay inertia below is
-	 * applied only when the CANDIDATE identity is non-combat-branch
-	 * (SKILLING) -- exactly the domain of the live evidence
-	 * (Crafting/Cooking) and of the pre-existing "GENERALIZED TO
-	 * SKILLING" weak-evidence rule. A combat-branch candidate (same-rank
-	 * generic-NPC recognition, e.g. Desert Wolf -> Goat) keeps the flat,
-	 * unconditional ACTIVE_FLOOR_REQUIRED_CONFIRMATIONS requirement.
-	 * That system's own evidence arrives
-	 * on a completely different, much faster cadence (raw combat pulses
-	 * within a single game tick, not XP_CHANGE's ~30s aggregation
-	 * window), was independently regression-tested on
-	 * its own terms -- extending peak/decay inertia to it would risk
-	 * destabilizing an already-correct, differently-tuned system to fix a
-	 * problem it does not have.
-	 *
-	 * For a SKILLING candidate: decays LINEARLY from
-	 * ACTIVE_PEAK_REQUIRED_CONFIRMATIONS at elapsed == 0 (the established
-	 * session's own last reinforcing evidence, lastActiveAt) down to
-	 * ACTIVE_FLOOR_REQUIRED_CONFIRMATIONS once elapsed reaches
-	 * ACTIVE_INERTIA_DECAY_PERIOD, and never lower. Returns a real number
-	 * deliberately (not rounded to an int): the caller compares an
-	 * integer observation COUNT against it with {@code >=}, so a count of
-	 * 2 confirms as soon as the decayed requirement drops to 2.0 or
-	 * below, without needing to wait for a 3rd observation just because
-	 * the requirement briefly reads, say, 2.3.
-	 */
-	private static double activeRequiredConfirmations(Instant lastActiveAt, Instant observedAt, ActivityIdentity candidateIdentity)
+	private void clearInterruptedCandidate()
 	{
-		if (ActivityPrecedence.isCombatBranch(candidateIdentity.getActivityType()))
+		interruptedCandidate = null;
+		interruptedCandidateInterruptedAt = null;
+		interruptedCandidateExpiresAt = null;
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). A narrower,
+	 * RESUME-ONLY check -- used exclusively by the SUSPENDED-branch's own
+	 * two PRE-EXISTING immediate-switch call sites below (never by
+	 * anything that could PARK a new candidate): "Do NOT create a second
+	 * interrupted-candidate mechanism when the outgoing session was
+	 * already SUSPENDED ... preserve the existing SUSPENDED / 30-minute
+	 * resume behavior as-is" (see class javadoc) -- this method never
+	 * parks, never displaces, never touches interruptedCandidate at all
+	 * except to resume or leave it completely untouched.
+	 *
+	 * WHY THIS EXISTS: the ONE parked interrupted candidate must remain
+	 * resumable even when `current` (B) itself has independently gone
+	 * SUSPENDED in the interim -- most commonly via the pre-existing,
+	 * unconditional conservative rehydrate() reconciliation, which
+	 * ALWAYS marks a restored persisted-ACTIVE session SUSPENDED
+	 * regardless of true elapsed wall time (see rehydrate()'s own
+	 * javadoc) -- so a restart occurring while B is still current, still
+	 * well inside A's own 5-minute window, would otherwise make A
+	 * unreachable the instant B is evaluated as SUSPENDED, purely
+	 * because of B's own unrelated state. Without this, "A -&gt; brief B
+	 * -&gt; A" would silently stop working across a restart, contrary to
+	 * the "must survive restart safely" requirement. Deliberately NOT
+	 * wired into the SUSPENDED branch's OWN separate weak-evidence
+	 * arm/confirm mechanism (pendingCandidateIdentity et al.) -- that
+	 * mechanism decides whether SUSPENDED's OWN identity should switch at
+	 * all, a decision this feature must never influence; this check only
+	 * ever runs at a point where that decision has ALREADY been made
+	 * (immediate/authoritative switch, or the resume window already
+	 * expired), exactly mirroring where applyRealSwitch() itself is only
+	 * ever reached from the ACTIVE branch's own already-decided call
+	 * sites.
+	 *
+	 * Returns the resumed Session (interruptedCandidate itself, mutated
+	 * in place via the existing resume() helper -- same sessionId, same
+	 * startedAt, zero active duration added for the interruption gap, for
+	 * free) when `identity` matches the ONE parked candidate's own
+	 * ActivityIdentity and `observedAt` is still at-or-before its
+	 * eligibility boundary; null otherwise, in which case
+	 * interruptedCandidate is left completely untouched and the caller's
+	 * own pre-existing behavior (start a brand-new session) applies
+	 * exactly as it always has.
+	 */
+	private Session tryResumeInterruptedCandidate(ActivityIdentity identity, Instant observedAt)
+	{
+		if (interruptedCandidate == null
+			|| !interruptedCandidate.getActivityIdentity().equals(identity)
+			|| observedAt.isAfter(interruptedCandidateExpiresAt))
 		{
+			return null;
+		}
+		Session resumed = interruptedCandidate;
+		clearInterruptedCandidate();
+		resume(resumed, observedAt);
+		return resumed;
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; B -&gt; C invariant, generalized
+	 * to a SUSPENDED outgoing B). "A parked + a genuine real switch to a
+	 * non-A identity C = A is dead permanently" -- true regardless of
+	 * whether the outgoing session B that C is superseding is itself
+	 * ACTIVE or SUSPENDED at the moment of that second real switch. The
+	 * ACTIVE-branch case is applyRealSwitch()'s own PARK-branch
+	 * displacement (which now calls this same helper, rather than
+	 * duplicating the logic). This is the SUSPENDED-branch equivalent:
+	 * every SUSPENDED-branch call site that has just decided on a real
+	 * switch to an identity NOT matching the parked candidate (checked
+	 * immediately beforehand via tryResumeInterruptedCandidate() --
+	 * never both consulted for the same decision) must permanently
+	 * resolve/clear that now-superseded candidate here, rather than
+	 * leaving it dangling until its own time-based expiry -- otherwise
+	 * "A -&gt; B -&gt; restart -&gt; C -&gt; A" could resurrect A across two
+	 * genuine activity changes, breaking the one-interruption model.
+	 *
+	 * Unconditionally finalizes and clears whatever candidate is
+	 * currently parked, at its OWN original interruption instant --
+	 * never at the confirming/switching event's own timestamp, so no
+	 * active time is ever fabricated for it. Returns the finalized
+	 * Session, or null when nothing was parked (the overwhelmingly
+	 * common case, and always safe to call unconditionally).
+	 *
+	 * Deliberately NEVER parks/creates anything of its own -- pure
+	 * disposal of an already-parked, now-superseded candidate. Does not
+	 * itself decide whether the current call's own outgoing B should be
+	 * parked (SUSPENDED outgoing sessions are never parked -- see
+	 * applyRealSwitch()'s own javadoc and this class's "OUTGOING
+	 * SUSPENDED SESSION" scope note).
+	 */
+	private Session displaceInterruptedCandidateIfPresent()
+	{
+		if (interruptedCandidate == null)
+		{
+			return null;
+		}
+		Session displaced = finalizeSession(interruptedCandidate, interruptedCandidateInterruptedAt);
+		clearInterruptedCandidate();
+		return displaced;
+	}
+
+	/**
+	 * INTERRUPTED-RESUME housekeeping, called at the top of every
+	 * public, timestamped entry point (onQualifyingActivity(),
+	 * refineIdentity(), advanceTime()) -- see each call site's own
+	 * comment. If the ONE parked interrupted candidate's eligibility
+	 * window has strictly elapsed as of `asOf`, it permanently
+	 * finalizes here, AT ITS OWN ORIGINAL INTERRUPTION INSTANT
+	 * (interruptedCandidateInterruptedAt, never `asOf`) -- a delayed
+	 * expiry decision must never fabricate extra active minutes onto
+	 * the candidate by finalizing it at the later moment this happened
+	 * to run. Returns the finalized Session (for the caller to report
+	 * via LifecycleResult.withAdditionalFinalized()), or null when
+	 * nothing was parked or the parked candidate is still within its
+	 * window.
+	 *
+	 * Deliberately unconditional -- this housekeeping runs regardless
+	 * of whether the CALLING entry point itself is allowed to create or
+	 * resume interrupted-resume state (see allowInterruptedResume on
+	 * onQualifyingActivity()'s 5-arg overload): an already-parked,
+	 * already-decided candidate finalizing on schedule is ordinary
+	 * lifecycle completion, not the creation of new resumable state, so
+	 * it is never gated behind that flag.
+	 */
+	private Session expireInterruptedCandidateIfNeeded(Instant asOf)
+	{
+		if (interruptedCandidate == null)
+		{
+			return null;
+		}
+		if (asOf.isAfter(interruptedCandidateExpiresAt))
+		{
+			Session finalized = finalizeSession(interruptedCandidate, interruptedCandidateInterruptedAt);
+			clearInterruptedCandidate();
+			return finalized;
+		}
+		return null;
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A) -- the
+	 * single helper both ACTIVE-branch "real switch" sites in
+	 * onQualifyingActivityCore() delegate to once they (via the
+	 * existing, completely untouched
+	 * isWeakEvidenceAgainstEstablishedSession()/
+	 * activeRequiredConfirmations() hysteresis) have already decided a
+	 * genuine switch away from the established ACTIVE `current` session
+	 * is happening. This method never itself decides WHETHER a switch
+	 * is real -- only what happens to the outgoing session once one is.
+	 *
+	 * `metricsForNew` is this triggering event's own metrics -- applied
+	 * to whichever session ends up "current" afterward (a freshly-
+	 * started brand-new session, or a resumed parked candidate).
+	 * `contextualForOld` is any earlier-buffered, now-abandoned
+	 * candidate metrics that genuinely occurred during the OUTGOING
+	 * session's own lifetime -- applied once, as contextual metrics, to
+	 * whichever Session object the outgoing session ends up being (the
+	 * same object reference whether it is parked, resumed-away-from-
+	 * and-finalized, or immediately finalized), exactly like this
+	 * engine's pre-existing contextual-metrics contract elsewhere.
+	 *
+	 * Three outcomes, in priority order:
+	 *
+	 * 1. RESUME -- `identity` matches the ONE parked interrupted
+	 *    candidate's own ActivityIdentity (activityType+activityKey,
+	 *    ActivityIdentity's existing equality contract -- see its own
+	 *    javadoc) and `observedAt` is still at-or-before that
+	 *    candidate's eligibility boundary, and allowInterruptedResume
+	 *    is true: the outgoing session finalizes normally (this IS a
+	 *    real, decided switch away from it) and the parked candidate
+	 *    resumes as `current`, reusing the existing resume() helper
+	 *    verbatim -- same sessionId, same startedAt, and (because
+	 *    resume() sets lastActiveAt directly rather than calling
+	 *    accumulate()) the entire interruption gap contributes zero
+	 *    active duration, for free.
+	 *
+	 * 2. PARK -- not a resume, but allowInterruptedResume is true: the
+	 *    outgoing session is parked as the new interrupted candidate
+	 *    instead of being finalized. Enforces the "at most ONE
+	 *    resumable candidate" rule first: a DIFFERENT candidate already
+	 *    parked is displaced -- permanently finalized now, at ITS OWN
+	 *    original interruption instant, and reported via
+	 *    LifecycleResult.getAdditionalFinalized() (never the primary
+	 *    `finalized` slot, which this outcome leaves null since the
+	 *    outgoing session itself was not finalized, only parked).
+	 *
+	 * 3. LEGACY IMMEDIATE FINALIZE -- allowInterruptedResume is false
+	 *    (the manual Re-evaluate Session path -- see
+	 *    onQualifyingActivity()'s 5-arg overload javadoc): the
+	 *    pre-existing behavior, byte-for-byte -- the outgoing session
+	 *    finalizes immediately and unconditionally, exactly as this
+	 *    engine did before this feature existed. Never touches
+	 *    interruptedCandidate at all, so a manual correction can never
+	 *    manufacture a hidden resumable prior session.
+	 */
+	private LifecycleResult applyRealSwitch(ActivityIdentity identity, Instant observedAt, List<MetricUpdate> metricsForNew, List<MetricUpdate> contextualForOld, boolean allowInterruptedResume)
+	{
+		Session outgoing = current;
+
+		boolean resumesParkedCandidate = allowInterruptedResume
+			&& interruptedCandidate != null
+			&& interruptedCandidate.getActivityIdentity().equals(identity)
+			&& !observedAt.isAfter(interruptedCandidateExpiresAt);
+
+		if (resumesParkedCandidate)
+		{
+			Session resumed = interruptedCandidate;
+			clearInterruptedCandidate();
+			Session finalizedOutgoing = finalizeSession(outgoing, observedAt);
+			resume(resumed, observedAt);
+			current = resumed;
+			if (contextualForOld.isEmpty())
+			{
+				return LifecycleResult.withMetrics(current, finalizedOutgoing, metricsForNew);
+			}
+			return LifecycleResult.withMetricsAndContextual(current, finalizedOutgoing, metricsForNew, finalizedOutgoing, contextualForOld);
+		}
+
+		if (!allowInterruptedResume)
+		{
+			Session finalizedOutgoing = finalizeSession(outgoing, observedAt);
+			current = newSession(identity, observedAt);
+			if (contextualForOld.isEmpty())
+			{
+				return LifecycleResult.withMetrics(current, finalizedOutgoing, metricsForNew);
+			}
+			return LifecycleResult.withMetricsAndContextual(current, finalizedOutgoing, metricsForNew, finalizedOutgoing, contextualForOld);
+		}
+
+		Session displacedCandidate = displaceInterruptedCandidateIfPresent();
+
+		interruptedCandidate = outgoing;
+		interruptedCandidateInterruptedAt = observedAt;
+		interruptedCandidateExpiresAt = observedAt.plus(INTERRUPTED_RESUME_WINDOW);
+		current = newSession(identity, observedAt);
+
+		LifecycleResult result = contextualForOld.isEmpty()
+			? LifecycleResult.withMetrics(current, null, metricsForNew)
+			: LifecycleResult.withMetricsAndContextual(current, null, metricsForNew, outgoing, contextualForOld);
+		return result.withAdditionalFinalized(displacedCandidate);
+	}
+
+	/**
+	 * How many observations of the SAME candidate identity ACTIVE
+	 * requires to confirm a switch. A downranking combat-branch candidate
+	 * (see isDownrankingCombatChallenge()) uses the flat
+	 * ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS; any other combat-branch
+	 * candidate uses the flat ACTIVE_FLOOR_REQUIRED_CONFIRMATIONS. A
+	 * SKILLING candidate decays linearly from
+	 * ACTIVE_PEAK_REQUIRED_CONFIRMATIONS at lastActiveAt down to
+	 * ACTIVE_FLOOR_REQUIRED_CONFIRMATIONS over
+	 * ACTIVE_INERTIA_DECAY_PERIOD. Returns a real number since the caller
+	 * compares an integer count against it with {@code >=}.
+	 */
+	private static double activeRequiredConfirmations(Instant lastActiveAt, Instant observedAt, ActivityType establishedType, ActivityIdentity candidateIdentity)
+	{
+		ActivityType candidateType = candidateIdentity.getActivityType();
+		if (ActivityPrecedence.isCombatBranch(candidateType))
+		{
+			if (isDownrankingCombatChallenge(establishedType, candidateType))
+			{
+				return ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS;
+			}
 			return ACTIVE_FLOOR_REQUIRED_CONFIRMATIONS;
 		}
 
@@ -912,6 +1390,17 @@ public final class SessionLifecycleEngine
 		return ACTIVE_PEAK_REQUIRED_CONFIRMATIONS
 			- (ACTIVE_PEAK_REQUIRED_CONFIRMATIONS - ACTIVE_FLOOR_REQUIRED_CONFIRMATIONS) * decayFraction;
 	}
+
+	/**
+	 * True when a generic COMBAT candidate is challenging an established
+	 * SLAYER or BOSSING session.
+	 */
+	private static boolean isDownrankingCombatChallenge(ActivityType establishedType, ActivityType candidateType)
+	{
+		return candidateType == ActivityType.COMBAT
+			&& (establishedType == ActivityType.SLAYER || establishedType == ActivityType.BOSSING);
+	}
+
 
 	private void clearPendingCandidate()
 	{
@@ -971,6 +1460,21 @@ public final class SessionLifecycleEngine
 	 * correctly finalize the expired session and start a new one.
 	 */
 	public LifecycleResult refineIdentity(ActivityIdentity newIdentity, Instant observedAt, List<MetricUpdate> metrics)
+	{
+		Session expiredInterruptedCandidate = expireInterruptedCandidateIfNeeded(observedAt);
+		LifecycleResult result = refineIdentityCore(newIdentity, observedAt, metrics);
+		return result.withAdditionalFinalized(expiredInterruptedCandidate);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A): the actual
+	 * refinement logic, unchanged from before this feature existed --
+	 * refineIdentity() never switches identity, never finalizes, never
+	 * touches interruptedCandidate itself; the public wrapper above
+	 * only adds the same background candidate-expiry housekeeping every
+	 * other timestamped entry point performs.
+	 */
+	private LifecycleResult refineIdentityCore(ActivityIdentity newIdentity, Instant observedAt, List<MetricUpdate> metrics)
 	{
 		if (current == null || current.getState() == SessionState.FINALIZED)
 		{
@@ -1054,6 +1558,22 @@ public final class SessionLifecycleEngine
 	 */
 	public LifecycleResult advanceTime(Instant now)
 	{
+		Session expiredInterruptedCandidate = expireInterruptedCandidateIfNeeded(now);
+		LifecycleResult result = advanceTimeCore(now);
+		return result.withAdditionalFinalized(expiredInterruptedCandidate);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A): the actual
+	 * idle-timeout logic for `current`, unchanged from before this
+	 * feature existed. The public wrapper above only adds the same
+	 * background candidate-expiry housekeeping every other timestamped
+	 * entry point performs -- so a parked candidate finalizes on
+	 * schedule even on a tick where `current` itself does nothing at
+	 * all.
+	 */
+	private LifecycleResult advanceTimeCore(Instant now)
+	{
 		if (current == null)
 		{
 			return LifecycleResult.of(null, null);
@@ -1128,47 +1648,101 @@ public final class SessionLifecycleEngine
 	 * startup with whatever was loaded from session_state.json (null if
 	 * none) and the actual current wall-clock Instant. See class-level
 	 * RehydrationResult javadoc for the exact conservative rules
-	 * applied to a persisted ACTIVE session.
+	 * applied to a persisted ACTIVE session. Delegates to the 5-arg
+	 * overload below with no persisted interrupted candidate -- kept
+	 * for every pre-existing caller/test.
 	 */
 	public static RehydrationResult rehydrate(Session persisted, Instant now)
 	{
+		return rehydrate(persisted, now, null, null, null);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A): also takes
+	 * whatever was separately loaded from the additive interrupted-
+	 * candidate persistence record (all three null when none exists --
+	 * absence of that file is fully backward compatible with the 2-arg
+	 * overload above). The persisted candidate and the persisted
+	 * `current` session are reconciled completely independently of one
+	 * another -- see class/feature javadoc: they have independent
+	 * lifecycle clocks, so one expiring never mutates the other.
+	 *
+	 * If the candidate's own eligibility window has already elapsed as
+	 * of `now`, it finalizes here, exactly once, AT ITS OWN ORIGINAL
+	 * INTERRUPTION INSTANT (persistedInterruptedCandidateInterruptedAt,
+	 * never `now`) -- reported via
+	 * RehydrationResult#getFinalizedInterruptedCandidateDuringRehydration().
+	 * Otherwise it is restored onto the returned engine as the ONE
+	 * resumable prior candidate, unchanged.
+	 */
+	public static RehydrationResult rehydrate(Session persisted, Instant now,
+		Session persistedInterruptedCandidate, Instant persistedInterruptedCandidateInterruptedAt, Instant persistedInterruptedCandidateExpiresAt)
+	{
+		Session finalizedDuringRehydration = null;
+		SessionLifecycleEngine engine;
+
 		if (persisted == null)
 		{
-			return new RehydrationResult(new SessionLifecycleEngine(), null);
+			engine = new SessionLifecycleEngine();
 		}
-
-		if (persisted.getState() == SessionState.ACTIVE)
+		else
 		{
-			// Conservative reconciliation: the plugin cannot prove the
-			// user remained active while RuneLite was closed, so a
-			// persisted ACTIVE session is treated exactly as though the
-			// ordinary 5-minute idle timeout had already elapsed at its
-			// last known activity — deterministically, from lastActiveAt
-			// alone, never from `now`, and never adding any offline gap
-			// to accumulatedActiveDurationMillis (suspend() never
-			// touches that field).
-			Instant suspendThreshold = persisted.lastActiveAtInstant().plus(SUSPEND_TIMEOUT);
-			suspend(persisted, suspendThreshold);
-		}
-
-		if (persisted.getState() == SessionState.SUSPENDED)
-		{
-			Instant expiry = persisted.resumeWindowExpiresAtInstant();
-			if (!now.isBefore(expiry))
+			if (persisted.getState() == SessionState.ACTIVE)
 			{
-				Session finalized = finalizeSession(persisted, expiry);
-				return new RehydrationResult(new SessionLifecycleEngine(), finalized);
+				// Conservative reconciliation: the plugin cannot prove the
+				// user remained active while RuneLite was closed, so a
+				// persisted ACTIVE session is treated exactly as though the
+				// ordinary 5-minute idle timeout had already elapsed at its
+				// last known activity — deterministically, from lastActiveAt
+				// alone, never from `now`, and never adding any offline gap
+				// to accumulatedActiveDurationMillis (suspend() never
+				// touches that field).
+				Instant suspendThreshold = persisted.lastActiveAtInstant().plus(SUSPEND_TIMEOUT);
+				suspend(persisted, suspendThreshold);
 			}
-			return new RehydrationResult(new SessionLifecycleEngine(persisted), null);
+
+			if (persisted.getState() == SessionState.SUSPENDED)
+			{
+				Instant expiry = persisted.resumeWindowExpiresAtInstant();
+				if (!now.isBefore(expiry))
+				{
+					finalizedDuringRehydration = finalizeSession(persisted, expiry);
+					engine = new SessionLifecycleEngine();
+				}
+				else
+				{
+					engine = new SessionLifecycleEngine(persisted);
+				}
+			}
+			else
+			{
+				// persisted.getState() == FINALIZED: should not normally
+				// occur in session_state.json (a finalized session must
+				// already have been cleared from it), but handled
+				// conservatively: it was already written to its own
+				// immutable record by whatever process finalized it, so
+				// it is not re-finalized or resurrected as "current" here.
+				engine = new SessionLifecycleEngine();
+			}
 		}
 
-		// persisted.getState() == FINALIZED: should not normally occur in
-		// session_state.json (a finalized session must already
-		// have been cleared from it), but handled conservatively: it was
-		// already written to its own immutable record by whatever
-		// process finalized it, so it is not re-finalized or resurrected
-		// as "current" here.
-		return new RehydrationResult(new SessionLifecycleEngine(), null);
+		Session finalizedInterruptedCandidateDuringRehydration = null;
+		if (persistedInterruptedCandidate != null)
+		{
+			if (persistedInterruptedCandidateExpiresAt != null && now.isAfter(persistedInterruptedCandidateExpiresAt))
+			{
+				finalizedInterruptedCandidateDuringRehydration =
+					finalizeSession(persistedInterruptedCandidate, persistedInterruptedCandidateInterruptedAt);
+			}
+			else
+			{
+				engine.interruptedCandidate = persistedInterruptedCandidate;
+				engine.interruptedCandidateInterruptedAt = persistedInterruptedCandidateInterruptedAt;
+				engine.interruptedCandidateExpiresAt = persistedInterruptedCandidateExpiresAt;
+			}
+		}
+
+		return new RehydrationResult(engine, finalizedDuringRehydration, finalizedInterruptedCandidateDuringRehydration);
 	}
 
 	private static Session newSession(ActivityIdentity identity, Instant at)
@@ -1214,21 +1788,32 @@ public final class SessionLifecycleEngine
 	}
 
 	/**
-	 * Result of {@link #rehydrate(Session, Instant)}: the engine to
-	 * continue using, plus a session that had to be immediately
-	 * finalized as part of rehydration (a persisted SUSPENDED
-	 * session whose resume window had already expired), or null if
-	 * rehydration produced no such finalization.
+	 * Result of {@link #rehydrate(Session, Instant, Session, Instant, Instant)}:
+	 * the engine to continue using, plus a session that had to be
+	 * immediately finalized as part of rehydration (a persisted
+	 * SUSPENDED session whose resume window had already expired, or
+	 * null if rehydration produced no such finalization), plus --
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A) -- a
+	 * separate, independent slot for the persisted interrupted
+	 * candidate's own possible rehydration-time finalization (its
+	 * eligibility window had already elapsed by `now`), or null if it
+	 * either didn't exist or is still eligible and was restored onto
+	 * `engine` instead. These two finalization slots are deliberately
+	 * separate and never conflated: the two sessions have completely
+	 * independent lifecycle clocks (see class/feature javadoc), and a
+	 * restart can finalize either one, both, or neither.
 	 */
 	public static final class RehydrationResult
 	{
 		private final SessionLifecycleEngine engine;
 		private final Session finalizedDuringRehydration;
+		private final Session finalizedInterruptedCandidateDuringRehydration;
 
-		private RehydrationResult(SessionLifecycleEngine engine, Session finalizedDuringRehydration)
+		private RehydrationResult(SessionLifecycleEngine engine, Session finalizedDuringRehydration, Session finalizedInterruptedCandidateDuringRehydration)
 		{
 			this.engine = engine;
 			this.finalizedDuringRehydration = finalizedDuringRehydration;
+			this.finalizedInterruptedCandidateDuringRehydration = finalizedInterruptedCandidateDuringRehydration;
 		}
 
 		public SessionLifecycleEngine getEngine()
@@ -1239,6 +1824,12 @@ public final class SessionLifecycleEngine
 		public Session getFinalizedDuringRehydration()
 		{
 			return finalizedDuringRehydration;
+		}
+
+		/** INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A): see class javadoc above. */
+		public Session getFinalizedInterruptedCandidateDuringRehydration()
+		{
+			return finalizedInterruptedCandidateDuringRehydration;
 		}
 	}
 }

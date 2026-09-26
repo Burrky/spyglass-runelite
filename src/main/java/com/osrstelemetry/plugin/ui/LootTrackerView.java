@@ -159,46 +159,27 @@ import net.runelite.client.util.QuantityFormatter;
 final class LootTrackerView extends JPanel
 {
 	/**
-	 * The largest column count that provably cannot overflow the
-	 * realistic worst-case available card width, computed from real,
-	 * verified constants rather than guessed --
-	 * {@code net.runelite.client.ui.PluginPanel}'s own {@code PANEL_WIDTH}
-	 * (225, already net of RuneLite's own outer sidebar scrollbar) minus
-	 * its {@code BORDER_PADDING} (6px each side), minus {@link #content}'s
-	 * own border (6px each side), minus a source card's own compound
-	 * border (1px line + 7px padding each side, see {@link #buildSourceCard}):
+	 * Item-grid column count -- deliberately the SAME shared value
+	 * Current Session's LOOT card uses ({@link LootGridCell#GRID_COLUMNS};
+	 * both build their grids via {@link LootGridCell#newGridLayout()}), for
+	 * BOTH Grouped ({@link #buildGroupedGrid}) and Individual
+	 * ({@link #buildIndividualDropsPanel}) views.
 	 *
-	 * <pre>
-	 * 225 (PANEL_WIDTH, already net of RuneLite's outer scrollbar)
-	 *  - 12 (PluginPanel's own 6px+6px BORDER_PADDING)
-	 *  - 12 (content's own 6px+6px border)
-	 *  - 16 (a card's own 1+7 / 7+1 compound border)
-	 *  = 185px worst-case guaranteed available grid width
-	 * </pre>
-	 *
-	 * This view has no scrollbar of its own to budget for -- see class
-	 * javadoc's SCROLLING note -- only RuneLite's outer one, which is
-	 * already netted out of {@code PANEL_WIDTH} above.
-	 *
-	 * Each {@link LootGridCell} is a fixed {@code CELL_SIZE}=40px (a
-	 * deliberate authentic-inventory-slot size -- see that class's own
-	 * javadoc -- so shrinking the cell itself, rather than the column
-	 * count, is not an option here), and {@code GridLayout}'s own 4px
-	 * column gap applies between cells only (n cells need {@code n-1}
-	 * gaps): total grid width for n columns is
-	 * {@code 40n + 4(n-1) = 44n - 4}. n=5 needs 216px (overflows the
-	 * 185px budget above); n=4 needs 172px (within budget, but not
-	 * adopted); n=3 needs 128px, comfortably within the 185px budget
-	 * with real margin left over for anything this estimate did not
-	 * account for exactly.
-	 * Package-private (not {@code private}) so
-	 * {@code LootTrackerViewTest} can directly regression-test this
-	 * budget arithmetic -- same convention as
-	 * {@link #MAX_TOTAL_INDIVIDUAL_RECORDS_RENDERED} and
-	 * {@link #DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE} elsewhere in this
-	 * class.
+	 * HISTORY: this was once cut from 5 to 3 on a width-budget argument
+	 * that treated each cell's 40px PREFERRED size as a hard minimum
+	 * ({@code 44n - 4} px must fit ~185px). That clipping was real at the
+	 * time, but its actual cause was this view's own inner
+	 * {@code JScrollPane}, whose viewport laid content out at its
+	 * preferred width. That inner scroll pane has since been removed (see
+	 * the class javadoc's SCROLLING note) -- this view now sits under
+	 * RuneLite's outer, width-tracking sidebar scroll pane exactly like
+	 * CurrentSessionView -- and {@code GridLayout} divides the actual
+	 * available width evenly among its columns, so 5 columns render
+	 * ~33px cells at normal sidebar width with no clipping and no
+	 * horizontal scroll, identical to Current Session. Package-private
+	 * so {@code LootTrackerViewTest} can pin it to the shared value.
 	 */
-	static final int LOOT_ITEMS_PER_ROW = 3;
+	static final int LOOT_ITEMS_PER_ROW = LootGridCell.GRID_COLUMNS;
 
 	/**
 	 * The one true ceiling: across an entire render pass, the SUM of
@@ -792,9 +773,11 @@ final class LootTrackerView extends JPanel
 		return source.isCollapsed() && searchText.isEmpty();
 	}
 
-	private JLabel emptyStateLabel(String message)
+	static JLabel emptyStateLabel(String message)
 	{
-		JLabel label = new JLabel("<html><div style='text-align:center;width:180px;'>" + message + "</div></html>");
+		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
+		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
+		JLabel label = new WrappingHtmlLabel(message, true);
 		label.setFont(FontManager.getRunescapeSmallFont());
 		label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		label.setHorizontalAlignment(JLabel.CENTER);
@@ -1021,7 +1004,7 @@ final class LootTrackerView extends JPanel
 		List<LootPricing.ValuedLootRow> rows = LootPricing.valueAndSort(visible, itemId -> unitValue(itemId, mode));
 
 		JPanel grid = heightBoundedPanel();
-		grid.setLayout(new GridLayout(0, LOOT_ITEMS_PER_ROW, 4, 4));
+		grid.setLayout(LootGridCell.newGridLayout());
 		grid.setOpaque(false);
 		grid.setAlignmentX(Component.LEFT_ALIGNMENT);
 
@@ -1085,7 +1068,7 @@ final class LootTrackerView extends JPanel
 
 			List<LootPricing.ValuedLootRow> rows = LootPricing.valueAndSort(visible, itemId -> unitValue(itemId, mode));
 			JPanel grid = heightBoundedPanel();
-			grid.setLayout(new GridLayout(0, LOOT_ITEMS_PER_ROW, 4, 4));
+			grid.setLayout(LootGridCell.newGridLayout());
 			grid.setOpaque(false);
 			grid.setAlignmentX(Component.LEFT_ALIGNMENT);
 			for (LootPricing.ValuedLootRow row : rows)

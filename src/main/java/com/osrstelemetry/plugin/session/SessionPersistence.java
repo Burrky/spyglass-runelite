@@ -189,4 +189,98 @@ public final class SessionPersistence
 		attachStartingLoadoutIfNeeded(current);
 		return store.writeAndWait(TelemetryPaths.sessionStateFile(accountHash), current, timeoutMs);
 	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). Durably
+	 * persist a session that finalized WITHOUT becoming
+	 * session_state.json's new "current" -- the interrupted candidate's
+	 * own resolution, whether by displacement (a second real switch
+	 * superseded it) or by eligibility-window expiry. Deliberately does
+	 * NOT touch session_state.json at all (unlike persistFinalized()
+	 * above): session_state.json must keep reflecting whatever is
+	 * genuinely `current` right now, which this finalization is
+	 * completely independent of -- see class/feature javadoc on the two
+	 * sessions' separate lifecycle clocks. Ending-loadout resolution
+	 * still runs, against this session's own finalizedAt (its true
+	 * interruption instant T1 -- callers must have already set that via
+	 * SessionLifecycleEngine.finalizeSession() before this is called),
+	 * never the later moment this method happens to run.
+	 */
+	public void persistAdditionalFinalized(long accountHash, Session additionalFinalized)
+	{
+		if (additionalFinalized == null)
+		{
+			return;
+		}
+		attachStartingLoadoutIfNeeded(additionalFinalized);
+		attachEndingLoadoutIfNeeded(additionalFinalized);
+		store.write(TelemetryPaths.sessionFile(accountHash, additionalFinalized.getSessionId()), additionalFinalized);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). Best-effort
+	 * load of the ONE persisted interrupted-candidate record for this
+	 * account, or null if none exists -- a missing file, malformed
+	 * JSON, or literal JSON `null` (see clearInterruptedCandidate()
+	 * below) are all treated identically, same fail-open contract as
+	 * loadCurrent() above.
+	 */
+	public InterruptedCandidateRecord loadInterruptedCandidate(long accountHash)
+	{
+		return store.readIfExists(TelemetryPaths.interruptedCandidateFile(accountHash), InterruptedCandidateRecord.class);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). Persist the
+	 * ONE parked interrupted candidate additively -- called whenever
+	 * SessionLifecycleEngine reports a non-null getInterruptedCandidate()
+	 * after a lifecycle call, so a client crash/restart can never
+	 * silently lose it (see SessionLifecycleEngine's own
+	 * interruptedCandidate field javadoc). `candidate` is persisted
+	 * exactly as SessionLifecycleEngine holds it -- no loadout
+	 * resolution here; it is still logically an in-progress session,
+	 * not a finalized one, so its own eventual starting/ending loadout
+	 * resolution happens through the ordinary persistCurrent()/
+	 * persistFinalized()/persistAdditionalFinalized() paths once it
+	 * resumes or finalizes, exactly like any other Session.
+	 */
+	public void persistInterruptedCandidate(long accountHash, Session candidate, java.time.Instant interruptedAt, java.time.Instant expiresAt)
+	{
+		store.write(TelemetryPaths.interruptedCandidateFile(accountHash), new InterruptedCandidateRecord(candidate, interruptedAt, expiresAt));
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A). Clears the
+	 * persisted interrupted-candidate record -- called once the ONE
+	 * candidate has been resumed, displaced, or expired, so a stale
+	 * record is never left behind to be mistakenly rehydrated later.
+	 * Same "write the literal JSON `null`, never delete the file"
+	 * convention as persistCurrent(accountHash, null) above -- see its
+	 * own javadoc; loadInterruptedCandidate() already treats that
+	 * identically to an absent file.
+	 */
+	public void clearInterruptedCandidate(long accountHash)
+	{
+		store.write(TelemetryPaths.interruptedCandidateFile(accountHash), null);
+	}
+
+	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A) -- RESTART
+	 * DURABILITY. Blocking counterpart of persistInterruptedCandidate()/
+	 * clearInterruptedCandidate() for the real ClientShutdown path only
+	 * (same bounded-wait pattern as persistCurrentAndWait() above): the
+	 * JVM may exit as soon as that shutdown future completes, so an
+	 * ordinary async write queued there is not guaranteed to reach
+	 * disk. `candidate` null writes the literal JSON `null` (identical
+	 * to clearInterruptedCandidate()).
+	 *
+	 * @return true only if this write was confirmed durable before
+	 * timeoutMs elapsed.
+	 */
+	public boolean persistInterruptedCandidateAndWait(long accountHash, Session candidate,
+		java.time.Instant interruptedAt, java.time.Instant expiresAt, long timeoutMs)
+	{
+		Object document = candidate == null ? null : new InterruptedCandidateRecord(candidate, interruptedAt, expiresAt);
+		return store.writeAndWait(TelemetryPaths.interruptedCandidateFile(accountHash), document, timeoutMs);
+	}
 }

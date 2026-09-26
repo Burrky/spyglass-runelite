@@ -96,6 +96,16 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 {
 	private static final long NO_ACCOUNT = -1L;
 
+	// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A) -- lifecycle
+	// distinction between a REAL client shutdown and a manual plugin
+	// disable. Set (never by timing inference) the moment RuneLite's
+	// ClientShutdown event reaches this coordinator; flushPendingAndShutdown()
+	// reads it so a Plugin.shutDown() that follows a client shutdown does
+	// not finalize/clear the candidate ClientShutdown just preserved for
+	// the next process. Never reset: nothing in this process runs after
+	// ClientShutdown except exit. Guarded by this instance's monitor.
+	private boolean clientShutdownBegun;
+
 	@Inject
 	private Client client;
 
@@ -203,6 +213,21 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 			// own javadoc).
 			flushAbandonedBossTaskCandidateIfMatching(engine.getCurrentSession());
 			persistence.persistCurrent(currentAccountHash, engine.getCurrentSession());
+
+			// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): "no
+			// candidate may disappear silently" -- an account switch is
+			// exactly the account boundary this rule targets. The OLD
+			// account's ONE parked interrupted candidate, if any, is
+			// unconditionally resolved now, AT ITS OWN ORIGINAL
+			// INTERRUPTION INSTANT (never `now`), and persisted under the
+			// OLD accountHash ONLY -- never carried into, or attributed
+			// to, the new account below.
+			Session flushedInterruptedCandidate = engine.flushInterruptedCandidateForAccountBoundary();
+			if (flushedInterruptedCandidate != null)
+			{
+				persistence.persistAdditionalFinalized(currentAccountHash, flushedInterruptedCandidate);
+			}
+			persistence.clearInterruptedCandidate(currentAccountHash);
 		}
 		else
 		{
@@ -223,7 +248,19 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		lastKnownAbsoluteXpBySkill.clear();
 
 		Session persisted = persistence.loadCurrent(accountHash);
-		SessionLifecycleEngine.RehydrationResult rehydrated = SessionLifecycleEngine.rehydrate(persisted, Instant.now());
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): loaded
+		// independently of `persisted` above -- the two have completely
+		// separate lifecycle clocks (see class/feature javadoc), so one
+		// missing/expiring never affects how the other rehydrates. Null
+		// interruptedCandidateRecord (the common case -- most accounts
+		// never have one parked) means "nothing to restore," fully
+		// backward compatible with an account that predates this
+		// feature.
+		InterruptedCandidateRecord interruptedCandidateRecord = persistence.loadInterruptedCandidate(accountHash);
+		SessionLifecycleEngine.RehydrationResult rehydrated = SessionLifecycleEngine.rehydrate(persisted, Instant.now(),
+			interruptedCandidateRecord == null ? null : interruptedCandidateRecord.getSession(),
+			interruptedCandidateRecord == null ? null : interruptedCandidateRecord.interruptedAtInstant(),
+			interruptedCandidateRecord == null ? null : interruptedCandidateRecord.expiresAtInstant());
 		engine = rehydrated.getEngine();
 
 		if (rehydrated.getFinalizedDuringRehydration() != null)
@@ -233,6 +270,24 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		else
 		{
 			persistence.persistCurrent(accountHash, engine.getCurrentSession());
+		}
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): if the
+		// restored candidate's own window had already elapsed by now,
+		// rehydrate() already finalized it (never resurrected) --
+		// persist that exactly once and make sure no stale candidate
+		// record lingers. Otherwise it is now restored onto `engine` as
+		// the ONE resumable prior candidate -- re-persist it verbatim so
+		// the on-disk record and the in-memory engine agree (a pure
+		// no-op write when nothing changed).
+		if (rehydrated.getFinalizedInterruptedCandidateDuringRehydration() != null)
+		{
+			persistence.persistAdditionalFinalized(accountHash, rehydrated.getFinalizedInterruptedCandidateDuringRehydration());
+			persistence.clearInterruptedCandidate(accountHash);
+		}
+		else
+		{
+			syncInterruptedCandidatePersistence();
 		}
 	}
 
@@ -400,6 +455,21 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		else if (timeoutResult.getCurrent() != null && timeoutResult.getCurrent().getState() != beforeState)
 		{
 			persistence.persistCurrent(currentAccountHash, timeoutResult.getCurrent());
+		}
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): independent of
+		// timeoutResult.getFinalized() above -- "handle the edge case
+		// where candidate expiry and current-session lifecycle work occur
+		// on the same processing call/tick." advanceTime() never parks or
+		// resumes anything itself (only onQualifyingActivity()'s real-
+		// switch sites do), so the ONLY way the interrupted candidate
+		// changes here is by quietly expiring in the background -- a
+		// completely independent event from whatever `current`/B did this
+		// same tick, and neither one is ever lost or duplicated.
+		if (timeoutResult.getAdditionalFinalized() != null)
+		{
+			persistence.persistAdditionalFinalized(currentAccountHash, timeoutResult.getAdditionalFinalized());
+			persistence.clearInterruptedCandidate(currentAccountHash);
 		}
 	}
 
@@ -612,6 +682,37 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 				{
 					flushAbandonedBossTaskCandidateIfMatching(result.getFinalized());
 				}
+				else if (result.getCurrent() != null
+					&& (preBatchCurrent == null || !preBatchCurrent.getSessionId().equals(result.getCurrent().getSessionId()))
+					&& engine.getInterruptedCandidate() != null)
+				{
+					// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): a
+					// genuine switch just happened (result.getCurrent() is
+					// a different session id than preBatchCurrent) but
+					// result.getFinalized() is null -- the ONLY way that
+					// combination arises is applyRealSwitch()'s PARK
+					// outcome (see its own javadoc: RESUME and LEGACY
+					// IMMEDIATE FINALIZE both always populate
+					// result.getFinalized()). preBatchCurrent was just
+					// parked as engine.getInterruptedCandidate() rather
+					// than finalized -- exactly the same "stopped being
+					// current for some other reason" case
+					// flushAbandonedBossTaskCandidateIfMatching()'s own
+					// javadoc already covers, just via parking instead of
+					// finalizing.
+					flushAbandonedBossTaskCandidateIfMatching(engine.getInterruptedCandidate());
+				}
+
+				// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A):
+				// independent of result.getFinalized() above -- see
+				// LifecycleResult's own javadoc on the dual-finalization
+				// edge case. Never touches session_state.json (the
+				// interrupted candidate, whether displaced or resumed-
+				// away-from, is never what `current` is right now).
+				if (result.getAdditionalFinalized() != null)
+				{
+					persistence.persistAdditionalFinalized(currentAccountHash, result.getAdditionalFinalized());
+				}
 
 				// Unconfirmed-candidate metrics duplicated
 				// across sessions: this batch's own metrics no longer go
@@ -651,6 +752,7 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 				{
 					persistence.persistCurrent(currentAccountHash, result.getCurrent());
 				}
+				syncInterruptedCandidatePersistence();
 			}
 			else
 			{
@@ -753,6 +855,36 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	}
 
 	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A). Keeps the
+	 * persisted interrupted-candidate record (see
+	 * TelemetryPaths.interruptedCandidateFile()) in sync with
+	 * engine.getInterruptedCandidate()'s own in-memory state for the
+	 * CURRENT account -- called after any lifecycle-mutating engine call
+	 * that could have parked, resumed, or displaced the ONE resumable
+	 * candidate, so a client crash immediately afterward can never lose
+	 * or resurrect stale candidate state ("persist the ONE interrupted
+	 * candidate additively"). A pure no-op write (persist the same
+	 * candidate again, or clear an already-absent one) whenever nothing
+	 * actually changed -- correctness over write-avoidance here, since
+	 * this file is small and this call site is not a hot per-tick path
+	 * (see processTick()'s own comment for why THAT path does its own,
+	 * narrower thing instead of calling this).
+	 */
+	private void syncInterruptedCandidatePersistence()
+	{
+		Session candidate = engine.getInterruptedCandidate();
+		if (candidate != null)
+		{
+			persistence.persistInterruptedCandidate(currentAccountHash, candidate,
+				engine.getInterruptedCandidateInterruptedAt(), engine.getInterruptedCandidateExpiresAt());
+		}
+		else
+		{
+			persistence.clearInterruptedCandidate(currentAccountHash);
+		}
+	}
+
+	/**
 	 * Called from OsrsTelemetryPlugin.shutDown() -- see the fixed
 	 * ordering note there: this MUST
 	 * run, with the EventLedger listener still registered, AFTER every
@@ -771,6 +903,32 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		}
 		flushAllPendingSignals();
 		persistence.persistCurrent(currentAccountHash, engine.getCurrentSession());
+
+		if (clientShutdownBegun)
+		{
+			// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): this
+			// Plugin.shutDown() is part of a REAL client shutdown -- the
+			// candidate is being preserved for the next process's
+			// rehydrate(), never finalized/cleared here. Re-persisted
+			// (not skipped) so the on-disk record is correct even if
+			// this ran before ClientShutdown's own blocking write got
+			// the monitor; LocalStateStore.shutdown() drains this write.
+			syncInterruptedCandidatePersistence();
+			return;
+		}
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): MANUAL plugin
+		// disable (no ClientShutdown). Spyglass cannot observe gameplay
+		// while disabled, so continuity with the parked candidate is
+		// unknown -- it must not survive into a later re-enable.
+		// Finalized exactly once AT ITS OWN ORIGINAL INTERRUPTION
+		// INSTANT and cleared, exactly like the account-switch boundary.
+		Session flushedInterruptedCandidate = engine.flushInterruptedCandidateForAccountBoundary();
+		if (flushedInterruptedCandidate != null)
+		{
+			persistence.persistAdditionalFinalized(currentAccountHash, flushedInterruptedCandidate);
+		}
+		persistence.clearInterruptedCandidate(currentAccountHash);
 	}
 
 	/**
@@ -787,6 +945,7 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 
 	CompletableFuture<Void> beginClientShutdownFinalization()
 	{
+		markClientShutdownBegun();
 		return CompletableFuture.runAsync(this::finalizeForClientShutdownBlocking, scheduledExecutor);
 	}
 
@@ -799,14 +958,37 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	 * back, so this cannot deadlock against onGameTick()/onEvent() --
 	 * they simply wait if they happen to be called during this window.
 	 */
+	/** Records, synchronously on the thread delivering ClientShutdown,
+	 * that this is a real client shutdown -- before the async
+	 * finalization below is even scheduled, so a Plugin.shutDown()
+	 * racing it can never mistake this for a manual disable. */
+	synchronized void markClientShutdownBegun()
+	{
+		clientShutdownBegun = true;
+	}
+
 	synchronized void finalizeForClientShutdownBlocking()
 	{
+		clientShutdownBegun = true;
 		if (currentAccountHash == NO_ACCOUNT)
 		{
 			return;
 		}
 		flushAllPendingSignals();
 		persistence.persistCurrentAndWait(currentAccountHash, engine.getCurrentSession(), 5000);
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A) -- RESTART
+		// DURABILITY FIX. Real client shutdown is exactly the restart
+		// this feature must survive, so the parked candidate is NOT
+		// finalized here (that previously made "A -> B -> close ->
+		// restart -> A" always mint a fresh A whenever the async
+		// finalize/clear writes happened to land before JVM exit). It is
+		// instead durably re-persisted, BLOCKING like session_state.json
+		// above (the JVM may exit as soon as this future completes), and
+		// the next startup's rehydrate() restores it if still eligible or
+		// finalizes it exactly once at its own T1 if not.
+		persistence.persistInterruptedCandidateAndWait(currentAccountHash, engine.getInterruptedCandidate(),
+			engine.getInterruptedCandidateInterruptedAt(), engine.getInterruptedCandidateExpiresAt(), 5000);
 	}
 
 	// =====================================================================
@@ -1014,9 +1196,17 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		}
 
 		SessionState beforeState = before == null ? null : before.getState();
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A):
+		// allowInterruptedResume=false -- a manual identity correction
+		// must never manufacture a hidden resumable prior session/History
+		// entry (see onQualifyingActivity()'s 5-arg overload javadoc).
+		// This preserves this method's own pre-existing, unchanged
+		// corrective semantics byte-for-byte: a real switch here still
+		// finalizes the old session immediately, exactly as it always
+		// has.
 		LifecycleResult result = classification.getDecisionKind() == SignalDecisionKind.REFINE
 			? engine.refineIdentity(classification.getIdentity(), now, Collections.<MetricUpdate>emptyList())
-			: engine.onQualifyingActivity(classification.getIdentity(), now, Collections.<MetricUpdate>emptyList(), classification.getEvidenceStrength());
+			: engine.onQualifyingActivity(classification.getIdentity(), now, Collections.<MetricUpdate>emptyList(), classification.getEvidenceStrength(), false);
 
 		if (result.getCurrent() != null
 			&& (before == null || !before.getSessionId().equals(result.getCurrent().getSessionId())))
@@ -1046,12 +1236,30 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 			persistence.persistCurrent(currentAccountHash, result.getCurrent());
 		}
 
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): even with
+		// allowInterruptedResume=false above, the background candidate-
+		// expiry housekeeping every timestamped entry point performs is
+		// NOT gated by that flag (see expireInterruptedCandidateIfNeeded()'s
+		// own javadoc) -- an already-parked, already-decided candidate can
+		// still legitimately expire exactly during a manual re-evaluate
+		// call, and must not be dropped.
+		if (result.getAdditionalFinalized() != null)
+		{
+			persistence.persistAdditionalFinalized(currentAccountHash, result.getAdditionalFinalized());
+			persistence.clearInterruptedCandidate(currentAccountHash);
+		}
+
 		classifierContext.onNpcInteractionTarget(currentNpcId, currentNpcName, safeTickCount(), now);
 	}
 
 	synchronized Session testCurrentSession()
 	{
 		return engine.getCurrentSession();
+	}
+
+	synchronized Session testInterruptedCandidate()
+	{
+		return engine.getInterruptedCandidate();
 	}
 
 	synchronized long testPendingSignalCount()

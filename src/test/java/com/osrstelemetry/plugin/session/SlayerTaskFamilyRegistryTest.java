@@ -125,4 +125,33 @@ public class SlayerTaskFamilyRegistryTest
 		assertTrue(SlayerTaskFamilyRegistry.belongsToTaskFamily("Basilisks", "Basilisk Knight"));
 		assertTrue(SlayerTaskFamilyRegistry.belongsToTaskFamily("Basilisks", "Basilisk sentinel"));
 	}
+
+	// Greater Nechryael is Nechryael's own confirmed OSRS-Wiki "Superior
+	// slayer monster" -- a genuine coverage gap this pass closes (see the
+	// registry's own "Nechryael" entry javadoc). This is the direct
+	// regression test for the live-reported bug: a Greater Nechryael kill
+	// during an active Nechryael task must be recognized as on-task-family,
+	// exactly like its existing Nechryarch sibling above, never treated as
+	// an unrelated NPC.
+	@Test
+	public void greaterNechryaelBelongsToNechryaelFamily()
+	{
+		assertTrue(SlayerTaskFamilyRegistry.belongsToTaskFamily("Nechryael", "Greater Nechryael"));
+	}
+
+	// Negative control for the SAME live-reported bug: Death Spawn is a
+	// combat encounter byproduct of fighting Nechryael-family NPCs, never
+	// itself an assignable/on-task Nechryael-family member (no OSRS Wiki
+	// "Superior slayer monster" or task-alias listing pairs it with
+	// Nechryael) -- it must NOT be hand-waved into this family just
+	// because it appears during the same encounter. Its protection against
+	// prematurely stealing session ownership comes from a different,
+	// generic mechanism (SessionLifecycleEngine's downranking-combat-
+	// challenge hysteresis), not from this registry -- see
+	// SessionRuntimeCoordinatorTest's Death Spawn coverage.
+	@Test
+	public void deathSpawnNeverBelongsToNechryaelFamily()
+	{
+		assertFalse(SlayerTaskFamilyRegistry.belongsToTaskFamily("Nechryael", "Death Spawn"));
+	}
 }

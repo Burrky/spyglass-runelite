@@ -192,8 +192,9 @@ final class HistoryView extends JPanel
 		title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-		JLabel subtitle = new JLabel("<html><div style='text-align:center;width:180px;'>"
-			+ "Finalized sessions from the last 10 days will appear here.</div></html>");
+		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
+		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
+		JLabel subtitle = new WrappingHtmlLabel("Finalized sessions from the last 10 days will appear here.", true);
 		subtitle.setFont(FontManager.getRunescapeSmallFont());
 		subtitle.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		subtitle.setAlignmentX(Component.CENTER_ALIGNMENT);

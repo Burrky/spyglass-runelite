@@ -43,20 +43,27 @@ public class SessionAggregates
 	private ReliableCount reliableCount;
 
 	/**
-	 * The total number of Slayer task units (kills/actions)
-	 * consumed while this session was ACTIVE -- the SUM of each
-	 * SLAYER_TASK_PROGRESS event's own taskUnitsConsumed (normally 1
-	 * per event; legitimately &gt;1 only when a genuinely-missed
-	 * intermediate observation is later reconciled -- see
-	 * EventPayloads.SlayerTaskProgress and SessionAggregateUpdater.apply()).
-	 * This is NEVER an absolute task-state number -- never
-	 * currentRemaining, previousRemaining, or initialAmount from any
-	 * single event. The field name is kept as-is (no persisted-document
-	 * migration needed) but the VALUE it stores has been corrected: it
-	 * previously (incorrectly) held the most recently observed absolute
-	 * amountRemaining, which made it collapse to whatever the latest
-	 * event's remaining count happened to be instead of reflecting how
-	 * much progress actually occurred during the session.
+	 * The total number of Slayer TASK UNITS consumed while this
+	 * session was ACTIVE -- the SUM of each SLAYER_TASK_PROGRESS
+	 * event's own taskUnitsConsumed, which is the observed decrease in
+	 * the assignment's authoritative remaining-count value for that one
+	 * event -- see EventPayloads.SlayerTaskProgress and
+	 * SessionAggregateUpdater.apply(). This is NOT a physical NPC-kill
+	 * count and must never be labeled "kills" anywhere player-facing:
+	 * game mechanics (e.g. an expeditious-bracelet-style proc, or a
+	 * bracelet-of-slaughter-style save) can make one physical kill
+	 * consume more than one task unit, or zero, independent of any
+	 * missed-observation reconciliation. This is NEVER an absolute
+	 * task-state number either -- never currentRemaining,
+	 * previousRemaining, or initialAmount from any single event. The
+	 * field name is kept as-is (no persisted-document migration
+	 * needed; see {@link #getSlayerTaskUnitsConsumed()} for an
+	 * additive, honestly-named accessor) but the VALUE it stores has
+	 * been corrected: it previously (incorrectly) held the most
+	 * recently observed absolute amountRemaining, which made it
+	 * collapse to whatever the latest event's remaining count happened
+	 * to be instead of reflecting how much progress actually occurred
+	 * during the session.
 	 *
 	 * Still retained: useful for session/
 	 * history analytics even though the player-facing panel's PRIMARY
@@ -64,6 +71,19 @@ public class SessionAggregates
 	 * field -- see CurrentSessionView's own javadoc.
 	 */
 	private Integer slayerProgressDelta;
+
+	/**
+	 * Honestly-named alias for {@link #getSlayerProgressDelta()} --
+	 * same value, same TASK-UNIT semantics (never a physical NPC-kill
+	 * count). The persisted field/Lombok accessor is kept as
+	 * `slayerProgressDelta` to avoid a persisted-document migration;
+	 * new call sites that want a self-documenting name should prefer
+	 * this method over the raw getter.
+	 */
+	public Integer getSlayerTaskUnitsConsumed()
+	{
+		return slayerProgressDelta;
+	}
 
 	/**
 	 * The LATEST observed authoritative currentRemaining from

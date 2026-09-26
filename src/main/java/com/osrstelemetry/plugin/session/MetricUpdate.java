@@ -86,14 +86,19 @@ final class MetricUpdate
 	/**
 	 * `unitsConsumed` is this ONE observed Slayer progress
 	 * event's own taskUnitsConsumed (see
-	 * SessionSignal.slayerTaskProgress()'s javadoc) -- normally 1,
-	 * legitimately &gt;1 only for a genuinely-missed intermediate
-	 * observation later reconciled. Deliberately never an absolute
-	 * task-state number (currentRemaining/previousRemaining/initialAmount)
-	 * and never converted into a generic "kill" -- see
-	 * SessionAggregateUpdater.apply(), which is solely responsible for
-	 * accumulating these per-event values into
-	 * SessionAggregates.slayerProgressDelta across the whole session.
+	 * SessionSignal.slayerTaskProgress()'s javadoc) -- the observed
+	 * decrease in the assignment's authoritative remaining-count value
+	 * for this one event, NOT a physical NPC-kill count. It is not
+	 * generally 1: game mechanics can make a single physical kill
+	 * consume more than one task unit (e.g. an expeditious-bracelet-
+	 * style proc) or zero (e.g. a bracelet-of-slaughter-style save),
+	 * independent of any missed-observation reconciliation. Deliberately
+	 * never an absolute task-state number
+	 * (currentRemaining/previousRemaining/initialAmount) and never
+	 * converted into a generic "kill" -- see SessionAggregateUpdater.apply(),
+	 * which is solely responsible for accumulating these per-event values
+	 * into SessionAggregates.slayerProgressDelta (a TASK-UNIT total,
+	 * never a kill count) across the whole session.
 	 *
 	 * `currentRemaining` is this SAME event's own authoritative
 	 * currentRemaining, nullable, threaded through unmodified so

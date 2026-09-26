@@ -44,6 +44,13 @@ import java.util.List;
  *     and contextualMetrics empty, whenever there was no abandoned
  *     candidate to commit.
  *
+ * PLUS one field from the interrupted-activity-resume feature --
+ * see {@link #getAdditionalFinalized()}'s own javadoc: a second,
+ * independently-finalized session that can legitimately co-occur
+ * with {@link #getFinalized()} in the same call, since the one
+ * parked interrupted-prior-session candidate runs on its own
+ * lifecycle clock, separate from `current`'s.
+ *
  * Deliberately a plain immutable value rather than reusing Session
  * itself with booleans bolted on — keeping "what to treat as
  * current", "what to durably persist as finalized", and "which
@@ -57,34 +64,36 @@ public final class LifecycleResult
 	private final List<MetricUpdate> metricsForCurrent;
 	private final Session contextualMetricsTarget;
 	private final List<MetricUpdate> contextualMetrics;
+	private final Session additionalFinalized;
 
 	private LifecycleResult(Session current, Session finalized, List<MetricUpdate> metricsForCurrent,
-		Session contextualMetricsTarget, List<MetricUpdate> contextualMetrics)
+		Session contextualMetricsTarget, List<MetricUpdate> contextualMetrics, Session additionalFinalized)
 	{
 		this.current = current;
 		this.finalized = finalized;
 		this.metricsForCurrent = metricsForCurrent == null ? Collections.emptyList() : metricsForCurrent;
 		this.contextualMetricsTarget = contextualMetricsTarget;
 		this.contextualMetrics = contextualMetrics == null ? Collections.emptyList() : contextualMetrics;
+		this.additionalFinalized = additionalFinalized;
 	}
 
 	/** No metrics involved at all (e.g. advanceTime()'s ordinary, no-candidate path). */
 	static LifecycleResult of(Session current, Session finalized)
 	{
-		return new LifecycleResult(current, finalized, null, null, null);
+		return new LifecycleResult(current, finalized, null, null, null, null);
 	}
 
 	/** This call's own metrics apply directly to the returned `current` -- no candidate involved. */
 	static LifecycleResult withMetrics(Session current, Session finalized, List<MetricUpdate> metricsForCurrent)
 	{
-		return new LifecycleResult(current, finalized, metricsForCurrent, null, null);
+		return new LifecycleResult(current, finalized, metricsForCurrent, null, null, null);
 	}
 
 	/** Full form: both this call's own metrics AND an abandoned candidate's committed-once metrics. */
 	static LifecycleResult withMetricsAndContextual(Session current, Session finalized,
 		List<MetricUpdate> metricsForCurrent, Session contextualMetricsTarget, List<MetricUpdate> contextualMetrics)
 	{
-		return new LifecycleResult(current, finalized, metricsForCurrent, contextualMetricsTarget, contextualMetrics);
+		return new LifecycleResult(current, finalized, metricsForCurrent, contextualMetricsTarget, contextualMetrics, null);
 	}
 
 	public Session getCurrent()
@@ -110,5 +119,59 @@ public final class LifecycleResult
 	List<MetricUpdate> getContextualMetrics()
 	{
 		return contextualMetrics;
+	}
+
+	/**
+	 * ADDED (interrupted-activity-resume feature). A SECOND session
+	 * finalized as a side effect of this SAME call, independent of
+	 * {@link #getFinalized()} -- exists only because the one parked
+	 * interrupted-prior-session candidate (see SessionLifecycleEngine's
+	 * own "INTERRUPTED-RESUME CANDIDATE" section) has its own
+	 * independent lifecycle clock from `current`'s, so a single call
+	 * can legitimately finalize BOTH `current`'s own session (via the
+	 * ordinary ACTIVE/SUSPENDED machinery this class already documented)
+	 * AND the parked candidate (its own resume window independently
+	 * expiring, or a second real switch permanently displacing it) in
+	 * the same instant. Never the same object as {@link #getFinalized()}
+	 * (there are only ever two distinct finalizable sessions in play at
+	 * once: `current`'s own, and the one parked candidate's). Null in
+	 * every case where nothing about the parked candidate changed this
+	 * call.
+	 */
+	public Session getAdditionalFinalized()
+	{
+		return additionalFinalized;
+	}
+
+	/**
+	 * Attaches a second, independently-finalized session (see
+	 * {@link #getAdditionalFinalized()}) to an already-built result.
+	 * `additionalFinalized == null` is a safe no-op (returns `this`
+	 * unchanged) so every call site can use this unconditionally.
+	 */
+	LifecycleResult withAdditionalFinalized(Session additionalFinalized)
+	{
+		if (additionalFinalized == null)
+		{
+			return this;
+		}
+		return new LifecycleResult(current, finalized, metricsForCurrent, contextualMetricsTarget, contextualMetrics, additionalFinalized);
+	}
+
+	/**
+	 * Attaches contextual metrics (see {@link #getContextualMetricsTarget()})
+	 * to an already-built result that did not otherwise need to carry
+	 * any -- used by the interrupted-resume real-switch path, whose
+	 * contextual-metrics target may be the session that was JUST parked
+	 * as the interrupted candidate rather than {@link #getFinalized()}
+	 * itself (a legitimate third possibility this class's original
+	 * contract predates -- {@code contextualMetricsTarget} is always
+	 * some Session object this same call is returning a live reference
+	 * to, in whichever capacity: current, finalized, additionalFinalized,
+	 * or the newly-parked candidate).
+	 */
+	LifecycleResult withContextualMetrics(Session contextualMetricsTarget, List<MetricUpdate> contextualMetrics)
+	{
+		return new LifecycleResult(current, finalized, metricsForCurrent, contextualMetricsTarget, contextualMetrics, additionalFinalized);
 	}
 }

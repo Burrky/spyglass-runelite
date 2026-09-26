@@ -11,8 +11,8 @@ import com.google.gson.Gson;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
-import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
@@ -51,54 +51,32 @@ public class SessionRuntimeCoordinatorTest
 
 	private LocalStateStore store;
 	private SessionRuntimeCoordinator coordinator;
+	private Path testRoot;
 
-	@Before
-	public void setUp() throws Exception
-	{
-		deleteAccountDir(ACCOUNT_A);
-		deleteAccountDir(ACCOUNT_B);
-		store = new LocalStateStore(GSON);
-		store.start();
-		coordinator = new SessionRuntimeCoordinator(store);
-	}
+@Before
+public void setUp() throws Exception
+{
+testRoot = Files.createTempDirectory("session-runtime-coordinator-test");
+TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 
-	@After
-	public void tearDown() throws Exception
-	{
-		store.shutdown();
-		deleteAccountDir(ACCOUNT_A);
-		deleteAccountDir(ACCOUNT_B);
-	}
+store = new LocalStateStore(GSON);
+store.start();
+coordinator = new SessionRuntimeCoordinator(store);
+}
 
-	private void deleteAccountDir(long accountHash) throws Exception
-	{
-		File dir = TestFilepaths.file(TelemetryPaths.accountDir(accountHash));
-		if (dir.exists())
-		{
-			File sessionsDir = new File(dir, "sessions");
-			if (sessionsDir.exists())
-			{
-				File[] sessionFiles = sessionsDir.listFiles();
-				if (sessionFiles != null)
-				{
-					for (File f : sessionFiles)
-					{
-						Files.deleteIfExists(f.toPath());
-					}
-				}
-				Files.deleteIfExists(sessionsDir.toPath());
-			}
-			File[] files = dir.listFiles();
-			if (files != null)
-			{
-				for (File f : files)
-				{
-					Files.deleteIfExists(f.toPath());
-				}
-			}
-			Files.deleteIfExists(dir.toPath());
-		}
-	}
+@After
+public void tearDown() throws Exception
+{
+if (store != null)
+{
+store.shutdown();
+}
+
+if (testRoot != null)
+{
+TestFilepaths.rooted(testRoot).deleteRecursively();
+}
+}
 
 	// =====================================================================
 	// Core lifecycle wiring (carried over from the original pass, adapted
@@ -202,6 +180,17 @@ public class SessionRuntimeCoordinatorTest
 		assertTrue("the new, unrelated Vorkath session must never receive Zulrah's loot",
 			newCurrent.getAggregates().getLootDrops().isEmpty());
 
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing
+		// Zulrah session is now PARKED as the ONE resumable interrupted
+		// candidate at the moment of the switch, not finalized immediately
+		// -- its DURABLE FILE only appears once its interrupted-resume
+		// window elapses. Advance past that window (with no further
+		// activity) to let it finalize; the loot it already owns must
+		// still be present exactly once once it does -- ownership is
+		// decided at the moment of the switch, never rewritten by the
+		// later expiry itself.
+		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+
 		Thread.sleep(300);
 		Session finalizedFile = readFinalizedFile(zulrahSessionId);
 		assertEquals("the finalized Zulrah session's DURABLE FILE must contain the loot that arrived "
@@ -252,6 +241,15 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals(ActivityType.BOSSING, newCurrent.getActivityIdentity().getActivityType());
 		assertEquals("the new, unrelated Vorkath session must never receive the Gargoyles task's Slayer XP",
 			0L, xpOf(newCurrent, "SLAYER"));
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing
+		// Gargoyles session is now PARKED as the ONE resumable interrupted
+		// candidate at the moment of the switch, not finalized immediately
+		// -- its DURABLE FILE only appears once its interrupted-resume
+		// window elapses. Advance past that window (with no further
+		// activity) to let it finalize; the Slayer XP it already owns
+		// must still be present exactly once once it does.
+		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
 
 		Thread.sleep(300);
 		Session finalizedFile = readFinalizedFile(gargoylesSessionId);
@@ -309,6 +307,15 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals("normal Gargoyle loot must land on the NEW session", 1, newCurrent.getAggregates().getLootDrops().size());
 		assertNull("the new Gargoyles session must carry no boss reliableCount at all",
 			newCurrent.getAggregates().getReliableCount());
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing GG
+		// session is now PARKED as the ONE resumable interrupted candidate
+		// at the moment of the switch, not finalized immediately -- so its
+		// DURABLE FILE only appears once its interrupted-resume window
+		// elapses. Advance past that window (with no further activity) to
+		// let it finalize, exactly as this test originally observed
+		// synchronously.
+		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
 
 		Thread.sleep(300);
 		Session finalizedGg = readFinalizedFile(ggSessionId);
@@ -402,6 +409,12 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals("the new Gargoyles session must immediately show the correct currentRemaining "
 			+ "from the ambiguous kill -- not wait for a second kill",
 			Integer.valueOf(98), finalCurrent.getAggregates().getLatestSlayerCurrentRemaining());
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): see the earlier
+		// test's own comment -- the outgoing GG session is PARKED, not
+		// finalized, at the switch; advance past its interrupted-resume
+		// window to let it finalize before reading its DURABLE FILE.
+		coordinator.testProcessTick(5L, t2.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
 
 		Thread.sleep(300);
 		Session finalizedGg = readFinalizedFile(ggSessionId);
@@ -857,6 +870,12 @@ public class SessionRuntimeCoordinatorTest
 			1, newCurrent.getAggregates().getLootDrops().size());
 		assertEquals("Gargoyle", newCurrent.getAggregates().getLootDrops().get(0).getSourceName());
 
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): see the earlier
+		// test's own comment -- the outgoing GG session is PARKED, not
+		// finalized, at the switch; advance past its interrupted-resume
+		// window to let it finalize before reading its DURABLE FILE.
+		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+
 		Thread.sleep(300);
 		Session finalizedGg = readFinalizedFile(ggSessionId);
 		assertEquals(SessionState.FINALIZED, finalizedGg.getState());
@@ -937,6 +956,15 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals("the newly-established Zulrah session's own kill loot must never land on the "
 			+ "outgoing Vorkath session", 1, newCurrent.getAggregates().getLootDrops().size());
 		assertEquals("Zulrah", newCurrent.getAggregates().getLootDrops().get(0).getSourceName());
+
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing
+		// Vorkath session is now PARKED as the ONE resumable interrupted
+		// candidate at the moment of the switch, not finalized immediately
+		// -- its DURABLE FILE only appears once its interrupted-resume
+		// window elapses. Advance past that window (with no further
+		// activity) to let it finalize; it must still contain none of
+		// Zulrah's loot once it does.
+		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
 
 		Thread.sleep(300);
 		Session finalizedVorkath = readFinalizedFile(vorkathSessionId);
@@ -2326,6 +2354,15 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals("both Agility batches (6 + 4) combine on the new session, exactly once",
 			10L, xpOf(newCurrent, "AGILITY"));
 
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing
+		// Gargoyles session is now PARKED as the ONE resumable interrupted
+		// candidate at the moment of the switch, not finalized immediately
+		// -- so its DURABLE FILE only appears once its interrupted-resume
+		// window elapses. Advance past that window (with no further
+		// activity) to let it finalize, exactly as this test originally
+		// observed synchronously.
+		coordinator.testProcessTick(5L, secondAgility.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+
 		Thread.sleep(300);
 
 		Session finalizedFile = readFinalizedFile(gargoylesSessionId);
@@ -2340,20 +2377,14 @@ public class SessionRuntimeCoordinatorTest
 	}
 
 	// =====================================================================
-	// SLAYER TASK-FAMILY MEMBERSHIP -- full end-to-end pipeline
-	// proof that DELIBERATE, SUSTAINED off-task combat
-	// can still escape an ACTIVE Slayer session, through the REAL
-	// coordinator -> classifier -> batch resolver -> lifecycle engine
-	// pipeline, mirroring liveBug_incidentalAgilityXpWhileActiveGargoyles_...
-	// above exactly, except the incidental/confirming evidence here is
-	// combat XP against a specifically-named, genuinely OFF-TASK NPC
-	// ("Goat" while assigned "Pyrefiends") rather than Agility XP. A
-	// single incidental tick must not switch anything (no cannon/random-
-	// kill thrash); a second, coherent confirming tick against the SAME
-	// off-task NPC does.
+	// Full pipeline proof that sustained off-task combat can still leave
+	// an ACTIVE Slayer session. This is a DOWNRANKING COMBAT CHALLENGE
+	// (see SessionLifecycleEngine.isDownrankingCombatChallenge()), so it
+	// takes three coherent confirming ticks against the same off-task NPC
+	// to switch, not one and not two.
 	// =====================================================================
 	@Test
-	public void offTaskCombatWhileActiveSlayer_singleIncidentalObservation_doesNotSwitch_secondConfirmingObservationSwitchesToGenericCombat() throws Exception
+	public void offTaskCombatWhileActiveSlayer_twoIncidentalObservationsDoNotSwitch_thirdConfirmingObservationSwitchesToGenericCombat() throws Exception
 	{
 		coordinator.ensureAccountLoaded(ACCOUNT_A);
 
@@ -2366,8 +2397,8 @@ public class SessionRuntimeCoordinatorTest
 		// A "Goat" interaction target is tracked (context only -- never
 		// itself lifecycle evidence), then one incidental combat XP tick
 		// against it arrives -- classifyXpChange()'s combat branch tags
-		// this ORDINARY per the new SLAYER task-family membership gate,
-		// since a Goat is confirmed NOT a Pyrefiends task-family member.
+		// this ORDINARY per the SLAYER task-family membership gate, since
+		// a Goat is confirmed NOT a Pyrefiends task-family member.
 		Instant npcTargetSeen = T0.plusSeconds(5);
 		coordinator.testEnqueueSignal(SessionSignal.npcInteractionTarget(npcTargetSeen, 60, "Goat").withGameTick(2L));
 		coordinator.testProcessTick(3L, npcTargetSeen);
@@ -2384,18 +2415,31 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals(ActivityType.SLAYER, afterFirstWeak.getActivityIdentity().getActivityType());
 
 		// A SECOND, coherent off-task observation against the SAME Goat
-		// confirms deliberate, sustained off-task combat -- the session
-		// now genuinely switches, via the same ACTIVE-candidate mechanism
-		// already proved above for SKILLING evidence. EVIDENCE-WEIGHTED
-		// HYSTERESIS's extra peak/decay inertia does NOT apply here (a
-		// combat-branch candidate against a combat-branch established
-		// session keeps the flat, unconditional requirement -- see
-		// SessionLifecycleEngine.activeRequiredConfirmations()'s own
-		// javadoc), so this confirms immediately at the second
-		// observation exactly as before this feature.
-		Instant secondOffTaskXp = firstOffTaskXp.plusSeconds(20);
+		// still must NOT confirm -- ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS
+		// is a flat 3, with no elapsed-time decay.
+		Instant secondOffTaskXp = firstOffTaskXp.plusSeconds(30);
 		coordinator.testEnqueueSignal(SessionSignal.xpChange(secondOffTaskXp, "STRENGTH", 40L).withGameTick(4L));
 		coordinator.testProcessTick(5L, secondOffTaskXp);
+
+		Session afterSecondWeak = coordinator.testCurrentSession();
+		assertEquals("a SECOND coherent off-task observation must still not be enough on its own",
+			pyrefiendsSessionId, afterSecondWeak.getSessionId());
+		assertEquals(SessionState.ACTIVE, afterSecondWeak.getState());
+		assertEquals(ActivityType.SLAYER, afterSecondWeak.getActivityIdentity().getActivityType());
+
+		// A THIRD, coherent off-task observation against the SAME Goat
+		// finally confirms deliberate, sustained off-task combat -- the
+		// session now genuinely switches, via the same ACTIVE-candidate
+		// mechanism already proved above for SKILLING evidence. Its own
+		// elapsed span from the FIRST observation (firstOffTaskXp) must
+		// also genuinely exceed ACTIVE_DOWNRANK_SUSTAINED_DURATION (60s,
+		// see SessionLifecycleEngine's own generalized ownership/churn
+		// fix) -- here 69 seconds -- proving "eventually allowed to leave
+		// Slayer" still holds once off-task combat is genuinely sustained,
+		// not merely repeated within a handful of seconds.
+		Instant thirdOffTaskXp = secondOffTaskXp.plusSeconds(39);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(thirdOffTaskXp, "DEFENCE", 40L).withGameTick(5L));
+		coordinator.testProcessTick(6L, thirdOffTaskXp);
 
 		Session newCurrent = coordinator.testCurrentSession();
 		assertFalse("a real activity switch must now have occurred",
@@ -2403,13 +2447,22 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals(ActivityType.COMBAT, newCurrent.getActivityIdentity().getActivityType());
 		assertEquals(ActivitySignalClassifier.genericNpcCombatIdentity("Goat"), newCurrent.getActivityIdentity());
 
+		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing
+		// Pyrefiends session is now PARKED as the ONE resumable interrupted
+		// candidate at the moment of the switch, not finalized immediately
+		// -- so its DURABLE FILE only appears once its interrupted-resume
+		// window elapses. Advance past that window (with no further
+		// activity) to let it finalize, exactly as this test originally
+		// observed synchronously.
+		coordinator.testProcessTick(7L, thirdOffTaskXp.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
+
 		Thread.sleep(300);
 
 		Session finalizedFile = readFinalizedFile(pyrefiendsSessionId);
 		assertEquals(SessionState.FINALIZED, finalizedFile.getState());
 		assertEquals("the finalized Pyrefiends session's DURABLE record must show T2 (the confirming "
 			+ "observation's own timestamp) as its finalizedAt, never backdated to T1",
-			secondOffTaskXp.toString(), finalizedFile.getFinalizedAt());
+			thirdOffTaskXp.toString(), finalizedFile.getFinalizedAt());
 	}
 
 	// =====================================================================
@@ -2433,21 +2486,22 @@ public class SessionRuntimeCoordinatorTest
 	// registry's own "Nechryael"/"Nechryarch" entry), so a Death Spawn
 	// kill/XP tick is honestly proposed as ORDINARY off-task evidence --
 	// exactly the same path "Goat" takes against an active Pyrefiends
-	// task above -- and therefore requires the SAME second, coherent,
+	// task above -- and therefore requires the SAME third, coherent,
 	// confirming observation before the session ever switches. This
 	// mirrors the real-world shape of the bug report (a single Death
 	// Spawn kill flipping Current Session away from Nechryael) and closes
 	// it. It is a real, general mechanism reused for this case, not a
 	// name-specific patch -- but it is *not* a full parent/subordinate
-	// ownership model: if a player were somehow to sustain two full
+	// ownership model: if a player were somehow to sustain THREE full
 	// confirming Death Spawn observations with no intervening genuine
 	// Nechryael evidence at all, this mechanism would still allow the
-	// session to switch to generic "Death Spawn" combat, same as it would
-	// for any other genuinely-sustained off-task NPC. That residual gap
-	// is a known, documented limitation of reusing the off-task-combat
-	// gate rather than building a dedicated encounter-ownership model
-	// (out of scope here -- no verified data source exists to
-	// build one correctly), not an unrecognized bug.
+	// session to switch to generic
+	// "Death Spawn" combat, same as it would for any other genuinely-
+	// sustained off-task NPC. That residual gap is a known, documented
+	// limitation of reusing the off-task-combat gate rather than building
+	// a dedicated encounter-ownership model (out of scope here -- no
+	// verified data source exists to build one correctly), not an
+	// unrecognized bug.
 	// =====================================================================
 	@Test
 	public void partA2_deathSpawnDuringActiveNechryael_singleIncidentalObservation_doesNotSwitch_regressionValidationCase() throws Exception
@@ -2509,6 +2563,222 @@ public class SessionRuntimeCoordinatorTest
 		assertEquals("the abandoned Death Spawn candidate's XP must be retained, credited exactly once "
 			+ "to the still-current Nechryael session, as support XP -- never lost, never renaming "
 			+ "the session's own identity", 15L, xpOf(afterResumingNechryael, "ATTACK"));
+	}
+
+	// =====================================================================
+	// Live-bug reproduction: authoritative Nechryael progress, then a
+	// Greater Nechryael kill and a Death Spawn kill/loot/XP all within a
+	// few seconds. Greater Nechryael is on-task-family (Fix 1) and never
+	// arms a candidate; Death Spawn is off-task and is honestly proposed
+	// as a challenger, but ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS (3)
+	// keeps it from winning ownership that fast.
+	// =====================================================================
+	@Test
+	public void liveBugReproduction_greaterNechryaelAndDeathSpawnSubordinateEvidence_nechryaelSessionSurvivesIntact() throws Exception
+	{
+		coordinator.ensureAccountLoaded(ACCOUNT_A);
+
+		// Two authoritative Nechryael task-progress ticks, ~3s apart.
+		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(T0, "Nechryael", "Slayer Tower", 1, 73).withGameTick(1L));
+		coordinator.testProcessTick(2L, T0);
+		String nechryaelSessionId = coordinator.testCurrentSession().getSessionId();
+		String nechryaelStartedAt = coordinator.testCurrentSession().getStartedAt();
+
+		Instant secondProgress = T0.plusSeconds(3);
+		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(secondProgress, "Nechryael", "Slayer Tower", 1, 71).withGameTick(2L));
+		coordinator.testProcessTick(3L, secondProgress);
+		assertEquals(nechryaelSessionId, coordinator.testCurrentSession().getSessionId());
+
+		// A Greater Nechryael is engaged and dies -- its own combat XP is
+		// now on-task-family (Fix 1) and must never even arm a candidate.
+		Instant greaterNechryaelTarget = secondProgress.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.npcInteractionTarget(greaterNechryaelTarget, 61, "Greater Nechryael").withGameTick(3L));
+		coordinator.testProcessTick(4L, greaterNechryaelTarget);
+
+		// Combat XP + death + loot, all landing on the SAME game tick.
+		Instant greaterNechryaelXp = secondProgress.plusSeconds(2);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(greaterNechryaelXp, "ATTACK", 42L).withGameTick(4L));
+		coordinator.testEnqueueSignal(SessionSignal.npcDeath(greaterNechryaelXp).withGameTick(4L));
+		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(greaterNechryaelXp, "Greater Nechryael",
+			Collections.singletonList(new SessionSignal.LootDrop(3, "Nechryael residue", 1))).withGameTick(4L));
+		coordinator.testProcessTick(5L, greaterNechryaelXp);
+
+		Session afterGreaterNechryael = coordinator.testCurrentSession();
+		assertEquals("Greater Nechryael's own combat evidence is on-task-family (Fix 1) -- it must never "
+			+ "fragment the Nechryael session, not even provisionally",
+			nechryaelSessionId, afterGreaterNechryael.getSessionId());
+		assertEquals(ActivityType.SLAYER, afterGreaterNechryael.getActivityIdentity().getActivityType());
+		assertEquals("Nechryael", afterGreaterNechryael.getActivityIdentity().getDisplayName());
+		// Greater Nechryael's own evidence is genuine, on-task Nechryael
+		// activity time (Fix 1) -- it legitimately reinforces lastActiveAt
+		// and accumulated active duration via the SAME "established
+		// identity continues" heartbeat path any other Nechryael kill
+		// uses. Captured HERE (after this genuine reinforcement, before
+		// any Death Spawn evidence) as the baseline the Death Spawn
+		// evidence below must NOT be able to move.
+		long durationBeforeSubordinateEvidence = afterGreaterNechryael.getAccumulatedActiveDurationMillis();
+
+		// A Death Spawn then appears (a genuine combat byproduct, not an
+		// on-task-family member) -- it dies, drops loot, and its combat XP
+		// arrives as two separate ticks (Defence, Hitpoints).
+		Instant deathSpawnTarget = greaterNechryaelXp.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.npcInteractionTarget(deathSpawnTarget, 60, "Death Spawn").withGameTick(5L));
+		coordinator.testProcessTick(6L, deathSpawnTarget);
+
+		Instant deathSpawnDefenceXp = deathSpawnTarget.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(deathSpawnDefenceXp, "DEFENCE", 8L).withGameTick(6L));
+		coordinator.testEnqueueSignal(SessionSignal.npcDeath(deathSpawnDefenceXp).withGameTick(6L));
+		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(deathSpawnDefenceXp, "Death Spawn",
+			Collections.singletonList(new SessionSignal.LootDrop(4, "Ensouled demon head", 1))).withGameTick(6L));
+		coordinator.testProcessTick(7L, deathSpawnDefenceXp);
+
+		Session afterDeathSpawnDefenceXp = coordinator.testCurrentSession();
+		assertEquals("a single incidental Death Spawn tick must never immediately replace the parent "
+			+ "Nechryael session", nechryaelSessionId, afterDeathSpawnDefenceXp.getSessionId());
+		assertEquals(ActivityType.SLAYER, afterDeathSpawnDefenceXp.getActivityIdentity().getActivityType());
+
+		// The second Death Spawn tick is 200 seconds after the first,
+		// proving there is no time-based decay in this requirement.
+		Instant deathSpawnHitpointsXp = deathSpawnDefenceXp.plusSeconds(200);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(deathSpawnHitpointsXp, "HITPOINTS", 12L).withGameTick(7L));
+		coordinator.testProcessTick(8L, deathSpawnHitpointsXp);
+
+		Session afterSecondDeathSpawnTick = coordinator.testCurrentSession();
+		assertEquals("a SECOND Death Spawn tick must STILL not be enough to displace the authoritative, "
+			+ "recently-reinforced Nechryael session -- ACTIVE_DOWNRANK_REQUIRED_CONFIRMATIONS is a flat 3 "
+			+ "with no time-based erosion",
+			nechryaelSessionId, afterSecondDeathSpawnTick.getSessionId());
+		assertEquals(ActivityType.SLAYER, afterSecondDeathSpawnTick.getActivityIdentity().getActivityType());
+		assertEquals("Nechryael", afterSecondDeathSpawnTick.getActivityIdentity().getDisplayName());
+		assertEquals(SessionState.ACTIVE, afterSecondDeathSpawnTick.getState());
+
+		// Session identity, elapsed time, and authoritative task progress
+		// must all remain exactly as the parent Nechryael session left
+		// them -- no fragmentation, no restart, no lost progress.
+		assertEquals("sessionId must remain perfectly stable through all subordinate evidence",
+			nechryaelSessionId, afterSecondDeathSpawnTick.getSessionId());
+		assertEquals("the session's own startedAt must never be reset by subordinate evidence",
+			nechryaelStartedAt, afterSecondDeathSpawnTick.getStartedAt());
+		assertEquals("accumulated active duration must not be reset/rewound by subordinate evidence",
+			durationBeforeSubordinateEvidence, afterSecondDeathSpawnTick.getAccumulatedActiveDurationMillis());
+		assertEquals("the authoritative task-remaining count from the last genuine Nechryael progress "
+			+ "event must be retained, not overwritten or lost",
+			Integer.valueOf(71), afterSecondDeathSpawnTick.getAggregates().getLatestSlayerCurrentRemaining());
+
+		// LOOT-WHILE-ACTIVE OWNERSHIP (SessionSignalBatchResolver's own
+		// pre-existing, unrelated-to-this-fix mechanism -- see its class
+		// javadoc): a METRIC_ONLY SERVER_NPC_LOOT signal against a
+		// genuinely ACTIVE `current` is routed to preBatchCurrentMetrics
+		// and applied to the Nechryael session UNCONDITIONALLY, regardless
+		// of whether the SAME tick's combat XP only arms/repeats an
+		// unconfirmed challenger candidate. So BOTH Greater Nechryael's
+		// and Death Spawn's own loot land on the Nechryael session
+		// immediately -- generic subordinate-NPC evidence is still
+		// recorded for telemetry/Loot Tracker purposes (invariant 4)
+		// without ever owning the session (unlike combat XP, which rides
+		// with the batch's own resolved identity and IS gated behind the
+		// candidate mechanism -- see the XP-ownership assertions in
+		// partA2 above).
+		boolean hasGreaterNechryaelLoot = false;
+		boolean hasDeathSpawnLoot = false;
+		for (SessionAggregates.LootDropGroup drop : afterSecondDeathSpawnTick.getAggregates().getLootDrops())
+		{
+			if ("Greater Nechryael".equals(drop.getSourceName()))
+			{
+				hasGreaterNechryaelLoot = true;
+			}
+			if ("Death Spawn".equals(drop.getSourceName()))
+			{
+				hasDeathSpawnLoot = true;
+			}
+		}
+		assertTrue("Greater Nechryael's own on-task loot must be recorded on the Nechryael session",
+			hasGreaterNechryaelLoot);
+		assertTrue("Death Spawn's own loot must still be recorded on the Nechryael session for "
+			+ "telemetry/Loot Tracker purposes, even though its combat XP never wins session ownership",
+			hasDeathSpawnLoot);
+	}
+
+	// =====================================================================
+	// Two same-gameTick Death Spawn XP signals must resolve to exactly ONE
+	// challenger observation -- SessionSignalBatchResolver groups by
+	// gameTick, so a batch can never advance the count by more than 1. Two
+	// further, genuinely separate ticks then complete the count correctly
+	// (3) and confirm, proving the mechanism neither over- nor
+	// under-counts.
+	// =====================================================================
+	@Test
+	public void sameTickDuplicateCombatXpObservations_countAsExactlyOneChallengerObservation_neverTwo() throws Exception
+	{
+		coordinator.ensureAccountLoaded(ACCOUNT_A);
+
+		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(T0, "Nechryael", "Slayer Tower", 1, 71).withGameTick(1L));
+		coordinator.testProcessTick(2L, T0);
+		String nechryaelSessionId = coordinator.testCurrentSession().getSessionId();
+
+		Instant npcTargetSeen = T0.plusSeconds(13);
+		coordinator.testEnqueueSignal(SessionSignal.npcInteractionTarget(npcTargetSeen, 60, "Death Spawn").withGameTick(2L));
+		coordinator.testProcessTick(3L, npcTargetSeen);
+
+		// Two combat-skill XP signals from the SAME hit, same instant,
+		// same gameTick -- exactly the live telemetry's Defence +
+		// Hitpoints pair. If either signal counted as its own independent
+		// challenger vote, this ONE batch alone would already reach
+		// candidate-observation-count 2.
+		Instant sameHit = npcTargetSeen.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(sameHit, "DEFENCE", 8L).withGameTick(3L));
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(sameHit, "HITPOINTS", 12L).withGameTick(3L));
+		coordinator.testProcessTick(4L, sameHit);
+
+		Session afterSameTickDuplicates = coordinator.testCurrentSession();
+		assertEquals("two same-tick combat XP signals from one hit must resolve to exactly ONE "
+			+ "challenger observation", nechryaelSessionId, afterSameTickDuplicates.getSessionId());
+		assertEquals(ActivityType.SLAYER, afterSameTickDuplicates.getActivityIdentity().getActivityType());
+
+		// A genuinely separate second tick. This must STILL not confirm if
+		// the first batch correctly counted as only ONE observation
+		// (running total 2 of 3) -- but WOULD incorrectly confirm here if
+		// the same-tick duplicates above had been double-counted (which
+		// would already have made the running total 3 of 3). This is what
+		// actually exercises the audit's claim under the new flat-3
+		// requirement -- at the old flat-2 requirement this distinction
+		// was invisible, because a correct count of 2 and a buggy
+		// double-count of 2 looked identical.
+		Instant secondGenuineTick = sameHit.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(secondGenuineTick, "STRENGTH", 10L).withGameTick(4L));
+		coordinator.testProcessTick(5L, secondGenuineTick);
+
+		Session afterSecondGenuineTick = coordinator.testCurrentSession();
+		assertEquals("the same-tick duplicates must not have been double-counted -- after exactly TWO "
+			+ "real challenger observations (one batch of duplicates, one genuinely separate tick), the "
+			+ "session must still not have switched; a double-counting bug would have reached 3 and "
+			+ "switched here instead",
+			nechryaelSessionId, afterSecondGenuineTick.getSessionId());
+		assertEquals(ActivityType.SLAYER, afterSecondGenuineTick.getActivityIdentity().getActivityType());
+
+		// A THIRD genuinely separate tick completes the count correctly
+		// (1 + 1 + 1 = 3) -- but for a DOWNRANKING combat challenge, a raw
+		// count is no longer sufficient on its own (see
+		// SessionLifecycleEngine's ACTIVE_DOWNRANK_SUSTAINED_DURATION,
+		// generalized ownership/churn fix): the challenger must ALSO have
+		// genuinely spanned that same 60s span, measured from its own
+		// first-seen observation (sameHit, this candidate's arming tick).
+		// This tick lands 61s after sameHit -- comfortably past that bar --
+		// so both requirements are finally satisfied together and the
+		// switch confirms; it is still a single genuinely separate tick and
+		// does not touch the same-tick-dedup or running-count assertions
+		// proved above.
+		Instant thirdGenuineTick = secondGenuineTick.plusSeconds(60);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(thirdGenuineTick, "ATTACK", 10L).withGameTick(5L));
+		coordinator.testProcessTick(6L, thirdGenuineTick);
+
+		Session afterThirdGenuineTick = coordinator.testCurrentSession();
+		assertFalse("three real challenger observations (same-tick duplicates counted once, plus two "
+			+ "more genuine ticks), sustained for over 60 seconds since the candidate's first-seen "
+			+ "observation, must confirm the switch",
+			nechryaelSessionId.equals(afterThirdGenuineTick.getSessionId()));
+		assertEquals(ActivityType.COMBAT, afterThirdGenuineTick.getActivityIdentity().getActivityType());
+		assertEquals(ActivitySignalClassifier.genericNpcCombatIdentity("Death Spawn"), afterThirdGenuineTick.getActivityIdentity());
 	}
 
 	// =====================================================================
@@ -2911,5 +3181,102 @@ public class SessionRuntimeCoordinatorTest
 			+ "never switch immediately, when the manual button is not used",
 			established.getSessionId(), stillCurrent.getSessionId());
 		assertEquals(ActivitySignalClassifier.genericCombatIdentity(), stillCurrent.getActivityIdentity());
+	}
+
+	// =====================================================================
+	// GENERALIZED OWNERSHIP/CHURN FIX -- METRIC OWNERSHIP (live QA CASE 2
+	// shape, Kalphite Workers): reproduces the reported "early XP/loot/task
+	// progress fell outside the eventual saved session" defect end to end.
+	// Cold start begins on ordinary, off-family-registry Kalphite Worker
+	// combat XP (current == null bypasses every family/gating check, exactly
+	// like any other cold start); the very next authoritative
+	// SLAYER_TASK_PROGRESS tick REFINES that session in place (generic
+	// COMBAT -> SLAYER, same sessionId/startedAt -- "classify / establish
+	// owner BEFORE attributing further XP/loot/progress" is satisfied
+	// because the refinement happens before any of the early evidence is
+	// ever at risk of being displaced). Further Kalphite Worker combat ticks
+	// and periodic task-progress reinforcement follow, mirroring the live
+	// video's continuing churn attempts -- with the sustained-duration fix
+	// in place, none of them ever fragments the session, so every metric
+	// from the very first, cold-start tick onward lands on the ONE
+	// continuous session: no dropped metrics, no duplicated metrics, no
+	// leakage into a wrong/later session.
+	// =====================================================================
+	@Test
+	public void liveQaCase2Shape_kalphiteMetricOwnership_coldStartEvidenceRetainedThroughRefineAndReinforcement() throws Exception
+	{
+		coordinator.ensureAccountLoaded(ACCOUNT_A);
+
+		// Cold start: no current session yet. Ordinary combat XP against
+		// the task's own on-task monster ("Kalphite Worker", not a family-
+		// registry alias of "Kalphites") is the very FIRST evidence.
+		coordinator.testEnqueueSignal(SessionSignal.npcInteractionTarget(T0, 62, "Kalphite Worker").withGameTick(1L));
+		coordinator.testProcessTick(2L, T0);
+
+		Instant coldStartXp = T0.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.xpChange(coldStartXp, "ATTACK", 20L).withGameTick(2L));
+		coordinator.testProcessTick(3L, coldStartXp);
+		Session afterColdStart = coordinator.testCurrentSession();
+		assertEquals(ActivityType.COMBAT, afterColdStart.getActivityIdentity().getActivityType());
+		String sessionId = afterColdStart.getSessionId();
+		String startedAt = afterColdStart.getStartedAt();
+
+		// Authoritative Slayer task progress arrives immediately after --
+		// this REFINES the cold-start session in place: same sessionId,
+		// same startedAt, the cold-start ATTACK XP carried forward untouched.
+		Instant firstProgress = coldStartXp.plusSeconds(1);
+		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(firstProgress, "Kalphites", "Kalphite Lair", 2, 75).withGameTick(3L));
+		coordinator.testProcessTick(4L, firstProgress);
+		Session afterRefine = coordinator.testCurrentSession();
+		assertEquals("generic COMBAT -> SLAYER promotion must happen IN PLACE -- same sessionId",
+			sessionId, afterRefine.getSessionId());
+		assertEquals("refinement must never reset startedAt", startedAt, afterRefine.getStartedAt());
+		assertEquals(ActivityType.SLAYER, afterRefine.getActivityIdentity().getActivityType());
+		assertEquals("the cold-start XP earned before authoritative Slayer context existed must "
+			+ "still be retained, exactly once, on the one continuous session",
+			20L, xpOf(afterRefine, "ATTACK"));
+
+		// Loot immediately after, still on the same tick's neighborhood.
+		Instant firstLoot = firstProgress.plusSeconds(2);
+		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(firstLoot, "Kalphite Worker",
+			Collections.singletonList(new SessionSignal.LootDrop(1751, "Chitin", 3))).withGameTick(4L));
+		coordinator.testProcessTick(5L, firstLoot);
+		assertEquals(sessionId, coordinator.testCurrentSession().getSessionId());
+		assertEquals(1, coordinator.testCurrentSession().getAggregates().getLootDrops().size());
+
+		// Repeated Kalphite Worker combat + periodic task-progress
+		// reinforcement, mirroring the live video's continued churn
+		// attempts -- the sustained-duration fix must prevent every one of
+		// them from ever fragmenting the session.
+		Instant t = firstLoot;
+		for (int cycle = 0; cycle < 5; cycle++)
+		{
+			t = t.plusSeconds(1);
+			coordinator.testEnqueueSignal(SessionSignal.xpChange(t, "STRENGTH", 5L).withGameTick(5L + cycle * 2));
+			coordinator.testProcessTick(6L + cycle * 2, t);
+			assertEquals("cycle " + cycle + ": session must remain stable through repeated Kalphite "
+				+ "Worker combat", sessionId, coordinator.testCurrentSession().getSessionId());
+
+			t = t.plusSeconds(1);
+			coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(t, "Kalphites", "Kalphite Lair", 1, 74 - cycle).withGameTick(6L + cycle * 2));
+			coordinator.testProcessTick(7L + cycle * 2, t);
+			assertEquals("cycle " + cycle + ": task-progress reinforcement must keep the SAME session",
+				sessionId, coordinator.testCurrentSession().getSessionId());
+		}
+
+		Session finalState = coordinator.testCurrentSession();
+		assertEquals("one continuous session throughout -- no fragmentation, ever",
+			sessionId, finalState.getSessionId());
+		assertEquals("startedAt must still be the COLD-START instant, not a later churned restart",
+			startedAt, finalState.getStartedAt());
+		assertEquals(ActivityType.SLAYER, finalState.getActivityIdentity().getActivityType());
+		assertEquals("the cold-start ATTACK XP must still be present, undropped and not duplicated",
+			20L, xpOf(finalState, "ATTACK"));
+		assertEquals("every subsequent Kalphite Worker STRENGTH tick must have landed on the SAME "
+			+ "session exactly once", 25L, xpOf(finalState, "STRENGTH"));
+		assertEquals("the loot recorded before the churn-prone period must still be present",
+			1, finalState.getAggregates().getLootDrops().size());
+		assertEquals("the latest authoritative Slayer remaining-count must be retained",
+			Integer.valueOf(70), finalState.getAggregates().getLatestSlayerCurrentRemaining());
 	}
 }

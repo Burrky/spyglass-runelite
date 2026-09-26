@@ -507,60 +507,25 @@ public class CurrentSessionSnapshotTest
 
 	// ADDED (Spyglass Phase 1A/1B/1C/1D).
 
+	// REMOVED (Slayer task-unit/physical-kill semantics audit):
+	// getSlayerKillsPerHour() no longer exists. slayerProgressDelta is a
+	// Slayer TASK-UNIT total, not a physical NPC-kill count, so a
+	// "kills/hr" figure derived from it would mislabel task units as
+	// kills; no reliable, independent physical-player-kill signal exists
+	// for an ordinary Slayer session to compute a genuine one instead.
 	@Test
-	public void slayerKillsPerHour_nullBelowDurationThreshold()
+	public void noSlayerKillsPerHourMethodExists_taskUnitsNeverSurfacedAsAKillRate()
 	{
-		Session session = activeSessionAt(T0);
-		session.getAggregates().setSlayerProgressDelta(3);
-
-		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(
-			SessionSnapshot.capture(session), T0.plusSeconds(30));
-
-		assertNull(snapshot.getSlayerKillsPerHour());
+		for (java.lang.reflect.Method method : CurrentSessionSnapshot.class.getMethods())
+		{
+			assertFalse("no method on CurrentSessionSnapshot may expose Slayer task units as a "
+				+ "kill rate -- found: " + method.getName(),
+				method.getName().toLowerCase(java.util.Locale.ROOT).contains("killsperhour"));
+		}
 	}
 
 	@Test
-	public void slayerKillsPerHour_computedAtOrAboveDurationThreshold()
-	{
-		Session session = activeSessionAt(T0);
-		session.getAggregates().setSlayerProgressDelta(3);
-
-		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(
-			SessionSnapshot.capture(session), T0.plusSeconds(60));
-
-		// 3 task units in 60 seconds -> 180/hr.
-		assertEquals(Long.valueOf(180L), snapshot.getSlayerKillsPerHour());
-	}
-
-	@Test
-	public void slayerKillsPerHour_nullWhenNoKillsObservedYet()
-	{
-		Session session = activeSessionAt(T0);
-
-		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(
-			SessionSnapshot.capture(session), T0.plus(Duration.ofMinutes(5)));
-
-		assertNull(snapshot.getSlayerKillsPerHour());
-	}
-
-	@Test
-	public void slayerKillsPerHour_neverDerivedFromReliableCount_onlyFromSlayerProgressDelta()
-	{
-		Session session = activeSessionAt(T0);
-		SessionAggregates.ReliableCount rc = new SessionAggregates.ReliableCount();
-		rc.setKind(SessionAggregates.ReliableCountKind.KILLS);
-		rc.setSourceKey("gargoyles:catacombs");
-		rc.setSessionOccurrences(40);
-		session.getAggregates().setReliableCount(rc);
-
-		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(
-			SessionSnapshot.capture(session), T0.plus(Duration.ofMinutes(5)));
-
-		assertNull(snapshot.getSlayerKillsPerHour());
-	}
-
-	@Test
-	public void estimatedSlayerXpRemaining_nullBelowMinKillsThreshold()
+	public void estimatedSlayerXpRemaining_nullBelowMinTaskUnitsThreshold()
 	{
 		Session session = activeSessionAt(T0);
 		session.getAggregates().setSlayerProgressDelta(1);
@@ -582,8 +547,32 @@ public class CurrentSessionSnapshotTest
 
 		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(SessionSnapshot.capture(session), T0);
 
-		// (800 xp / 4 kills) * 10 remaining = 2000 -- session-observed data only, never a Wiki table.
+		// (800 xp / 4 task units) * 10 remaining = 2000 -- session-observed data only, never a Wiki table.
 		assertEquals(Long.valueOf(2000L), snapshot.getEstimatedSlayerXpRemaining());
+	}
+
+	// Regression: an expeditious-bracelet-style proc can make ONE
+	// physical kill consume TWO task units. slayerXpGained here is
+	// deliberately that single physical kill's own full XP (never
+	// doubled/split by this test), while slayerProgressDelta is 2 task
+	// units from that one kill -- the calculation must stay
+	// TASK-UNIT-consistent (XP / task units, not XP / physical kills)
+	// rather than silently assuming taskUnitsConsumed == physical kills.
+	@Test
+	public void estimatedSlayerXpRemaining_staysTaskUnitConsistent_whenOnePhysicalKillConsumesTwoTaskUnits()
+	{
+		Session session = activeSessionAt(T0);
+		session.getAggregates().setSlayerProgressDelta(2);
+		session.getAggregates().setLatestSlayerCurrentRemaining(10);
+		session.getAggregates().getXpGainedBySkill().put("SLAYER", 200L);
+
+		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(SessionSnapshot.capture(session), T0);
+
+		// (200 xp / 2 task units) * 10 remaining = 1000 -- correct
+		// task-unit math. A physical-kill-count assumption would instead
+		// divide by 1 physical kill and yield 2000, which is exactly the
+		// class of error this regression guards against.
+		assertEquals(Long.valueOf(1000L), snapshot.getEstimatedSlayerXpRemaining());
 	}
 
 	@Test
@@ -633,8 +622,14 @@ public class CurrentSessionSnapshotTest
 		assertNull(snapshot.getLootHeaderKillCount());
 	}
 
+	// CORRECTED (Slayer task-unit/physical-kill semantics audit): the
+	// loot header must NEVER use slayerProgressDelta (a Slayer TASK-UNIT
+	// total) as a physical-kill count, even when it is set and a
+	// reliable physical-kill count is ALSO available -- the reliable
+	// count (a genuine physical-kill signal) always wins, never the
+	// task-unit total.
 	@Test
-	public void lootHeaderKillCount_prefersSlayerProgressDeltaOverReliableCount()
+	public void lootHeaderKillCount_reliableCountWins_neverSlayerProgressDelta()
 	{
 		Session session = activeSessionAt(T0);
 		session.getAggregates().setSlayerProgressDelta(6);
@@ -646,7 +641,26 @@ public class CurrentSessionSnapshotTest
 
 		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(SessionSnapshot.capture(session), T0);
 
-		assertEquals(Integer.valueOf(6), snapshot.getLootHeaderKillCount());
+		assertEquals(Integer.valueOf(99), snapshot.getLootHeaderKillCount());
+	}
+
+	// The exact live-bug reproduction, at the loot-header layer: a
+	// Slayer session with ONLY task units observed (no independent
+	// reliable physical-kill count -- the ordinary case for most Slayer
+	// monsters) must render a plain "LOOT" header (null here), never
+	// "LOOT x{taskUnits}".
+	@Test
+	public void lootHeaderKillCount_nullForOrdinarySlayerSession_neverFallsBackToTaskUnits()
+	{
+		Session session = activeSessionAt(T0);
+		session.getAggregates().setSlayerProgressDelta(47);
+
+		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(SessionSnapshot.capture(session), T0);
+
+		assertNull("47 task units consumed (e.g. via an expeditious-bracelet-style proc on 36 physical "
+			+ "kills) must never be rendered as a physical-kill count -- the honest header is plain "
+			+ "\"LOOT\", not \"LOOT x47\"",
+			snapshot.getLootHeaderKillCount());
 	}
 
 	@Test

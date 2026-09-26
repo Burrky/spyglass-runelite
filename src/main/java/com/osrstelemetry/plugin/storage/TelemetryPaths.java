@@ -168,6 +168,21 @@ public final class TelemetryPaths
 	}
 
 	/**
+	 * INTERRUPTED-ACTIVITY RESUME (A -&gt; brief B -&gt; A): the ONE
+	 * additive, account-scoped persistence record for the interrupted/
+	 * resumable prior session, if any -- see InterruptedCandidateRecord's
+	 * own javadoc. Deliberately a small SEPARATE file rather than a
+	 * change to session_state.json's own shape (a different plugin
+	 * version, or an account that predates this feature, simply has no
+	 * such file -- SessionPersistence treats that identically to "no
+	 * candidate parked," never an error).
+	 */
+	public static Filepath interruptedCandidateFile(long accountHash)
+	{
+		return accountDir(accountHash).joinSegment("interrupted_candidate.json");
+	}
+
+	/**
 	 * Mirrors the old File-based "mkdirs() if missing" convention --
 	 * Filepath.createDirectories() is idempotent exactly like mkdirs()
 	 * (a no-op success if the directory already exists), the one

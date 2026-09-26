@@ -58,7 +58,7 @@ import java.util.Set;
  * Marble gargoyle, Guardian Drake, Greater abyssal demon, Dreadborn
  * Araxyte, Nuclear smoke devil, Colossal hydra, Pyrelord/Infernal
  * pyrelord, Screaming banshee/Twisted banshee/Screaming twisted
- * banshee, Giant rockslug) are OSRS-Wiki-sourced game-mechanic FACTS
+ * banshee, Giant rockslug, Greater Nechryael) are OSRS-Wiki-sourced game-mechanic FACTS
  * (the "Superior slayer monster" article's normal-monster-to-superior
  * pairing table, cross-checked one-by-one against each paired normal
  * monster's own infobox Slayer-task category to confirm it is a
@@ -236,7 +236,7 @@ final class SlayerTaskFamilyRegistry
 		register(table, "Monkeys", "Tortured gorilla", "Demonic gorilla", "Padulah");
 		register(table, "Moss giants", "Bryophyta");
 		register(table, "Mutated zygomites", "Zygomite", "Fungi");
-		register(table, "Nechryael", "Nechryarch");
+		register(table, "Nechryael", "Nechryarch", "Greater Nechryael");
 		register(table, "Ogres", "Enclave guard", "Mogre", "Ogress", "Skogre", "Zogre");
 		register(table, "Otherworldly beings");
 		register(table, "The Phantom Muspah");

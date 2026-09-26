@@ -19,8 +19,9 @@ final class RecentActivityView extends JPanel
 		setLayout(new BorderLayout());
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 
-		JLabel label = new JLabel("<html><div style='text-align:center;width:180px;'>"
-			+ "Recent Activity is coming soon.</div></html>");
+		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
+		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
+		JLabel label = new WrappingHtmlLabel("Recent Activity is coming soon.", true);
 		label.setFont(FontManager.getRunescapeSmallFont());
 		label.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
 		label.setHorizontalAlignment(SwingConstants.CENTER);
