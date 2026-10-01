@@ -37,6 +37,35 @@ final class MetricUpdate
 	private final Integer slayerProgressValue;
 	private final Integer slayerCurrentRemaining;
 
+	/**
+	 * SMART SLAYER: when this metric's underlying game event happened (an
+	 * XP window's own START, or the observing signal's time), used only to
+	 * credit it to the right Slayer assignment record -- e.g. a final
+	 * kill's XP whose window began before the task completed. Null =
+	 * unknown (credited to the current, unfinished assignment only).
+	 * Never affects session-wide aggregation.
+	 */
+	/** One structured-activity completion (activity key) and the game's running count, if known. */
+	private String activityCompletionKey;
+	private Integer activityCompletionAuthoritativeValue;
+
+	/** STRUCTURED ACTIVITY STATS (see SessionAggregates.ActivitySessionStats); key non-null = a stats update. */
+	private String activityStatsKey;
+	private Long currencyGained;
+	/** Which currency currencyGained is for (null = the activity's single currency). */
+	private String currencyKey;
+	/** Produced items (output, never loot) for the activity's own session. */
+	private List<SessionSignal.LootDrop> producedItems;
+	private Integer score;
+	private Integer scoreCompletionCount;
+	private boolean scoreTrusted;
+	private boolean scoreUpdate;
+
+	private Instant referenceTime;
+
+	/** SLAYER_BRACELET_EFFECT: "SLAUGHTER" / "EXPEDITIOUS" -- one proc for the assignment current at referenceTime. */
+	private String slayerBraceletEffect;
+
 	private MetricUpdate(
 		String xpSkill,
 		Long xpDelta,
@@ -59,6 +88,31 @@ final class MetricUpdate
 		this.reliableCountAuthoritativeValue = reliableCountAuthoritativeValue;
 		this.slayerProgressValue = slayerProgressValue;
 		this.slayerCurrentRemaining = slayerCurrentRemaining;
+	}
+
+	/** This same metric with its game-event reference time set (see referenceTime). */
+	MetricUpdate withReferenceTime(Instant referenceTime)
+	{
+		MetricUpdate copy = new MetricUpdate(xpSkill, xpDelta, lootSourceName, lootObservedAt, lootDrops,
+			reliableCountKind, reliableCountSourceKey, reliableCountAuthoritativeValue, slayerProgressValue, slayerCurrentRemaining);
+		copy.referenceTime = referenceTime;
+		copy.activityCompletionKey = activityCompletionKey;
+		copy.activityCompletionAuthoritativeValue = activityCompletionAuthoritativeValue;
+		copy.activityStatsKey = activityStatsKey;
+		copy.currencyGained = currencyGained;
+		copy.currencyKey = currencyKey;
+		copy.producedItems = producedItems;
+		copy.score = score;
+		copy.scoreCompletionCount = scoreCompletionCount;
+		copy.scoreTrusted = scoreTrusted;
+		copy.scoreUpdate = scoreUpdate;
+		copy.slayerBraceletEffect = slayerBraceletEffect;
+		return copy;
+	}
+
+	Instant getReferenceTime()
+	{
+		return referenceTime;
 	}
 
 	static MetricUpdate xp(String skill, long delta)
@@ -107,6 +161,111 @@ final class MetricUpdate
 	 * player-facing display -- see SessionAggregates.latestSlayerCurrentRemaining's
 	 * own javadoc.
 	 */
+	static MetricUpdate activityCompletion(String activityKey, Integer authoritativeValue)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.activityCompletionKey = activityKey;
+		m.activityCompletionAuthoritativeValue = authoritativeValue;
+		return m;
+	}
+
+	static MetricUpdate activityCurrency(String activityKey, long gained)
+	{
+		return activityCurrency(activityKey, null, gained);
+	}
+
+	static MetricUpdate activityCurrency(String activityKey, String currencyKey, long gained)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.activityStatsKey = activityKey;
+		m.currencyGained = gained;
+		m.currencyKey = currencyKey;
+		return m;
+	}
+
+	/** Produced items for the activity's own session (routed by activityStatsKey, like the other session stats). */
+	static MetricUpdate activityProduction(String activityKey, List<SessionSignal.LootDrop> items)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.activityStatsKey = activityKey;
+		m.producedItems = items;
+		return m;
+	}
+
+	String getCurrencyKey()
+	{
+		return currencyKey;
+	}
+
+	List<SessionSignal.LootDrop> getProducedItems()
+	{
+		return producedItems;
+	}
+
+	/** One completed game's final score; untrusted / unknown scores still consume the completion count (dedupe). */
+	static MetricUpdate activityScore(String activityKey, Integer completionCount, Integer score, boolean trusted)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.activityStatsKey = activityKey;
+		m.scoreUpdate = true;
+		m.scoreCompletionCount = completionCount;
+		m.score = score;
+		m.scoreTrusted = trusted;
+		return m;
+	}
+
+	String getActivityStatsKey()
+	{
+		return activityStatsKey;
+	}
+
+	Long getCurrencyGained()
+	{
+		return currencyGained;
+	}
+
+	boolean isScoreUpdate()
+	{
+		return scoreUpdate;
+	}
+
+	Integer getScore()
+	{
+		return score;
+	}
+
+	Integer getScoreCompletionCount()
+	{
+		return scoreCompletionCount;
+	}
+
+	boolean isScoreTrusted()
+	{
+		return scoreTrusted;
+	}
+
+	String getActivityCompletionKey()
+	{
+		return activityCompletionKey;
+	}
+
+	Integer getActivityCompletionAuthoritativeValue()
+	{
+		return activityCompletionAuthoritativeValue;
+	}
+
+	static MetricUpdate slayerBracelet(String effect)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.slayerBraceletEffect = effect;
+		return m;
+	}
+
+	String getSlayerBraceletEffect()
+	{
+		return slayerBraceletEffect;
+	}
+
 	static MetricUpdate slayerProgress(int unitsConsumed, Integer currentRemaining)
 	{
 		return new MetricUpdate(null, null, null, null, null, null, null, null, unitsConsumed, currentRemaining);

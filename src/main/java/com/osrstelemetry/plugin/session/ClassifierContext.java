@@ -87,6 +87,20 @@ import java.util.Map;
  */
 public final class ClassifierContext
 {
+	/**
+	 * STRUCTURED ACTIVITY: ARMED/ACTIVE/LOCKED recognition of the structured
+	 * activity whose location the player is in. Transient by design -- a
+	 * fresh context (restart, relog into a new runtime, account switch)
+	 * starts OUTSIDE and must re-arm from the next location signal.
+	 */
+	private final com.osrstelemetry.plugin.activity.StructuredActivityTracker structuredActivity =
+		new com.osrstelemetry.plugin.activity.StructuredActivityTracker();
+
+	com.osrstelemetry.plugin.activity.StructuredActivityTracker getStructuredActivity()
+	{
+		return structuredActivity;
+	}
+
 	private String activeSlayerTaskName;
 	private String activeSlayerTaskLocation;
 
@@ -349,6 +363,26 @@ public final class ClassifierContext
 	}
 
 	/**
+	 * Moves {@code sessionId}'s start-of-session baseline for {@code skill}
+	 * back to {@code xpBefore} when the gain that STARTED the session (a
+	 * STRUCTURED_LIVE_XP that switched to it in the same batch) is already
+	 * included in the baseline captured at the switch. The later durable
+	 * window then credits that first gain to the session it started -- once.
+	 */
+	void lowerXpAtSessionStart(String sessionId, String skill, long xpBefore)
+	{
+		if (sessionId == null || !sessionId.equals(xpBoundaryOwnerSessionId) || skill == null)
+		{
+			return;
+		}
+		Long current = xpAtSessionStartBySkill.get(skill);
+		if (current == null || xpBefore < current)
+		{
+			xpAtSessionStartBySkill.put(skill, xpBefore);
+		}
+	}
+
+	/**
 	 * Arms (or, for the SAME boss identity, extends) the pending boss
 	 * task candidate -- see class javadoc. Called only from
 	 * classifySlayerTaskProgress() when the current ACTIVE boss's own
@@ -534,5 +568,6 @@ public final class ClassifierContext
 		this.recentTargetLastSeenAt = null;
 		this.xpBoundaryOwnerSessionId = null;
 		this.xpAtSessionStartBySkill.clear();
+		this.structuredActivity.clear();
 	}
 }

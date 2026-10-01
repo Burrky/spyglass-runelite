@@ -120,12 +120,12 @@ final class SessionEventMapper
 			case ACTIVITY_COMPLETION:
 			{
 				EventPayloads.ActivityCompletion p = (EventPayloads.ActivityCompletion) payload;
-				return SessionSignal.activityCompletion(observedAt, p.getDisplayName());
+				return SessionSignal.activityCompletion(observedAt, p.getDisplayName(), p.getCompletionCount());
 			}
 			case SLAYER_TASK_ASSIGNED:
 			{
 				EventPayloads.SlayerTaskAssigned p = (EventPayloads.SlayerTaskAssigned) payload;
-				return SessionSignal.slayerTaskAssigned(observedAt, p.getMonster(), p.getLocation(), p.getAmount());
+				return SessionSignal.slayerTaskAssigned(observedAt, p.getMonster(), p.getLocation(), p.getAmount(), p.getMasterId() > 0 ? p.getMasterId() : null);
 			}
 			case SLAYER_TASK_PROGRESS:
 			{
@@ -155,15 +155,24 @@ final class SessionEventMapper
 				// latest-value field (see SessionAggregateUpdater.apply()'s
 				// own handling of MetricUpdate.getSlayerCurrentRemaining()).
 				EventPayloads.SlayerTaskProgress p = (EventPayloads.SlayerTaskProgress) payload;
+				// p.getInitialAmount() (the task's native original size) rides
+				// along as assignment metadata only -- 0 means "not synced yet"
+				// and is passed as null, never as a real amount.
 				return SessionSignal.slayerTaskProgress(
-					observedAt, p.getTaskName(), p.getTaskLocation(), p.getTaskUnitsConsumed(), p.getCurrentRemaining());
+					observedAt, p.getTaskName(), p.getTaskLocation(), p.getTaskUnitsConsumed(), p.getCurrentRemaining(),
+					p.getInitialAmount() > 0 ? p.getInitialAmount() : null, p.getMasterId() > 0 ? p.getMasterId() : null);
+			}
+			case SLAYER_BRACELET_EFFECT:
+			{
+				EventPayloads.SlayerBraceletEffect p = (EventPayloads.SlayerBraceletEffect) payload;
+				return SessionSignal.slayerBraceletEffect(observedAt, p.getEffect());
 			}
 			case SLAYER_TASK_COMPLETED:
 			{
 				EventPayloads.SlayerTaskCompleted p = (EventPayloads.SlayerTaskCompleted) payload;
 				// No location field exists on this payload (see
 				// EventPayloads.SlayerTaskCompleted) -- never fabricated.
-				return SessionSignal.slayerTaskCompleted(observedAt, p.getMonster(), null);
+				return SessionSignal.slayerTaskCompleted(observedAt, p.getMonster(), null, Boolean.TRUE.equals(p.getCancelled()));
 			}
 			case SERVER_NPC_LOOT:
 			{
@@ -200,6 +209,57 @@ final class SessionEventMapper
 				EventPayloads.RawCombatXpObserved p = (EventPayloads.RawCombatXpObserved) payload;
 				return SessionSignal.rawCombatXpObserved(observedAt, p.getSkillName());
 			}
+			case STRUCTURED_ACTIVITY_STATE:
+			{
+				EventPayloads.StructuredActivityState p = (EventPayloads.StructuredActivityState) payload;
+				return SessionSignal.structuredActivityLocation(observedAt, p.getActivityKey(), p.getRegionId());
+			}
+			case STRUCTURED_ACTIVITY_COMPLETION:
+			{
+				EventPayloads.StructuredActivityCompletion p = (EventPayloads.StructuredActivityCompletion) payload;
+				return SessionSignal.structuredActivityCompletion(observedAt, p.getActivityKey(), p.getCompletionCount());
+			}
+			case STRUCTURED_ACTIVITY_SCORE:
+			{
+				EventPayloads.StructuredActivityScore p = (EventPayloads.StructuredActivityScore) payload;
+				return SessionSignal.structuredActivityScore(observedAt, p.getActivityKey(), p.getCompletionCount(), p.getPoints(),
+					p.isObservedFromStart());
+			}
+			case STRUCTURED_ACTIVITY_CURRENCY:
+			{
+				EventPayloads.StructuredActivityCurrency p = (EventPayloads.StructuredActivityCurrency) payload;
+				return p.getGained() > 0
+					? SessionSignal.structuredActivityCurrency(observedAt, p.getActivityKey(), p.getCurrency(), p.getGained())
+					: null;
+			}
+			case STRUCTURED_ACTIVITY_PRODUCTION:
+			{
+				EventPayloads.StructuredActivityProduction p = (EventPayloads.StructuredActivityProduction) payload;
+				if (p.getItems() == null || p.getItems().isEmpty())
+				{
+					return null;
+				}
+				List<SessionSignal.LootDrop> produced = new ArrayList<>(p.getItems().size());
+				for (EventPayloads.ProducedItem item : p.getItems())
+				{
+					if (item != null && item.getQuantity() > 0)
+					{
+						produced.add(new SessionSignal.LootDrop(item.getItemId(),
+							item.getItemName() == null ? "Item " + item.getItemId() : item.getItemName(), item.getQuantity()));
+					}
+				}
+				return produced.isEmpty() ? null : SessionSignal.structuredActivityProduction(observedAt, p.getActivityKey(), produced);
+			}
+			case STRUCTURED_REWARD:
+			{
+				EventPayloads.StructuredReward p = (EventPayloads.StructuredReward) payload;
+				List<SessionSignal.LootDrop> drops = new ArrayList<>(p.getItems().size());
+				for (EventPayloads.StructuredRewardItem item : p.getItems())
+				{
+					drops.add(new SessionSignal.LootDrop(item.getItemId(), item.getItemName(), item.getQuantity()));
+				}
+				return SessionSignal.structuredReward(observedAt, p.getActivityKey(), canonicalRewardSourceKey(p), drops);
+			}
 			case BANK_SNAPSHOT:
 			case SEED_VAULT_SNAPSHOT:
 				// Storage snapshots carry no session lifecycle activity --
@@ -230,6 +290,22 @@ final class SessionEventMapper
 	 * field's own "null means the ownership guard is a no-op" contract
 	 * (see SessionSignal's xpWindowStart javadoc).
 	 */
+	/**
+	 * The payload's canonical reward-source key; an older payload without one
+	 * canonicalizes its sourceName through the registry's declared aliases.
+	 * An unknown name passes through unchanged and is then owned by nobody.
+	 */
+	static String canonicalRewardSourceKey(EventPayloads.StructuredReward p)
+	{
+		if (p.getSourceKey() != null)
+		{
+			return p.getSourceKey();
+		}
+		com.osrstelemetry.plugin.activity.StructuredRewardSource source =
+			com.osrstelemetry.plugin.activity.StructuredActivityRegistry.defaults().rewardSource(p.getSourceName());
+		return source == null ? p.getSourceName() : source.getKey();
+	}
+
 	private static Instant parseInstantSafely(String value)
 	{
 		if (value == null || value.isEmpty())

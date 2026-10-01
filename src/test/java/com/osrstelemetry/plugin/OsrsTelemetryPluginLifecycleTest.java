@@ -20,11 +20,9 @@ import org.junit.Test;
  * duplicate-initialization guard requirements 2 and 5 asked for.
  *
  * What this does NOT cover (verified instead by source inspection):
- * that startUp()
- * actually calls clientThread.invokeLater() rather than calling
- * handleLogin() directly, and that onConfigChanged()'s entire switch
- * runs inside clientThread.invokeLater(). Those are structural
- * properties of the production code, not decisions this gate makes.
+ * that startUp() actually calls clientThread.invokeLater() rather than
+ * calling handleLogin() directly -- a structural property of the
+ * production code, not a decision this gate makes.
  */
 public class OsrsTelemetryPluginLifecycleTest
 {

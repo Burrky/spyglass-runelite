@@ -11,6 +11,8 @@ import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import org.junit.After;
 import org.junit.Before;
@@ -41,9 +43,15 @@ public class SessionPersistenceTest
 	private LocalStateStore store;
 	private SessionPersistence persistence;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("session-persistence-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir(TEST_ACCOUNT_HASH);
 		deleteAccountDir(OTHER_ACCOUNT_HASH);
 		store = new LocalStateStore(GSON);
@@ -57,6 +65,7 @@ public class SessionPersistenceTest
 		store.shutdown();
 		deleteAccountDir(TEST_ACCOUNT_HASH);
 		deleteAccountDir(OTHER_ACCOUNT_HASH);
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private static void deleteAccountDir(long accountHash)

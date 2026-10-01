@@ -352,6 +352,35 @@ public class ActivitySignalClassifierTest
 		assertEquals(1000L, group.getItems().get(0).getQuantity());
 	}
 
+	// Smart Slayer off-task: KNOWN_MISMATCH is an explicit Current Session
+	// ownership rejection (still IGNORE_FOR_SESSION, flagged so the batch
+	// resolver's same-tick promotion never re-attaches it); a plain
+	// no-ACTIVE-session ignore stays unflagged (still promotable), and
+	// MATCH / UNKNOWN stay METRIC_ONLY.
+	@Test
+	public void serverNpcLoot_offTaskKnownMismatch_isFlaggedOwnershipRejection_otherIgnoresAndOwnershipUnchanged()
+	{
+		List<SessionSignal.LootDrop> drops = Arrays.asList(new SessionSignal.LootDrop(995, "Coins", 7));
+		Session turoth = sessionOf(ActivitySignalClassifier.slayerIdentity("Turoth", "Fremennik Slayer Dungeon"), T0);
+
+		SignalClassification mismatch = classifier.classify(SessionSignal.serverNpcLoot(T0.plusSeconds(5), "Undead chicken", drops), turoth, new ClassifierContext());
+		assertEquals(SignalDecisionKind.IGNORE_FOR_SESSION, mismatch.getDecisionKind());
+		assertTrue(mismatch.isOwnershipRejected());
+		assertTrue(mismatch.getMetricUpdates().isEmpty());
+
+		SignalClassification noSession = classifier.classify(SessionSignal.serverNpcLoot(T0.plusSeconds(5), "Undead chicken", drops), null, new ClassifierContext());
+		assertEquals(SignalDecisionKind.IGNORE_FOR_SESSION, noSession.getDecisionKind());
+		assertFalse("no-ACTIVE-session ignore stays promotable", noSession.isOwnershipRejected());
+
+		SignalClassification match = classifier.classify(SessionSignal.serverNpcLoot(T0.plusSeconds(5), "Turoth", drops), turoth, new ClassifierContext());
+		assertEquals(SignalDecisionKind.METRIC_ONLY, match.getDecisionKind());
+		assertFalse(match.isOwnershipRejected());
+
+		SignalClassification unknown = classifier.classify(SessionSignal.serverNpcLoot(T0.plusSeconds(5), "Death Spawn", drops), turoth, new ClassifierContext());
+		assertEquals(SignalDecisionKind.METRIC_ONLY, unknown.getDecisionKind());
+		assertFalse(unknown.isOwnershipRejected());
+	}
+
 	// Test 25: RAID_COMPLETION / ACTIVITY_COMPLETION / QUEST_COMPLETED are all completion-only, standalone-activity-natured, and never carry an identity.
 	@Test
 	public void completionSignalsAreStandaloneCompletionOnly()
@@ -1117,27 +1146,29 @@ public class ActivitySignalClassifierTest
 	// for the exact case-letter the audit called out, proving no
 	// production change was needed here.
 	@Test
-	public void caseD_suspendedSlayerGargoyles_specificBossingGrotesqueGuardians_grotesqueGuardiansWinsImmediately()
+	public void caseD_suspendedSlayerGargoyles_grotesqueGuardiansKill_resumesTheSameSlayerSession()
 	{
 		ActivityIdentity gargoyles = ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend");
 		Session suspended = suspendedSessionOf(gargoyles, T0);
 		assertEquals(SessionState.SUSPENDED, suspended.getState());
 
-		ActivityIdentity grotesqueGuardians = ActivitySignalClassifier.bossIdentity("Grotesque Guardians");
 		SignalClassification result = classifier.classify(
-			SessionSignal.bossKill(T0.plusSeconds(9999), "Grotesque Guardians", 1), suspended, new ClassifierContext());
+			SessionSignal.bossKill(T0.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT).plusSeconds(60), "Grotesque Guardians", 1),
+			suspended, new ClassifierContext());
 
 		assertEquals(SignalDecisionKind.START_OR_HEARTBEAT, result.getDecisionKind());
-		assertEquals(grotesqueGuardians, result.getIdentity());
+		assertEquals("Grotesque Guardians on a Gargoyles assignment belongs to that assignment",
+			gargoyles, result.getIdentity());
 
 		SessionLifecycleEngine engine = new SessionLifecycleEngine();
-		engine.onQualifyingActivity(gargoyles, T0);
+		Session started = engine.onQualifyingActivity(gargoyles, T0).getCurrent();
 		engine.advanceTime(T0.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT));
-		LifecycleResult switched = engine.onQualifyingActivity(grotesqueGuardians, T0.plusSeconds(9999));
-		assertEquals(SessionState.FINALIZED, switched.getFinalized().getState());
-		assertEquals(gargoyles, switched.getFinalized().getActivityIdentity());
-		assertEquals(grotesqueGuardians, switched.getCurrent().getActivityIdentity());
+		LifecycleResult resumed = engine.onQualifyingActivity(result.getIdentity(), T0.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT).plusSeconds(60));
+		assertNull("the SUSPENDED Slayer session is resumed, never finalized", resumed.getFinalized());
+		assertEquals(started.getSessionId(), resumed.getCurrent().getSessionId());
+		assertEquals(SessionState.ACTIVE, resumed.getCurrent().getState());
 	}
+
 
 	// E. ACTIVE BOSSING/Zulrah + generic COMBAT evidence: existing
 	// no-downgrade/current-specificity behavior remains -- unaffected by
@@ -1236,36 +1267,25 @@ public class ActivitySignalClassifierTest
 	// boss-owns-task pair (Zulrah has no such affinity for Gargoyles, so
 	// it still switches immediately, completely unaffected by this fix).
 	@Test
-	public void liveBugFixCorrected_activeGrotesqueGuardians_ownTaskProgressAlone_suppressedStaysBossingPendingCorroboration()
+	public void activeGrotesqueGuardians_ownTaskProgressAlone_refinesIntoSlayerGargoyles()
 	{
 		ActivityIdentity gg = ActivitySignalClassifier.bossIdentity("Grotesque Guardians");
 		Session active = sessionOf(gg, T0);
 		assertEquals(SessionState.ACTIVE, active.getState());
-		assertEquals(ActivityType.BOSSING, active.getActivityIdentity().getActivityType());
 
 		ClassifierContext context = new ClassifierContext();
 		SignalClassification result = classifier.classify(
 			SessionSignal.slayerTaskProgress(T0.plusSeconds(30), "Gargoyles", "Catacombs of Kourend", 1, 98),
 			active, context);
 
-		assertEquals("a boss's own known-task progress, with no corroborating evidence either way, "
-			+ "must never fabricate a bogus Slayer session -- it stays a heartbeat of the boss",
-			SignalDecisionKind.START_OR_HEARTBEAT, result.getDecisionKind());
-		assertEquals(gg, result.getIdentity());
-		assertEquals(ActivityType.BOSSING, result.getIdentity().getActivityType());
-		// CANDIDATE-METRIC BUFFERING follow-up fix: the progress metric is
-		// no longer attached to THIS classification while suppressed --
-		// it is BUFFERED in the ClassifierContext candidate instead (see
-		// ClassifierContext's own javadoc), applied exactly once by
-		// whichever caller eventually resolves the candidate. Applying it
-		// here, immediately, to the boss heartbeat is exactly the
-		// apply-then-possibly-retroactively-move behavior this follow-up
-		// fix replaces.
-		assertNull("the boss heartbeat itself must carry no metric while the candidate is pending "
-			+ "-- it is buffered, not applied", result.getMetricUpdate());
-		assertEquals("the progress metric (delta + currentRemaining) must be buffered on the "
-			+ "pending candidate instead", 1, context.getPendingBossTaskCandidateMetrics().size());
+		assertEquals("refine, not a switch: the same session continues as the Slayer assignment, "
+			+ "so no zero-duration bridge or fresh session can be created",
+			SignalDecisionKind.REFINE, result.getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend"), result.getIdentity());
+		assertNotNull("the progress metric is applied with the refine", result.getMetricUpdate());
+		assertEquals(0, context.getPendingBossTaskCandidateMetrics().size());
 	}
+
 
 	// A2. The CONFIRM half: a pending boss-task candidate (armed by the
 	// call above) is confirmed by a SERVER_NPC_LOOT whose sourceName is
@@ -1276,39 +1296,18 @@ public class ActivitySignalClassifierTest
 	// SessionSignalBatchResolver.applyBossSelfConsumptionCorroboration()
 	// for the same-tick, order-independent half).
 	@Test
-	public void liveBugFix_gargoylesTaskProgress_confirmedByNonBossLoot_switchesToSlayerGargoyles()
+	public void ggSession_unrelatedTaskProgress_stillSwitchesNormally()
 	{
 		ActivityIdentity gg = ActivitySignalClassifier.bossIdentity("Grotesque Guardians");
-		Session active = sessionOf(gg, T0);
-		ClassifierContext context = new ClassifierContext();
+		SignalClassification result = classifier.classify(
+			SessionSignal.slayerTaskProgress(T0.plusSeconds(30), "Abyssal demons", "Catacombs of Kourend", 1, 98),
+			sessionOf(gg, T0), new ClassifierContext());
 
-		SignalClassification progress = classifier.classify(
-			SessionSignal.slayerTaskProgress(T0.plusSeconds(30), "Gargoyles", "Catacombs of Kourend", 1, 98),
-			active, context);
-		assertEquals(gg, progress.getIdentity());
-
-		SignalClassification loot = classifier.classify(
-			SessionSignal.serverNpcLoot(T0.plusSeconds(31), "Gargoyle",
-				java.util.Collections.singletonList(new SessionSignal.LootDrop(1, "Big bones", 1))),
-			active, context);
-
-		ActivityIdentity gargoyles = ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend");
-		assertEquals("a genuinely different NPC's loot confirms the pending candidate as a real switch",
-			SignalDecisionKind.START_OR_HEARTBEAT, loot.getDecisionKind());
-		assertEquals(gargoyles, loot.getIdentity());
-		assertNotEquals(gg, loot.getIdentity());
-		assertNotNull("the confirming loot's own metric rides with the newly-confirmed identity",
-			loot.getMetricUpdate());
-		// CANDIDATE-METRIC BUFFERING follow-up fix / REGRESSION 3+4: the
-		// candidate's own buffered progress metric (slayerProgress
-		// delta=1, currentRemaining=98) must ALSO ride with this same
-		// classification, alongside the loot's own metric -- both
-		// destined for the brand-new Gargoyles session, so it shows the
-		// correct progressDelta/currentRemaining immediately upon
-		// confirmation.
-		assertEquals("both the buffered progress metric AND the confirming loot's own metric must "
-			+ "be carried by this one classification", 2, loot.getMetricUpdates().size());
+		assertEquals("only the boss's OWN task refines; an unrelated task is a genuine switch",
+			SignalDecisionKind.START_OR_HEARTBEAT, result.getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Abyssal demons", "Catacombs of Kourend"), result.getIdentity());
 	}
+
 
 	// A3. The ABORT half: a pending boss-task candidate is aborted by a
 	// same-boss authoritative BOSS_KILL -- proof the progress WAS
@@ -1316,45 +1315,31 @@ public class ActivitySignalClassifierTest
 	// clearing the watch; the BOSS_KILL itself is an ordinary heartbeat
 	// of the SAME, already-current boss identity.
 	@Test
-	public void liveBugFix_gargoylesTaskProgress_thenSameBossKill_abortsCandidate_staysBossing()
+	public void ggOwnTaskProgress_refines_laterGargoyleLootIsOrdinaryLootOfThatSession()
 	{
 		ActivityIdentity gg = ActivitySignalClassifier.bossIdentity("Grotesque Guardians");
-		Session active = sessionOf(gg, T0);
+		ActivityIdentity gargoyles = ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend");
 		ClassifierContext context = new ClassifierContext();
 
-		classifier.classify(
+		SignalClassification progress = classifier.classify(
 			SessionSignal.slayerTaskProgress(T0.plusSeconds(30), "Gargoyles", "Catacombs of Kourend", 1, 98),
-			active, context);
+			sessionOf(gg, T0), context);
+		assertEquals(SignalDecisionKind.REFINE, progress.getDecisionKind());
+		assertEquals(gargoyles, progress.getIdentity());
 
+		Session refined = sessionOf(gargoyles, T0);
 		SignalClassification kill = classifier.classify(
-			SessionSignal.bossKill(T0.plusSeconds(34), "Grotesque Guardians", 89), active, context);
+			SessionSignal.bossKill(T0.plusSeconds(34), "Grotesque Guardians", 89), refined, context);
+		assertEquals(gargoyles, kill.getIdentity());
 
-		// CANDIDATE-METRIC BUFFERING follow-up fix / REGRESSION 1: the
-		// buffered progress metric (never applied while pending) and this
-		// SAME kill's own reliableCount metric are both carried by this
-		// one classification, both destined for the SAME, never-left
-		// BOSSING session -- a delayed-but-correct application, applied
-		// exactly once.
-		assertEquals("both the buffered progress metric AND this kill's own reliableCount metric "
-			+ "must be carried by this one classification", 2, kill.getMetricUpdates().size());
-
-		assertEquals("the same-boss BOSS_KILL confirms self-consumption and aborts the candidate -- "
-			+ "still just a heartbeat of the already-current boss identity",
-			SignalDecisionKind.START_OR_HEARTBEAT, kill.getDecisionKind());
-		assertEquals(gg, kill.getIdentity());
-
-		// Proof the candidate was genuinely cleared, not merely
-		// coincidentally not consulted: a LATER, unrelated non-boss loot
-		// must no longer be able to "confirm" anything -- with no pending
-		// candidate, it is just an ordinary ACTIVE-session loot metric.
 		SignalClassification laterLoot = classifier.classify(
 			SessionSignal.serverNpcLoot(T0.plusSeconds(40), "Gargoyle",
 				java.util.Collections.singletonList(new SessionSignal.LootDrop(1, "Big bones", 1))),
-			active, context);
+			refined, context);
 		assertEquals(SignalDecisionKind.METRIC_ONLY, laterLoot.getDecisionKind());
-		assertNull("the aborted candidate must never resurface and switch identity later",
-			laterLoot.getIdentity());
+		assertNull(laterLoot.getIdentity());
 	}
+
 
 	// B. Explicit negative-space coverage: ACTIVE
 	// BOSSING/Grotesque Guardians + a GENERIC combat XP gain (no
@@ -1402,30 +1387,21 @@ public class ActivitySignalClassifierTest
 	// switch primary identity -- it stays a heartbeat of the boss, exactly
 	// like the GG case above.
 	@Test
-	public void activeShellbaneBoss_matchingGryphonsProgress_doesNotSwitchPrimary()
+	public void activeShellbaneBoss_matchingGryphonsProgress_refinesIntoSlayerGryphons()
 	{
 		ActivityIdentity shellbane = ActivitySignalClassifier.bossIdentity("Shellbane Gryphon");
 		Session active = sessionOf(shellbane, T0);
-		assertEquals(SessionState.ACTIVE, active.getState());
-		assertEquals(ActivityType.BOSSING, active.getActivityIdentity().getActivityType());
 
 		ClassifierContext context = new ClassifierContext();
 		SignalClassification result = classifier.classify(
 			SessionSignal.slayerTaskProgress(T0.plusSeconds(30), "Gryphons", "Karuulm Slayer Dungeon", 1, 28),
 			active, context);
 
-		assertEquals("Shellbane Gryphon's own known-task progress, with no corroborating evidence "
-			+ "either way, must never fabricate a bogus zero-duration SLAYER/Gryphons session -- it "
-			+ "stays a heartbeat of the boss, exactly the same suppression the Grotesque Guardians "
-			+ "case above already proves",
-			SignalDecisionKind.START_OR_HEARTBEAT, result.getDecisionKind());
-		assertEquals(shellbane, result.getIdentity());
-		assertEquals(ActivityType.BOSSING, result.getIdentity().getActivityType());
-		assertNull("the boss heartbeat itself must carry no metric while the candidate is pending "
-			+ "-- it is buffered, not applied", result.getMetricUpdate());
-		assertEquals("the progress metric (delta + currentRemaining) must be buffered on the "
-			+ "pending candidate instead", 1, context.getPendingBossTaskCandidateMetrics().size());
+		assertEquals(SignalDecisionKind.REFINE, result.getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gryphons", "Karuulm Slayer Dungeon"), result.getIdentity());
+		assertEquals(1, result.getMetricUpdates().size());
 	}
+
 
 	// 2. The ENRICH half: a pending boss-task candidate (armed by matching
 	// Slayer progress) is confirmed by a SAME-boss BOSS_KILL -- proof the
@@ -1434,29 +1410,29 @@ public class ActivitySignalClassifierTest
 	// BOSSING session: Slayer progress ENRICHES the existing boss session
 	// rather than replacing its identity.
 	@Test
-	public void matchingSlayerProgress_enrichesExistingBossSession()
+	public void ownTaskProgressThenBossKill_bossKillIsOwnedByTheRefinedSlayerSession()
 	{
 		ActivityIdentity shellbane = ActivitySignalClassifier.bossIdentity("Shellbane Gryphon");
-		Session active = sessionOf(shellbane, T0);
+		ActivityIdentity gryphons = ActivitySignalClassifier.slayerIdentity("Gryphons", "Karuulm Slayer Dungeon");
 		ClassifierContext context = new ClassifierContext();
 
-		classifier.classify(
+		SignalClassification progress = classifier.classify(
 			SessionSignal.slayerTaskProgress(T0.plusSeconds(30), "Gryphons", "Karuulm Slayer Dungeon", 1, 28),
-			active, context);
+			sessionOf(shellbane, T0), context);
+		assertEquals(SignalDecisionKind.REFINE, progress.getDecisionKind());
+		assertEquals(gryphons, progress.getIdentity());
 
+		// After the refine the current session IS the Slayer assignment.
 		SignalClassification kill = classifier.classify(
-			SessionSignal.bossKill(T0.plusSeconds(32), "Shellbane Gryphon", 12), active, context);
+			SessionSignal.bossKill(T0.plusSeconds(32), "Shellbane Gryphon", 12), sessionOf(gryphons, T0), context);
 
-		assertEquals("the same-boss BOSS_KILL confirms self-consumption and aborts the candidate -- "
-			+ "still just a heartbeat of the already-current boss identity, enriched with the "
-			+ "buffered Slayer progress rather than replaced by it",
-			SignalDecisionKind.START_OR_HEARTBEAT, kill.getDecisionKind());
-		assertEquals(shellbane, kill.getIdentity());
-		assertEquals("both the buffered Slayer progress metric AND this kill's own reliableCount "
-			+ "metric must be carried by this one classification, both destined for the SAME "
-			+ "BOSSING session -- Slayer evidence enriches the boss session, it never owns it",
-			2, kill.getMetricUpdates().size());
+		assertEquals("the boss's own kill on a compatible Slayer assignment is a plain heartbeat of "
+			+ "that Slayer session", SignalDecisionKind.START_OR_HEARTBEAT, kill.getDecisionKind());
+		assertEquals(gryphons, kill.getIdentity());
+		assertEquals("only the kill's own reliableCount metric -- no buffered progress exists any more",
+			1, kill.getMetricUpdates().size());
 	}
+
 
 	// 3. Negative space -- an UNRELATED task naming a task Shellbane Gryphon
 	// has no affinity for must NOT be suppressed/merged: it switches away
@@ -1549,7 +1525,7 @@ public class ActivitySignalClassifierTest
 	// activeShellbaneBoss_matchingGryphonsProgress_doesNotSwitchPrimary
 	// above.
 	@Test
-	public void suspendedShellbane_matchingGryphonsProgress_doesNotFinalizeBoss()
+	public void suspendedShellbane_matchingGryphonsProgress_refinesIntoSlayerInPlace()
 	{
 		ActivityIdentity shellbane = ActivitySignalClassifier.bossIdentity("Shellbane Gryphon");
 		Session suspended = suspendedSessionOf(shellbane, T0);
@@ -1561,18 +1537,15 @@ public class ActivitySignalClassifierTest
 			SessionSignal.slayerTaskProgress(progressAt, "Gryphons", "Karuulm Slayer Dungeon", 1, 19),
 			suspended, context);
 
-		assertEquals("a SUSPENDED Shellbane Gryphon session's own known-task progress must never "
-			+ "finalize it -- exactly like the ACTIVE case, it stays a heartbeat of the boss "
-			+ "identity, never a genuine different-activity switch",
-			SignalDecisionKind.START_OR_HEARTBEAT, result.getDecisionKind());
-		assertEquals(shellbane, result.getIdentity());
-		assertEquals(ActivityType.BOSSING, result.getIdentity().getActivityType());
-		assertNull("the SUSPENDED boss heartbeat carries no metric of its own -- buffered on the "
-			+ "pending candidate instead, exactly like the ACTIVE case",
-			result.getMetricUpdate());
-		assertEquals("the progress metric must be buffered on the pending candidate",
-			1, context.getPendingBossTaskCandidateMetrics().size());
+		assertEquals("boss-on-task Slayer ownership: a SUSPENDED boss session's own-task progress "
+			+ "refines that same session into the Slayer assignment -- never a finalize/switch",
+			SignalDecisionKind.REFINE, result.getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gryphons", "Karuulm Slayer Dungeon"), result.getIdentity());
+		assertEquals("the progress metric rides on the refine immediately -- nothing is buffered",
+			1, result.getMetricUpdates().size());
+		assertEquals(0, context.getPendingBossTaskCandidateMetrics().size());
 	}
+
 
 	// 2. Negative space: a task Shellbane Gryphon has no affinity for is
 	// genuine different-activity evidence and must still transition
@@ -1628,7 +1601,6 @@ public class ActivitySignalClassifierTest
 	{
 		ActivityIdentity gg = ActivitySignalClassifier.bossIdentity("Grotesque Guardians");
 		Session suspended = suspendedSessionOf(gg, T0);
-		assertEquals(SessionState.SUSPENDED, suspended.getState());
 
 		ClassifierContext context = new ClassifierContext();
 		Instant progressAt = T0.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT).plusSeconds(30);
@@ -1636,12 +1608,11 @@ public class ActivitySignalClassifierTest
 			SessionSignal.slayerTaskProgress(progressAt, "Gargoyles", "Catacombs of Kourend", 1, 89),
 			suspended, context);
 
-		assertEquals("the SAME generalized boss-own-task rule -- not a Shellbane-specific branch -- "
-			+ "must also cover Grotesque Guardians/Gargoyles while SUSPENDED",
-			SignalDecisionKind.START_OR_HEARTBEAT, result.getDecisionKind());
-		assertEquals(gg, result.getIdentity());
-		assertEquals(1, context.getPendingBossTaskCandidateMetrics().size());
+		assertEquals("the same generic rule (not a per-boss branch) covers GG/Gargoyles while SUSPENDED",
+			SignalDecisionKind.REFINE, result.getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend"), result.getIdentity());
 	}
+
 
 	// =====================================================================
 	// UTILITY MAGIC XP FABRICATES A SPECIFIC SLAYER
@@ -2319,5 +2290,93 @@ public class ActivitySignalClassifierTest
 			SessionSignal.slayerTaskCompleted(T0.plusSeconds(10), "Gargoyles", null), current, context);
 
 		assertNull(completion.getMetricUpdate());
+	}
+
+	// ---- BOSS-ON-TASK SLAYER OWNERSHIP (Kraken/Cave Kraken live regression) ----
+
+	private SignalClassification bossEvidenceAgainst(Session current, boolean killNotContext, String boss)
+	{
+		Instant at = current.getState() == SessionState.SUSPENDED
+			? T0.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT).plusSeconds(45)
+			: T0.plusSeconds(45);
+		SessionSignal signal = killNotContext
+			? SessionSignal.bossKill(at, boss, 101)
+			: SessionSignal.bossActivityContext(at, boss);
+		return classifier.classify(signal, current, new ClassifierContext());
+	}
+
+	@Test
+	public void compatibleActiveSlayer_bossKillAndBossContext_heartbeatTheSlayerSession_forEveryRegisteredFamilyBoss()
+	{
+		String[][] pairs = {
+			{"Cave kraken", "Kraken Cove", "Kraken"},
+			{"Hellhounds", "Taverley Dungeon", "Cerberus"},
+			{"Blue dragons", "Taverley Dungeon", "Vorkath"},
+			{"Gargoyles", "Slayer Tower", "Grotesque Guardians"},
+			{"Gryphons", "Karuulm Slayer Dungeon", "Shellbane Gryphon"}};
+		for (String[] pair : pairs)
+		{
+			ActivityIdentity task = ActivitySignalClassifier.slayerIdentity(pair[0], pair[1]);
+			for (boolean kill : new boolean[]{true, false})
+			{
+				SignalClassification c = bossEvidenceAgainst(sessionOf(task, T0), kill, pair[2]);
+				assertEquals(pair[2] + " on " + pair[0] + " (kill=" + kill + ")",
+					SignalDecisionKind.START_OR_HEARTBEAT, c.getDecisionKind());
+				assertEquals(pair[2] + " on " + pair[0] + " must stay the Slayer assignment", task, c.getIdentity());
+			}
+		}
+	}
+
+	@Test
+	public void compatibleSuspendedSlayer_krakenEvidence_resumesTheSlayerSessionNotABossSession()
+	{
+		ActivityIdentity caveKraken = ActivitySignalClassifier.slayerIdentity("Cave kraken", "Kraken Cove");
+		for (boolean kill : new boolean[]{true, false})
+		{
+			Session suspended = suspendedSessionOf(caveKraken, T0);
+			assertEquals(SessionState.SUSPENDED, suspended.getState());
+			SignalClassification c = bossEvidenceAgainst(suspended, kill, "Kraken");
+			assertEquals(caveKraken, c.getIdentity());
+		}
+	}
+
+	@Test
+	public void krakenKillOnCaveKrakenTask_carriesItsKillMetricOntoTheSlayerSession()
+	{
+		ActivityIdentity caveKraken = ActivitySignalClassifier.slayerIdentity("Cave kraken", "Kraken Cove");
+		SignalClassification c = bossEvidenceAgainst(sessionOf(caveKraken, T0), true, "Kraken");
+		assertEquals(caveKraken, c.getIdentity());
+		assertEquals(1, c.getMetricUpdates().size());
+	}
+
+	@Test
+	public void incompatibleSlayer_bossEvidence_isStillARealBossSwitch()
+	{
+		ActivityIdentity hellhounds = ActivitySignalClassifier.slayerIdentity("Hellhounds", "Taverley Dungeon");
+		SignalClassification c = bossEvidenceAgainst(sessionOf(hellhounds, T0), true, "Kraken");
+		assertEquals("Kraken is not part of a Hellhounds assignment: unknown compatibility still switches",
+			ActivitySignalClassifier.bossIdentity("Kraken"), c.getIdentity());
+
+		ActivityIdentity caveKraken = ActivitySignalClassifier.slayerIdentity("Cave kraken", "Kraken Cove");
+		SignalClassification zulrah = bossEvidenceAgainst(sessionOf(caveKraken, T0), true, "Zulrah");
+		assertEquals(ActivitySignalClassifier.bossIdentity("Zulrah"), zulrah.getIdentity());
+	}
+
+	@Test
+	public void noCurrentSession_bossKill_stillStartsTheBossIdentity()
+	{
+		SignalClassification c = classifier.classify(SessionSignal.bossKill(T0, "Kraken", 50), null, new ClassifierContext());
+		assertEquals(ActivitySignalClassifier.bossIdentity("Kraken"), c.getIdentity());
+	}
+
+	@Test
+	public void krakenBossSession_caveKrakenProgress_refinesIntoTheAssignment_coldStartAfterLogin()
+	{
+		ActivityIdentity kraken = ActivitySignalClassifier.bossIdentity("Kraken");
+		SignalClassification c = classifier.classify(
+			SessionSignal.slayerTaskProgress(T0.plusSeconds(3), "Cave kraken", "Kraken Cove", 1, 40),
+			sessionOf(kraken, T0), new ClassifierContext());
+		assertEquals(SignalDecisionKind.REFINE, c.getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Cave kraken", "Kraken Cove"), c.getIdentity());
 	}
 }

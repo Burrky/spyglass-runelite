@@ -4,6 +4,7 @@ import com.osrstelemetry.plugin.session.ActivityType;
 import com.osrstelemetry.plugin.session.SessionAggregates;
 import com.osrstelemetry.plugin.session.SessionSnapshot;
 import com.osrstelemetry.plugin.session.SessionState;
+import com.osrstelemetry.plugin.ui.CompletionMetricText;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -69,21 +70,24 @@ import net.runelite.api.Experience;
 public final class CurrentSessionSnapshot
 {
 	/**
-	 * Minimum active duration, in milliseconds, before an XP/hr (or any
-	 * future per-hour rate) figure is included for a row. Below this,
-	 * a rate would be dominated by rounding/extrapolation noise (a few
-	 * seconds of real play projected out to an hour can read as an
-	 * absurd, misleading number) — the honest choice is to omit the
-	 * rate entirely rather than show one, per the task's explicit
-	 * "recommend 60 seconds" guidance. Public so the panel/tests can
-	 * reference the exact same constant rather than a duplicated
-	 * magic number.
+	 * THE shared rate floor: minimum ACTIVE duration before ANY per-hour
+	 * figure is shown -- XP/hr, Slayer kills/hr, games/chests/hr, in
+	 * Current Session and History alike.
+	 *
+	 * RELEASE CANDIDATE (XP spike feedback): was 60 seconds. One large
+	 * one-time XP drop (a lamp, a quest, a big reward deposit) in a sample
+	 * that short projects to an absurd XP/hr -- the math is right, the
+	 * extrapolation is meaningless. Five minutes of active play lets an
+	 * ordinary activity's own rhythm dominate. Display only: totals are
+	 * always exact and nothing is smoothed, capped or discarded; the rate
+	 * is simply not projected yet (the view says when it will be).
 	 */
-	public static final long MIN_DURATION_FOR_RATE_MILLIS = 60_000L;
+	public static final long MIN_DURATION_FOR_RATE_MILLIS = 5L * 60_000L;
 
 	private static final CurrentSessionSnapshot EMPTY = new CurrentSessionSnapshot(
 		false, null, null, null, null, 0L,
-		Collections.emptyList(), null, null, Collections.emptyList(), null, null, null);
+		Collections.emptyList(), null, null, Collections.emptyList(), null, null, null, null, null,
+		Collections.<SlayerAssignmentView>emptyList(), null, null, 0, null, null, Collections.<ProducedItemView>emptyList());
 
 	/**
 	 * ADDED (Current Session UI facelift, PART 1/16). The core combat
@@ -110,6 +114,27 @@ public final class CurrentSessionSnapshot
 	private final Integer slayerCurrentRemaining;
 
 	/**
+	 * SMART SLAYER TASK STATE: the per-ASSIGNMENT slice of the session's
+	 * Slayer task units / XP, used only by
+	 * {@link #getEstimatedSlayerXpRemaining()} so the estimate for a
+	 * newly-installed task is never blended with a previous task's
+	 * XP-per-unit. Null baseline = the session has only had one
+	 * assignment, so the session totals are the assignment's own.
+	 */
+	private final Integer slayerAssignmentBaselineProgressDelta;
+	private final Long slayerAssignmentBaselineSlayerXp;
+
+	/**
+	 * Slayer assignment cards, current/newest first. Empty for non-Slayer
+	 * sessions (their loot renders exactly as before) and for a Slayer
+	 * session with no ledger.
+	 */
+	private final List<SlayerAssignmentView> slayerAssignments;
+
+	/** SLAYER XP SCOPE = CURRENT TASK cards (see buildTaskXpEntries()); null = not applicable. */
+	private final List<XpEntry> taskXpEntries;
+
+	/**
 	 * ADDED (Current Session UI facelift, PART 2/7). The attackable NPC
 	 * the player is CURRENTLY understood to be targeting, as reported
 	 * live by {@code NpcInteractionTargetCollector} at snapshot-build
@@ -120,6 +145,16 @@ public final class CurrentSessionSnapshot
 	 * its own. Null whenever no attackable NPC is currently targeted
 	 * (SKILLING activities, or no combat NPC currently engaged).
 	 */
+	/** Structured-activity completion metric label ("Games"); null when not applicable. */
+	private final String completionLabel;
+	private final int completionCount;
+	/** Stable key of the session identity (e.g. "barrows"); presentation lookups only. */
+	private final String activityKey;
+	/** Session-summary activity stats (a private copy), or null. */
+	private final com.osrstelemetry.plugin.session.SessionAggregates.ActivitySessionStats activityStats;
+	/** Items the activity produced this session (output, not loot), first-produced order. */
+	private final List<ProducedItemView> producedItems;
+
 	private final String currentNpcName;
 	private final Integer currentNpcId;
 
@@ -136,8 +171,26 @@ public final class CurrentSessionSnapshot
 		List<LootEntry> lootEntries,
 		Integer slayerCurrentRemaining,
 		String currentNpcName,
-		Integer currentNpcId)
+		Integer currentNpcId,
+		Integer slayerAssignmentBaselineProgressDelta,
+		Long slayerAssignmentBaselineSlayerXp,
+		List<SlayerAssignmentView> slayerAssignments,
+		List<XpEntry> taskXpEntries,
+		String completionLabel,
+		int completionCount,
+		String activityKey,
+		com.osrstelemetry.plugin.session.SessionAggregates.ActivitySessionStats activityStats,
+		List<ProducedItemView> producedItems)
 	{
+		this.activityStats = activityStats;
+		this.producedItems = producedItems;
+		this.activityKey = activityKey;
+		this.completionLabel = completionLabel;
+		this.completionCount = completionCount;
+		this.slayerAssignments = slayerAssignments;
+		this.taskXpEntries = taskXpEntries;
+		this.slayerAssignmentBaselineProgressDelta = slayerAssignmentBaselineProgressDelta;
+		this.slayerAssignmentBaselineSlayerXp = slayerAssignmentBaselineSlayerXp;
 		this.present = present;
 		this.sessionId = sessionId;
 		this.displayName = displayName;
@@ -193,7 +246,7 @@ public final class CurrentSessionSnapshot
 		Integer slayerCurrentRemaining = sessionSnapshot.getLatestSlayerCurrentRemaining();
 		List<LootEntry> loot = buildLootEntries(sessionSnapshot);
 
-		return new CurrentSessionSnapshot(
+		CurrentSessionSnapshot built = new CurrentSessionSnapshot(
 			true,
 			sessionSnapshot.getSessionId(),
 			sessionSnapshot.getActivityDisplayName(),
@@ -206,7 +259,253 @@ public final class CurrentSessionSnapshot
 			loot,
 			slayerCurrentRemaining,
 			currentNpcName,
-			currentNpcId);
+			currentNpcId,
+			sessionSnapshot.getSlayerAssignmentBaselineProgressDelta(),
+			sessionSnapshot.getSlayerAssignmentBaselineSlayerXp(),
+			buildSlayerAssignmentViews(sessionSnapshot),
+			buildTaskXpEntries(sessionSnapshot, durationMillis),
+			CompletionMetricText.labelFor(sessionSnapshot.getActivityType(), sessionSnapshot.getActivityKey()),
+			CompletionMetricText.countOf(sessionSnapshot.getActivityCompletions()),
+			sessionSnapshot.getActivityKey(),
+			sessionSnapshot.getActivityStats(),
+			buildProducedItemViews(sessionSnapshot.getProducedItems()));
+		built.slayerCurrentTask = buildSlayerCurrentTask(sessionSnapshot, durationMillis);
+		return built;
+	}
+
+	/** Smart Slayer CURRENT TASK facts; null for a non-Slayer / ledger-less session. Not part of equality. */
+	private SlayerCurrentTaskView slayerCurrentTask;
+
+	public SlayerCurrentTaskView getSlayerCurrentTask()
+	{
+		return slayerCurrentTask;
+	}
+
+	/** Active time the record owns: start..end, or start..now while it is unfinished. Null when untracked. */
+	private static Long taskActiveMillis(SessionAggregates.SlayerAssignmentRecord r, long sessionDurationMillis)
+	{
+		if (r.getActiveDurationStartMillis() == null)
+		{
+			return null;
+		}
+		long end = r.getActiveDurationEndMillis() == null ? sessionDurationMillis : r.getActiveDurationEndMillis();
+		return Math.max(0L, end - r.getActiveDurationStartMillis());
+	}
+
+	private static SlayerCurrentTaskView buildSlayerCurrentTask(SessionSnapshot snapshot, long sessionDurationMillis)
+	{
+		List<SessionAggregates.SlayerAssignmentRecord> ledger = slayerLedger(snapshot);
+		if (ledger.isEmpty())
+		{
+			return null;
+		}
+		SessionAggregates.SlayerAssignmentRecord r = ledger.get(ledger.size() - 1);
+		Integer remaining = r.getLatestRemaining();
+		Long active = taskActiveMillis(r, sessionDurationMillis);
+		Integer kills = r.observedKills();
+		return new SlayerCurrentTaskView(r.getTaskName(), remaining,
+			SlayerDashboard.progressPercent(remaining, SlayerDashboard.assignmentSize(r)),
+			kills, active == null ? null : SlayerDashboard.perHour(kills, active),
+			r.getSlaughterProcs(), r.getExpeditiousProcs(), r.getMasterId(),
+			aggregateLootEntries(r.getItems()), SlayerDashboard.looksLikeTuraelBoosting(ledger));
+	}
+
+	/**
+	 * The CURRENT TASK section's facts for the current assignment instance.
+	 * Never carries the assignment's size: progress is a percentage only.
+	 */
+	public static final class SlayerCurrentTaskView
+	{
+		private final String taskName;
+		private final Integer remaining;
+		private final Integer progressPercent;
+		private final Integer kills;
+		private final Long killsPerHour;
+		private final Integer slaughterProcs;
+		private final Integer expeditiousProcs;
+		private final Integer masterId;
+		private final List<LootEntry> lootEntries;
+		private final boolean turaelBoosting;
+
+		SlayerCurrentTaskView(String taskName, Integer remaining, Integer progressPercent, Integer kills, Long killsPerHour,
+			Integer slaughterProcs, Integer expeditiousProcs, Integer masterId, List<LootEntry> lootEntries, boolean turaelBoosting)
+		{
+			this.taskName = taskName;
+			this.remaining = remaining;
+			this.progressPercent = progressPercent;
+			this.kills = kills;
+			this.killsPerHour = killsPerHour;
+			this.slaughterProcs = slaughterProcs;
+			this.expeditiousProcs = expeditiousProcs;
+			this.masterId = masterId;
+			this.lootEntries = lootEntries;
+			this.turaelBoosting = turaelBoosting;
+		}
+
+		public String getTaskName()
+		{
+			return taskName;
+		}
+
+		/** Native remaining task units; 0 = complete / awaiting a new task; null = not yet observed. */
+		public Integer getRemaining()
+		{
+			return remaining;
+		}
+
+		public boolean isComplete()
+		{
+			return remaining != null && remaining == 0;
+		}
+
+		public Integer getProgressPercent()
+		{
+			return progressPercent;
+		}
+
+		/** Observed kills (see SlayerAssignmentRecord#observedKills); null when not trustworthy. */
+		public Integer getKills()
+		{
+			return kills;
+		}
+
+		public Long getKillsPerHour()
+		{
+			return killsPerHour;
+		}
+
+		public Integer getSlaughterProcs()
+		{
+			return slaughterProcs;
+		}
+
+		public Integer getExpeditiousProcs()
+		{
+			return expeditiousProcs;
+		}
+
+		/** Master varbit recorded for this assignment, or null. */
+		public Integer getMasterId()
+		{
+			return masterId;
+		}
+
+		/** This assignment's own canonical loot (the same partition its Task History card shows). */
+		public List<LootEntry> getLootEntries()
+		{
+			return lootEntries;
+		}
+
+		/** See SlayerDashboard#looksLikeTuraelBoosting. */
+		public boolean isTuraelBoosting()
+		{
+			return turaelBoosting;
+		}
+	}
+
+	/** Produced items with a positive quantity, in first-produced order. */
+	public static List<ProducedItemView> buildProducedItemViews(List<SessionAggregates.ProducedItemAggregate> items)
+	{
+		if (items == null || items.isEmpty())
+		{
+			return Collections.emptyList();
+		}
+		List<ProducedItemView> out = new ArrayList<>();
+		for (SessionAggregates.ProducedItemAggregate item : items)
+		{
+			if (item != null && item.getQuantity() > 0)
+			{
+				out.add(new ProducedItemView(item.getItemId(), item.getItemName(), item.getQuantity()));
+			}
+		}
+		return Collections.unmodifiableList(out);
+	}
+
+	/** Items this session's activity produced (e.g. GotR runes crafted); empty when none. Never loot. */
+	public List<ProducedItemView> getProducedItems()
+	{
+		return producedItems;
+	}
+
+	/** Sum of every produced item's quantity (0 when none). */
+	public long getProducedItemTotal()
+	{
+		long total = 0L;
+		for (ProducedItemView item : producedItems)
+		{
+			total += item.getQuantity();
+		}
+		return total;
+	}
+
+	/** Earned this session for one currency key; falls back to the single-currency total when no breakdown exists. */
+	public long getActivityCurrencyGained(String currencyKey)
+	{
+		if (activityStats == null)
+		{
+			return 0L;
+		}
+		java.util.Map<String, Long> byKey = activityStats.getCurrencyGainedByKey();
+		if (byKey == null)
+		{
+			return 0L;
+		}
+		Long v = byKey.get(currencyKey);
+		return v == null ? 0L : v;
+	}
+
+	/** One produced item: id (may be null), name, exact cumulative quantity. */
+	public static final class ProducedItemView
+	{
+		private final Integer itemId;
+		private final String itemName;
+		private final long quantity;
+
+		public ProducedItemView(Integer itemId, String itemName, long quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+
+		public Integer getItemId()
+		{
+			return itemId;
+		}
+
+		public String getItemName()
+		{
+			return itemName;
+		}
+
+		public long getQuantity()
+		{
+			return quantity;
+		}
+	}
+
+	/** Native reward currency gained this session (Tempoross permits); 0 when none / not applicable. */
+	public long getActivityCurrencyGained()
+	{
+		return activityStats == null ? 0L : activityStats.getCurrencyGained();
+	}
+
+	/** Completed games with a trusted final score (the Avg/Best population). */
+	public int getScoredGames()
+	{
+		return activityStats == null ? 0 : activityStats.getScoredCompletions();
+	}
+
+	/** Mean final score of those games, or null when there are none. */
+	public Long getAverageScore()
+	{
+		return activityStats == null ? null : activityStats.averageScore();
+	}
+
+	/** Best final score of those games, or null when there are none. */
+	public Integer getBestScore()
+	{
+		return activityStats == null ? null : activityStats.getBestScore();
 	}
 
 	/**
@@ -304,10 +603,48 @@ public final class CurrentSessionSnapshot
 		{
 			return Collections.emptyList();
 		}
+		return xpEntriesFrom(aggregates.getXpGainedBySkill(), aggregates.getLivePendingXpBySkill(),
+			aggregates.getAbsoluteXpBySkill(), durationMillis);
+	}
 
-		Map<String, Long> durableBySkill = aggregates.getXpGainedBySkill();
-		Map<String, Long> livePendingBySkill = aggregates.getLivePendingXpBySkill();
+	/**
+	 * SLAYER XP SCOPE = CURRENT TASK: cards from the current assignment
+	 * record's own XP slice, rated over its own ACTIVE time (the session's
+	 * active-duration clock from the assignment's start to its end, or now
+	 * while unfinished -- so suspended and parked time are excluded exactly
+	 * as for the session). Live pending XP counts only while unfinished.
+	 * Only skills with &gt; 0 XP in THIS assignment get a card, so a new
+	 * assignment yields an EMPTY list (the view then drops the XP section
+	 * and its gap); a completed one keeps its frozen cards until the next
+	 * begins. Levels/progress bars stay the player's real absolute values.
+	 *
+	 * Null when not applicable (non-Slayer, no ledger, or a current record
+	 * with no XP tracking): callers then show the session-wide cards.
+	 */
+	private static List<XpEntry> buildTaskXpEntries(SessionSnapshot snapshot, long sessionDurationMillis)
+	{
+		List<SessionAggregates.SlayerAssignmentRecord> ledger = slayerLedger(snapshot);
+		if (ledger.isEmpty())
+		{
+			return null;
+		}
+		SessionAggregates.SlayerAssignmentRecord current = ledger.get(ledger.size() - 1);
+		if (current.getXpGainedBySkill() == null || current.getActiveDurationStartMillis() == null)
+		{
+			return null;
+		}
+		boolean unfinished = current.getActiveDurationEndMillis() == null;
+		long end = unfinished ? sessionDurationMillis : current.getActiveDurationEndMillis();
+		long taskDuration = Math.max(0L, end - current.getActiveDurationStartMillis());
+		return xpEntriesFrom(current.getXpGainedBySkill(),
+			unfinished ? snapshot.getLivePendingXpBySkill() : Collections.<String, Long>emptyMap(),
+			snapshot.getAbsoluteXpBySkill(), taskDuration);
+	}
 
+	/** One card per skill with non-zero XP (durable + live pending). */
+	private static List<XpEntry> xpEntriesFrom(Map<String, Long> durableBySkill, Map<String, Long> livePendingBySkill,
+		Map<String, Long> absoluteXpBySkill, long durationMillis)
+	{
 		Set<String> skills = new LinkedHashSet<>(durableBySkill.keySet());
 		if (livePendingBySkill != null)
 		{
@@ -334,15 +671,20 @@ public final class CurrentSessionSnapshot
 				continue;
 			}
 			Long xpPerHour = null;
+			Long rateWarmupRemaining = null;
 			if (durationMillis >= MIN_DURATION_FOR_RATE_MILLIS)
 			{
 				xpPerHour = Math.round(xp * 3_600_000.0 / durationMillis);
 			}
-			Long absoluteXp = aggregates.getAbsoluteXpBySkill() == null
+			else
+			{
+				rateWarmupRemaining = MIN_DURATION_FOR_RATE_MILLIS - Math.max(0L, durationMillis);
+			}
+			Long absoluteXp = absoluteXpBySkill == null
 				? null
-				: aggregates.getAbsoluteXpBySkill().get(skill);
+				: absoluteXpBySkill.get(skill);
 			LevelProgress levelProgress = absoluteXp == null ? null : computeLevelProgress(absoluteXp);
-			entries.add(new XpEntry(skill, xp, xpPerHour, levelProgress));
+			entries.add(new XpEntry(skill, xp, xpPerHour, levelProgress, rateWarmupRemaining));
 		}
 
 		entries.sort((a, b) ->
@@ -439,28 +781,39 @@ public final class CurrentSessionSnapshot
 			return Collections.emptyList();
 		}
 
-		Map<String, LootAccumulator> byKey = new LinkedHashMap<>();
+		List<SessionAggregates.LootItemAggregate> all = new ArrayList<>();
 		for (SessionAggregates.LootDropGroup group : aggregates.getLootDrops())
 		{
-			if (group == null || group.getItems() == null)
+			if (group != null && group.getItems() != null)
+			{
+				all.addAll(group.getItems());
+			}
+		}
+		return aggregateLootEntries(all);
+	}
+
+	/**
+	 * The one item-aggregation/ordering rule for Current Session loot --
+	 * shared by the session-wide grid and every Slayer assignment card
+	 * (item ID when known, else name; quantity desc, then name).
+	 */
+	private static List<LootEntry> aggregateLootEntries(Iterable<SessionAggregates.LootItemAggregate> items)
+	{
+		Map<String, LootAccumulator> byKey = new LinkedHashMap<>();
+		for (SessionAggregates.LootItemAggregate item : items)
+		{
+			if (item == null)
 			{
 				continue;
 			}
-			for (SessionAggregates.LootItemAggregate item : group.getItems())
+			String key = item.getItemId() != null ? ("id:" + item.getItemId()) : ("name:" + item.getItemName());
+			LootAccumulator acc = byKey.get(key);
+			if (acc == null)
 			{
-				if (item == null)
-				{
-					continue;
-				}
-				String key = item.getItemId() != null ? ("id:" + item.getItemId()) : ("name:" + item.getItemName());
-				LootAccumulator acc = byKey.get(key);
-				if (acc == null)
-				{
-					acc = new LootAccumulator(item.getItemId(), item.getItemName());
-					byKey.put(key, acc);
-				}
-				acc.quantity += item.getQuantity();
+				acc = new LootAccumulator(item.getItemId(), item.getItemName());
+				byKey.put(key, acc);
 			}
+			acc.quantity += item.getQuantity();
 		}
 
 		List<LootEntry> entries = new ArrayList<>();
@@ -482,6 +835,149 @@ public final class CurrentSessionSnapshot
 		});
 
 		return Collections.unmodifiableList(entries);
+	}
+
+	/** The Slayer assignment ledger (oldest first), or empty for a non-Slayer session. Never null. */
+	private static List<SessionAggregates.SlayerAssignmentRecord> slayerLedger(SessionSnapshot snapshot)
+	{
+		return snapshot.getActivityType() == ActivityType.SLAYER
+			? snapshot.getSlayerAssignments()
+			: Collections.<SessionAggregates.SlayerAssignmentRecord>emptyList();
+	}
+
+	private static List<SlayerAssignmentView> buildSlayerAssignmentViews(SessionSnapshot snapshot)
+	{
+		List<SessionAggregates.SlayerAssignmentRecord> ledger = slayerLedger(snapshot);
+		List<SlayerAssignmentView> views = new ArrayList<>();
+		for (int i = ledger.size() - 1; i >= 0; i--)
+		{
+			SessionAggregates.SlayerAssignmentRecord a = ledger.get(i);
+			SlayerAssignmentView view = new SlayerAssignmentView(a.getOrdinal(), a.getTaskName(), a.getLatestRemaining(),
+				i == ledger.size() - 1, aggregateLootEntries(a.getItems()),
+				a.observedUnitsCompleted(), a.getInitialAmount(), a.getEndReason(), a.isBootstrapped());
+			view.kills = a.observedKills();
+			view.masterId = a.getMasterId();
+			view.activeMillis = a.getActiveDurationStartMillis() != null && a.getActiveDurationEndMillis() != null
+				? Math.max(0L, a.getActiveDurationEndMillis() - a.getActiveDurationStartMillis()) : null;
+			views.add(view);
+		}
+		return Collections.unmodifiableList(views);
+	}
+
+	/** Slayer assignment cards, newest/current first. Empty for non-Slayer sessions. */
+	public List<SlayerAssignmentView> getSlayerAssignments()
+	{
+		return slayerAssignments;
+	}
+
+	/**
+	 * One Slayer assignment INSTANCE, for one collapsible card.
+	 * {@code ordinal} is the instance's stable, per-session identity
+	 * (distinct even for two consecutive assignments of the same task).
+	 */
+	public static final class SlayerAssignmentView
+	{
+		private final int ordinal;
+		private final String taskName;
+		private final Integer remaining;
+		private final boolean current;
+		private final List<LootEntry> lootEntries;
+		private final Integer unitsCompleted;
+		private final Integer initialAmount;
+		private final com.osrstelemetry.plugin.session.SlayerAssignmentEndReason endReason;
+		private final boolean bootstrapped;
+		private Integer kills;
+		private Integer masterId;
+		private Long activeMillis;
+
+		/** Observed kills for this instance; null when not trustworthy (see SlayerAssignmentRecord#observedKills). */
+		public Integer getKills()
+		{
+			return kills;
+		}
+
+		public Integer getMasterId()
+		{
+			return masterId;
+		}
+
+		/** Active task time of a FINISHED instance; null while current or untracked. */
+		public Long getActiveMillis()
+		{
+			return activeMillis;
+		}
+
+		SlayerAssignmentView(int ordinal, String taskName, Integer remaining, boolean current, List<LootEntry> lootEntries,
+			Integer unitsCompleted, Integer initialAmount, com.osrstelemetry.plugin.session.SlayerAssignmentEndReason endReason, boolean bootstrapped)
+		{
+			this.ordinal = ordinal;
+			this.taskName = taskName;
+			this.remaining = remaining;
+			this.current = current;
+			this.lootEntries = lootEntries;
+			this.unitsCompleted = unitsCompleted;
+			this.initialAmount = initialAmount;
+			this.endReason = endReason;
+			this.bootstrapped = bootstrapped;
+		}
+
+		/** Task units completed during this instance ("xN"); null = unknown (legacy record). Never negative. */
+		public Integer getUnitsCompleted()
+		{
+			return unitsCompleted;
+		}
+
+		/** Authoritative assigned amount when observed; null when bootstrapped mid-task. */
+		public Integer getInitialAmount()
+		{
+			return initialAmount;
+		}
+
+		/** Null while current/in progress or when not authoritatively known. */
+		public com.osrstelemetry.plugin.session.SlayerAssignmentEndReason getEndReason()
+		{
+			return endReason;
+		}
+
+		/** True: tracking began mid-task, so xN counts only from Spyglass's own observation. */
+		public boolean isBootstrapped()
+		{
+			return bootstrapped;
+		}
+
+		/** True only for REPLACED_EARLY (shown to players as "Skipped"). */
+		public boolean isSkipped()
+		{
+			return endReason == com.osrstelemetry.plugin.session.SlayerAssignmentEndReason.REPLACED_EARLY;
+		}
+
+		public int getOrdinal()
+		{
+			return ordinal;
+		}
+
+		public String getTaskName()
+		{
+			return taskName;
+		}
+
+		/** Latest authoritative remaining (0 = completed); null when unknown. */
+		public Integer getRemaining()
+		{
+			return remaining;
+		}
+
+		/** True for the session's current (latest) assignment. */
+		public boolean isCurrent()
+		{
+			return current;
+		}
+
+		/** Unmodifiable, same aggregation/ordering as {@link #getLootEntries()} of the session. */
+		public List<LootEntry> getLootEntries()
+		{
+			return lootEntries;
+		}
 	}
 
 	private static final class LootAccumulator
@@ -530,6 +1026,83 @@ public final class CurrentSessionSnapshot
 	public List<XpEntry> getXpEntries()
 	{
 		return xpEntries;
+	}
+
+	/**
+	 * The XP cards to display under the given Slayer XP scope: the
+	 * current-assignment cards for a Slayer session in CURRENT_TASK scope
+	 * when trustworthy task XP exists, otherwise (ALL_TASKS, any
+	 * non-Slayer session, or no task XP tracking) the unchanged
+	 * session-wide {@link #getXpEntries()}.
+	 */
+	/** True when a Current Task XP scope exists (Slayer session whose current assignment tracks its own XP). */
+	public boolean hasTaskXpScope()
+	{
+		return taskXpEntries != null;
+	}
+
+	public List<XpEntry> getXpEntries(com.osrstelemetry.plugin.SlayerXpScope scope)
+	{
+		if (scope == com.osrstelemetry.plugin.SlayerXpScope.CURRENT_TASK && taskXpEntries != null)
+		{
+			return taskXpEntries;
+		}
+		return xpEntries;
+	}
+
+	/** The session identity's stable activity key (e.g. a structured activity's catalog key); may be null. */
+	public String getActivityKey()
+	{
+		return activityKey;
+	}
+
+	/**
+	 * PRIMARY TITLE (presentation only, from the already-decided session
+	 * identity): a structured activity or a boss IS what the player is
+	 * doing, so its name owns the title -- the XP it happens to produce
+	 * (Hitpoints, Magic ...) belongs in the XP section. Slayer keeps its
+	 * task-oriented "Slayer" title; generic combat and skilling keep the
+	 * skill-led title (the trained skill is the point of those sessions).
+	 */
+	public String getHeadline()
+	{
+		if (isActivityHeadline())
+		{
+			return displayName == null ? "Unknown activity" : displayName;
+		}
+		String primarySkill = getPrimarySkill();
+		if (primarySkill != null)
+		{
+			return toTitleCase(primarySkill);
+		}
+		return displayName == null ? "Unknown activity" : displayName;
+	}
+
+	/** True when the title is the activity itself (structured activity or boss), never a skill. */
+	public boolean isActivityHeadline()
+	{
+		return activityType == ActivityType.STRUCTURED_ACTIVITY || activityType == ActivityType.BOSSING;
+	}
+
+	private static String toTitleCase(String upper)
+	{
+		if (upper.isEmpty())
+		{
+			return upper;
+		}
+		return upper.charAt(0) + upper.substring(1).toLowerCase(java.util.Locale.ROOT);
+	}
+
+	/** Structured-activity completion label ("Games"), or null when the session has no such metric. */
+	public String getCompletionLabel()
+	{
+		return completionLabel;
+	}
+
+	/** Structured-activity completions this session (meaningful only with a non-null label). */
+	public int getCompletionCount()
+	{
+		return completionCount;
 	}
 
 	public ReliableCountView getReliableCount()
@@ -634,7 +1207,11 @@ public final class CurrentSessionSnapshot
 	 */
 	public Long getEstimatedSlayerXpRemaining()
 	{
-		if (slayerProgressDelta == null || slayerProgressDelta < MIN_SLAYER_TASK_UNITS_FOR_XP_ESTIMATE
+		// Per-ASSIGNMENT units (see slayerAssignmentBaselineProgressDelta):
+		// identical to slayerProgressDelta for a single-assignment session.
+		Integer assignmentUnits = slayerProgressDelta == null ? null
+			: slayerProgressDelta - (slayerAssignmentBaselineProgressDelta == null ? 0 : slayerAssignmentBaselineProgressDelta);
+		if (assignmentUnits == null || assignmentUnits < MIN_SLAYER_TASK_UNITS_FOR_XP_ESTIMATE
 			|| slayerCurrentRemaining == null || slayerCurrentRemaining <= 0)
 		{
 			return null;
@@ -649,12 +1226,13 @@ public final class CurrentSessionSnapshot
 				break;
 			}
 		}
+		slayerXpGained -= slayerAssignmentBaselineSlayerXp == null ? 0L : slayerAssignmentBaselineSlayerXp;
 		if (slayerXpGained <= 0L)
 		{
 			return null;
 		}
 
-		double averageXpPerTaskUnit = (double) slayerXpGained / slayerProgressDelta;
+		double averageXpPerTaskUnit = (double) slayerXpGained / assignmentUnits;
 		long estimatedRemaining = Math.round(averageXpPerTaskUnit * slayerCurrentRemaining);
 		return estimatedRemaining <= 0L ? null : estimatedRemaining;
 	}
@@ -763,13 +1341,26 @@ public final class CurrentSessionSnapshot
 		private final long xpGained;
 		private final Long xpPerHour;
 		private final LevelProgress levelProgress;
+		private final Long rateWarmupRemainingMillis;
 
 		XpEntry(String skill, long xpGained, Long xpPerHour, LevelProgress levelProgress)
+		{
+			this(skill, xpGained, xpPerHour, levelProgress, null);
+		}
+
+		XpEntry(String skill, long xpGained, Long xpPerHour, LevelProgress levelProgress, Long rateWarmupRemainingMillis)
 		{
 			this.skill = skill;
 			this.xpGained = xpGained;
 			this.xpPerHour = xpPerHour;
 			this.levelProgress = levelProgress;
+			this.rateWarmupRemainingMillis = rateWarmupRemainingMillis;
+		}
+
+		/** Active time still needed before XP/hr is shown; null once it is (or not applicable). */
+		public Long getRateWarmupRemainingMillis()
+		{
+			return rateWarmupRemainingMillis;
 		}
 
 		public String getSkill()

@@ -39,38 +39,42 @@ import net.runelite.client.ui.PluginPanel;
  * dependency-version risk and are equally standard RuneLite-plugin
  * practice.
  *
- * LIVE UPDATES: a single {@code javax.swing.Timer} (NOT a raw
- * {@code java.util.Timer}/thread) polls roughly once per second, on
- * the EDT (a Swing {@code Timer}'s
- * listener always runs there), and rebuilds a fresh
- * {@link CurrentSessionSnapshot} from whatever
- * {@link SessionRuntimeCoordinator#getCurrentSessionSnapshot()} returns at
- * that instant. The read itself is cheap (a handful of getter calls
- * into a synchronized accessor -- see that method's own javadoc) and
- * never touches the RuneLite client thread; nothing here blocks it.
- * {@link #shutdown()} stops this timer -- it MUST be called from
- * {@code OsrsTelemetryPlugin.shutDown()} so a disabled/re-enabled
- * plugin never accumulates a second live timer.
+ * LIVE UPDATES ARE EVENT-DRIVEN: the session runtime, the Loot Tracker,
+ * History and the two price caches only signal "surface X changed" (plain
+ * Runnables -- they know nothing about Swing). Every signal goes through
+ * one {@link UiRefreshCoalescer}: the first queues ONE EDT pass, later
+ * ones before it runs only union into the dirty set. That pass renders
+ * the dirty surface if its tab is visible; a hidden tab just stays dirty
+ * and renders the moment it is selected. Snapshots are always read fresh
+ * at render time (cheap, non-blocking in-memory reads).
+ *
+ * The ~1 s {@code javax.swing.Timer} remains only for time-derived
+ * presentation (elapsed duration, XP/hr and other rates) and as a safety
+ * fallback, and it only ever touches the VISIBLE tab. It is not the path
+ * by which new XP, loot, progress or state becomes visible.
+ *
+ * {@link #shutdown()} stops the timer, shuts the coalescer (a pass already
+ * queued becomes a no-op) and detaches every listener this panel
+ * installed -- it MUST be called from {@code OsrsTelemetryPlugin.shutDown()}.
  */
 public final class OsrsTelemetryPanel extends PluginPanel
 {
 	private static final int POLL_INTERVAL_MILLIS = 1000;
 
 	private final SessionRuntimeCoordinator sessionRuntimeCoordinator;
-	// Read fresh on every poll tick, same cadence as the Current Session
-	// snapshot -- see LootTrackerCoordinator's own javadoc for why its index
+	// Read fresh at every Loot render -- see LootTrackerCoordinator's own javadoc for why its index
 	// reference can change (a background rebuild populating it
 	// progressively, or an account switch installing a fresh one).
 	private final LootTrackerCoordinator lootTrackerCoordinator;
 	private final LootTrackerPreferences lootTrackerPreferences;
 	// The live source of "which
-	// attackable NPC is the player currently targeting" -- read fresh on
-	// every poll tick, same cadence as the session snapshot itself. See
+	// attackable NPC is the player currently targeting" -- read fresh at
+	// every Current Session render, like the session snapshot itself. See
 	// NpcInteractionTargetCollector#getCurrentNpcName()/getCurrentNpcId().
 	private final NpcInteractionTargetCollector npcInteractionTargetCollector;
-	// Read fresh on every poll tick for the cheap recent-entries list (see
-	// HistoryCoordinator#getRecentEntries()'s own "never blocks" contract)
-	// and invoked directly (off the poll cadence) for a lazy detail load
+	// Read at every History render for the cheap cached recent-entries list
+	// (see HistoryCoordinator#getRecentEntries()'s "never blocks" contract)
+	// and invoked directly for a lazy detail load
 	// the instant a History row is actually clicked -- see historyView's
 	// onEntryOpened callback below.
 	private final HistoryCoordinator historyCoordinator;
@@ -80,6 +84,10 @@ public final class OsrsTelemetryPanel extends PluginPanel
 	private final CardLayout cardLayout = new CardLayout();
 	private final JPanel cards = new JPanel(cardLayout);
 	private final Timer pollTimer;
+	private final UiRefreshCoalescer coalescer;
+	/** Surfaces whose on-screen content may be older than the backend's (EDT-confined). */
+	private final java.util.Set<UiSurface> staleSurfaces = java.util.EnumSet.noneOf(UiSurface.class);
+	private volatile boolean shutdown;
 
 	private JButton sessionTabButton;
 	private JButton lootTabButton;
@@ -112,27 +120,13 @@ public final class OsrsTelemetryPanel extends PluginPanel
 		this.lootTrackerPreferences = lootTrackerPreferences;
 		this.historyCoordinator = historyCoordinator;
 		this.npcInteractionTargetCollector = npcInteractionTargetCollector;
-		// The "Re-evaluate
-		// Session" button's ENTIRE backend action, built here (where both
-		// sessionRuntimeCoordinator and npcInteractionTargetCollector are
-		// already available) and handed to CurrentSessionView as a single
-		// opaque Runnable -- see that class's own onReEvaluateRequested
-		// field javadoc for why it must never see either reference
-		// directly. Reads the live current NPC target at the moment the
-		// button is actually processed (inside the ClientThread.invokeLater()
-		// dispatch, not before) -- getCurrentNpcName()/getCurrentNpcId()
-		// are documented safe off the client thread, so reading them here
-		// is fine too, but reading them at the point of use keeps this as
-		// close to "look at what I am doing RIGHT NOW" as possible. The
-		// invokeLater() call itself returns immediately -- this Runnable
-		// never blocks whatever thread invokes it (the EDT, via
-		// CurrentSessionView's button ActionListener).
-		Runnable reEvaluateAction = () -> clientThread.invokeLater(() ->
-			sessionRuntimeCoordinator.reEvaluateCurrentSession(
-				npcInteractionTargetCollector.getCurrentNpcName(),
-				npcInteractionTargetCollector.getCurrentNpcId(),
-				Instant.now()));
-		this.currentSessionView = new CurrentSessionView(skillIconManager, itemManager, clientThread, config, reEvaluateAction);
+		this.currentSessionView = new CurrentSessionView(skillIconManager, itemManager, clientThread, config);
+		// First-use welcome only when the account is loaded and genuinely has
+		// nothing tracked yet (cheap reads: cached History list, index size).
+		this.currentSessionView.setTrackedDataSupplier(() -> historyCoordinator == null
+			|| !historyCoordinator.isInitialScanComplete()
+			|| !historyCoordinator.getRecentEntries().isEmpty()
+			|| (lootTrackerCoordinator != null && !lootTrackerCoordinator.getIndex().isEmpty()));
 		this.lootTrackerView = new LootTrackerView(itemManager, clientThread, config, lootTrackerPreferences);
 		// See HistoryView's own class javadoc for why it needs no direct
 		// HistoryCoordinator reference -- onEntryOpened here is the ENTIRE
@@ -154,14 +148,71 @@ public final class OsrsTelemetryPanel extends PluginPanel
 		cards.add(historyView, CARD_HISTORY);
 		add(cards, BorderLayout.CENTER);
 
+		coalescer = new UiRefreshCoalescer(SwingUtilities::invokeLater, this::onDirty);
+		// Every surface starts dirty: each renders the first time it is shown.
+		staleSurfaces.addAll(java.util.EnumSet.allOf(UiSurface.class));
+
 		selectTab(CARD_SESSION);
 
-		pollTimer = new Timer(POLL_INTERVAL_MILLIS, e -> refreshCurrentSession());
+		// Backend change signals (any thread) -> one coalesced EDT pass.
+		sessionRuntimeCoordinator.setCurrentSessionListener(() -> coalescer.markDirty(UiSurface.CURRENT_SESSION));
+		lootTrackerCoordinator.setChangeListener(() -> coalescer.markDirty(UiSurface.LOOT_TRACKER));
+		historyCoordinator.setChangeListener(() -> coalescer.markDirty(UiSurface.HISTORY));
+		currentSessionView.setValuationListener(() -> coalescer.markDirty(UiSurface.CURRENT_SESSION));
+		lootTrackerView.setValuationListener(() -> coalescer.markDirty(UiSurface.LOOT_TRACKER));
+		lootTrackerView.setRefreshRequester(() -> coalescer.markDirty(UiSurface.LOOT_TRACKER));
+		historyView.setValuationListener(() -> coalescer.markDirty(UiSurface.HISTORY));
+
+		// Time-derived presentation + safety fallback, visible tab only.
+		pollTimer = new Timer(POLL_INTERVAL_MILLIS, e -> renderSurface(visibleSurface()));
 		pollTimer.setRepeats(true);
 		pollTimer.start();
+	}
 
-		// Populate immediately rather than waiting for the first tick.
-		refreshCurrentSession();
+	/** EDT: one coalesced pass. Visible dirty surfaces render now; hidden ones stay stale until shown. */
+	private void onDirty(java.util.Set<UiSurface> dirty)
+	{
+		if (shutdown)
+		{
+			return;
+		}
+		staleSurfaces.addAll(dirty);
+		UiSurface visible = visibleSurface();
+		if (staleSurfaces.contains(visible))
+		{
+			renderSurface(visible);
+		}
+	}
+
+	private UiSurface visibleSurface()
+	{
+		if (CARD_LOOT.equals(activeCard))
+		{
+			return UiSurface.LOOT_TRACKER;
+		}
+		return CARD_HISTORY.equals(activeCard) ? UiSurface.HISTORY : UiSurface.CURRENT_SESSION;
+	}
+
+	/** Renders one surface from the newest in-memory state (EDT; no disk, no client thread). */
+	private void renderSurface(UiSurface surface)
+	{
+		staleSurfaces.remove(surface);
+		switch (surface)
+		{
+			case CURRENT_SESSION:
+				renderCurrentSession();
+				break;
+			case LOOT_TRACKER:
+				lootTrackerView.render(LootTrackerSnapshot.from(lootTrackerCoordinator.getIndex(), lootTrackerPreferences));
+				break;
+			case HISTORY:
+				// Cached entries only; HistoryView skips an unchanged list itself.
+				historyView.render(historyCoordinator.getRecentEntries());
+				historyView.refreshDetailValues();
+				break;
+			default:
+				break;
+		}
 	}
 
 	/**
@@ -250,6 +301,17 @@ public final class OsrsTelemetryPanel extends PluginPanel
 	private void selectTab(String cardName)
 	{
 		activeCard = cardName;
+		UiSurface surface = visibleSurface();
+		if (surface == UiSurface.HISTORY && historyCoordinator != null)
+		{
+			// Opening History re-scans in the background; a changed list
+			// arrives through the History change listener.
+			historyCoordinator.requestRefresh();
+		}
+		if (staleSurfaces.contains(surface))
+		{
+			renderSurface(surface);
+		}
 		cardLayout.show(cards, cardName);
 		styleTabButton(sessionTabButton, CARD_SESSION.equals(cardName));
 		styleTabButton(lootTabButton, CARD_LOOT.equals(cardName));
@@ -277,47 +339,88 @@ public final class OsrsTelemetryPanel extends PluginPanel
 		button.setBorder(BorderFactory.createLineBorder(selected ? SpyglassTheme.BORDER_PRIMARY : SpyglassTheme.BORDER_SOFT));
 	}
 
-	private void refreshCurrentSession()
+	private void renderCurrentSession()
 	{
-		// This runs on the EDT (Timer listener), never the RuneLite
-		// client thread -- see class javadoc's LIVE UPDATES note. The
-		// current NPC target is read fresh here too, same cadence as
-		// everything else -- see
-		// npcInteractionTargetCollector's own field javadoc.
+		// EDT only, never the RuneLite client thread. The current NPC target
+		// is read fresh here too (see npcInteractionTargetCollector).
 		CurrentSessionSnapshot snapshot = CurrentSessionSnapshot.from(
 			sessionRuntimeCoordinator.getCurrentSessionSnapshot(),
 			Instant.now(),
 			npcInteractionTargetCollector.getCurrentNpcName(),
 			npcInteractionTargetCollector.getCurrentNpcId());
 		currentSessionView.render(snapshot);
-
-		// Same cadence, same EDT -- LootTrackerCoordinator#getIndex()/
-		// LootTrackerPreferences are both cheap, non-blocking, in-memory
-		// reads (see their own class javadocs), same as
-		// sessionRuntimeCoordinator.getCurrentSessionSnapshot() above.
-		LootTrackerSnapshot lootTrackerSnapshot = LootTrackerSnapshot.from(lootTrackerCoordinator.getIndex(), lootTrackerPreferences);
-		lootTrackerView.render(lootTrackerSnapshot);
-
-		// Same cadence, same EDT -- HistoryCoordinator#getRecentEntries() never
-		// blocks (returns a cached snapshot and kicks off its own background
-		// refresh -- see that method's own javadoc), so this is exactly as
-		// cheap as the two reads above it. historyView.render() itself
-		// additionally skips any Swing rebuild when the entry set is
-		// unchanged from what's already on screen (its own render-key
-		// mechanism), so a steady-state tick with no newly-finalized session
-		// costs one list comparison, nothing more.
-		historyView.render(historyCoordinator.getRecentEntries());
 	}
 
 	/**
-	 * Stops the live-update timer. Must be called from
-	 * {@code OsrsTelemetryPlugin.shutDown()} -- see class javadoc.
+	 * Stops the timer, the coalescer and every backend listener this panel
+	 * installed. Must be called from {@code OsrsTelemetryPlugin.shutDown()}
+	 * -- see class javadoc.
 	 */
+	/**
+	 * Live activity progress for Current Session (e.g. the current Barrows
+	 * run). {@code source} is read at render time; call
+	 * {@link #onActivityProgressChanged()} when it changes.
+	 */
+	public void attachBarrowsProgress(java.util.function.Supplier<com.osrstelemetry.plugin.activity.BarrowsRunProgress> source)
+	{
+		currentSessionView.setBarrowsProgressSupplier(source);
+	}
+
+	/** Live Tempoross game for Current Session (HUD + points varbit); same refresh path as Barrows. */
+	public void attachTemporossGame(java.util.function.Supplier<com.osrstelemetry.plugin.activity.TemporossGameState> source)
+	{
+		currentSessionView.setTemporossGameSupplier(source);
+	}
+
+	/** Live Guardians of the Rift game for Current Session (HUD script power + energy varbits); same refresh path. */
+	public void attachGotrGame(java.util.function.Supplier<com.osrstelemetry.plugin.activity.GotrGameState> source)
+	{
+		currentSessionView.setGotrGameSupplier(source);
+	}
+
+	/** Live Guardians of the Rift reward wallet (stated by the game; null = unknown). */
+	public void attachGotrWallet(java.util.function.Supplier<com.osrstelemetry.plugin.activity.GotrRewardWallet> source)
+	{
+		currentSessionView.setGotrWalletSupplier(source);
+	}
+
+	/** Reads / remembers the in-panel GotR Points · XP choice (its own config key; not a Settings item). */
+	public void attachGotrStrategy(java.util.function.Supplier<com.osrstelemetry.plugin.GotrStrategy> reader,
+		java.util.function.Consumer<com.osrstelemetry.plugin.GotrStrategy> writer)
+	{
+		currentSessionView.setGotrStrategyReader(reader);
+		currentSessionView.setGotrStrategyWriter(writer);
+	}
+
+	/** Live native Slayer status for the Current Session dashboard (read at render time). */
+	public void attachSlayerStatus(java.util.function.Supplier<com.osrstelemetry.plugin.model.SlayerLiveStatus> source)
+	{
+		currentSessionView.setSlayerStatusSupplier(source);
+	}
+
+	/** Persists the in-session Current Task / All Tasks XP choice (the same config item Settings shows). */
+	public void attachSlayerXpScopeWriter(java.util.function.Consumer<com.osrstelemetry.plugin.SlayerXpScope> writer)
+	{
+		currentSessionView.setXpScopeWriter(writer);
+	}
+
+	/** Any thread: the attached activity progress changed -- one coalesced Current Session refresh. */
+	public void onActivityProgressChanged()
+	{
+		coalescer.markDirty(UiSurface.CURRENT_SESSION);
+	}
+
 	public void shutdown()
 	{
+		shutdown = true;
 		if (pollTimer.isRunning())
 		{
 			pollTimer.stop();
 		}
+		coalescer.shutdown();
+		// Backend coordinators outlive this panel: never leave them holding it.
+		sessionRuntimeCoordinator.setCurrentSessionListener(null);
+		lootTrackerCoordinator.setChangeListener(null);
+		historyCoordinator.setChangeListener(null);
 	}
 }

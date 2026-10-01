@@ -47,15 +47,16 @@ import java.util.Map;
  * RECONCILIATION (see reconcile()'s own javadoc): the moment a REAL
  * XP_CHANGE-derived MetricUpdate is applied to this tracker's current
  * owner session for some skill, that durable application now fully
- * represents every raw gain up to that point -- so the live, "not yet
- * represented" portion for that exact (session, skill) pair resets to
- * zero. This is what guarantees the exact-once DISPLAY total the task
- * requires: T0 canonical=100; T1 a live +40 gain makes the panel show
- * 140 (100 durable + 40 live-pending); T2 XP_CHANGE flushes the same
- * +40 into the durable aggregate (canonical becomes 140) AND this
- * tracker's pending amount for that skill resets to 0 in the SAME
- * reconcile() call -- so the panel's own displayed total (140 durable +
- * 0 pending) never jumps to 180. See
+ * represents the raw gains that window carried -- so exactly that much
+ * of the live, "not yet represented" portion for that (session, skill)
+ * pair is removed (clamped at zero; gains made after the window closed
+ * stay pending for the next one). This is what guarantees the exact-once
+ * DISPLAY total the task requires: T0 canonical=100; T1 a live +40 gain
+ * makes the panel show 140 (100 durable + 40 live-pending); T2 XP_CHANGE
+ * flushes the same +40 into the durable aggregate (canonical becomes 140)
+ * AND this tracker's pending amount for that skill drops by 40 to 0 in
+ * the SAME reconcile() call -- so the panel's own displayed total (140
+ * durable + 0 pending) never jumps to 180, and never dips either. See
  * CurrentSessionSnapshotTest/SessionSnapshotTest for the exact assertions.
  */
 final class LiveXpTracker
@@ -116,11 +117,38 @@ final class LiveXpTracker
 	 */
 	void reconcile(String sessionId, String skill)
 	{
+		reconcile(sessionId, skill, null);
+	}
+
+	/**
+	 * As {@link #reconcile(String, String)}, but removes only the XP the
+	 * applied durable window actually carried ({@code appliedDelta}; null =
+	 * everything). A window is resolved one tick after it closes, and the
+	 * StatChanged gains of that next tick are already pending by then --
+	 * they belong to the NEXT window and must stay visible, otherwise the
+	 * displayed total dips until the next flush. Clamped at zero, so it
+	 * can never make the display count anything twice.
+	 */
+	void reconcile(String sessionId, String skill, Long appliedDelta)
+	{
 		if (sessionId == null || skill == null || !sessionId.equals(ownerSessionId))
 		{
 			return;
 		}
-		pendingXpBySkill.remove(skill);
+		Long pending = pendingXpBySkill.get(skill);
+		if (pending == null)
+		{
+			return;
+		}
+		long left = appliedDelta == null ? 0L : pending - Math.max(0L, appliedDelta);
+		if (left > 0L)
+		{
+			pendingXpBySkill.put(skill, left);
+		}
+		else
+		{
+			pendingXpBySkill.remove(skill);
+		}
 	}
 
 	/**

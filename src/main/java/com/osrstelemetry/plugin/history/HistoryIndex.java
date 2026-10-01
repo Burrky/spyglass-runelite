@@ -51,7 +51,8 @@ import net.runelite.client.util.Filepath;
  * file is retried on the NEXT refresh() call (it is never marked
  * "seen" unless HistoryEntry.from() actually returned a real entry),
  * so a transiently-locked file (e.g. mid-write) self-heals on a later
- * poll rather than being permanently skipped.
+ * refresh (the next finalized-session write or History tab open) rather
+ * than being permanently skipped.
  *
  * ACCOUNT ISOLATION (spec Part S): one HistoryIndex instance is
  * strictly single-account for its own in-memory cache's lifetime --
@@ -64,12 +65,21 @@ import net.runelite.client.util.Filepath;
 public final class HistoryIndex
 {
 	private final Map<String, HistoryEntry> entries = new ConcurrentHashMap<>();
+	/**
+	 * Session files that could not be indexed (corrupt, partial, or not a
+	 * finalized session), keyed by id, valued by the file's last-modified
+	 * time when rejected. Without this a bad file was re-read and re-logged
+	 * on EVERY scan (each History open, each finalize); now it is retried
+	 * only after it changes on disk.
+	 */
+	private final Map<String, Object> rejected = new ConcurrentHashMap<>();
+	private static final Object UNKNOWN_STAMP = new Object();
 
 	/**
 	 * Lists sessions/ (cheap: filesystem metadata only), parses any
 	 * sessionId not already in `entries`, and returns a filtered,
 	 * newest-first snapshot within `window` of `now`. Safe to call
-	 * repeatedly (e.g. every poll while the History tab is visible) --
+	 * repeatedly (every finalized-session write, every History tab open) --
 	 * the cost of a call where nothing changed is one directory
 	 * listing plus a HashMap containsKey() per existing file, no
 	 * parsing at all.
@@ -102,16 +112,37 @@ public final class HistoryIndex
 			{
 				continue;
 			}
+			Object stamp = lastModified(file);
+			if (stamp.equals(rejected.get(sessionId)))
+			{
+				// Rejected before and unchanged since: never re-read.
+				continue;
+			}
 			Session session = persistence.loadFinalized(accountHash, sessionId);
 			HistoryEntry entry = HistoryEntry.from(session);
 			if (entry == null)
 			{
+				rejected.put(sessionId, stamp);
 				log.warn("Skipping unparseable/incomplete session file for History: {}", file.getFileName());
 				continue;
 			}
+			rejected.remove(sessionId);
 			entries.put(sessionId, entry);
 		}
 		return snapshot(window, now);
+	}
+
+	private static Object lastModified(Filepath file)
+	{
+		try
+		{
+			Object time = file.getLastModifiedTime();
+			return time == null ? UNKNOWN_STAMP : time;
+		}
+		catch (Exception e)
+		{
+			return UNKNOWN_STAMP;
+		}
 	}
 
 	private static String stripJsonExtension(String filename)
@@ -142,7 +173,11 @@ public final class HistoryIndex
 			}
 			result.add(entry);
 		}
-		result.sort(Comparator.comparing(HistoryEntry::getFinalizedAt, Comparator.nullsLast(Comparator.reverseOrder())));
+		// Newest first by the real instant: Instant.toString() drops trailing
+		// zero fraction digits, so string order is wrong within one second
+		// ("...:05Z" would sort after "...:05.123Z").
+		result.sort(Comparator.comparing((HistoryEntry e) -> parseInstantOrNull(e.getFinalizedAt()),
+			Comparator.nullsLast(Comparator.reverseOrder())));
 		return result;
 	}
 

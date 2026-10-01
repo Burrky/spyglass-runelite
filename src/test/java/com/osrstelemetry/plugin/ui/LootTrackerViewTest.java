@@ -36,8 +36,8 @@ import org.junit.Test;
  * any JPanel/JScrollPane: {@link LootTrackerView#computeRenderKey} (the
  * presentation fingerprint that lets {@code render()} skip a
  * {@code removeAll()}/rebuild entirely when nothing visible changed),
- * {@link LootTrackerView#capRecords} and
- * {@link LootTrackerView#allowedIndividualCount} (the total
+ * {@link LootTrackerView#individualStream} (the bounded global
+ * chronological Individual stream; the total
  * individual-record rendering budget), and
  * {@link LootTrackerView#truncateSourceName}/{@link LootTrackerView#buildHeaderSubtitleText}
  * (pure display-formatting helpers for the width fix and the
@@ -106,7 +106,7 @@ Files.deleteIfExists(testRoot);
 
 	private static String key(List<LootTrackerSnapshot.SourceEntry> sources, boolean favoritesOnly, boolean individualView, String searchText, boolean showHidden, long valuationVersion)
 	{
-		return LootTrackerView.computeRenderKey(sources, sources, favoritesOnly, individualView, searchText, showHidden, valuationVersion, Collections.emptyMap());
+		return LootTrackerView.computeRenderKey(sources, sources, favoritesOnly, individualView, searchText, showHidden, valuationVersion, LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL);
 	}
 
 	// ------------------------------------------------------------------
@@ -224,8 +224,8 @@ Files.deleteIfExists(testRoot);
 	@Test
 	public void computeRenderKey_individualView_changeBeyondCapWindow_producesEqualKey()
 	{
-		// The direct regression test for the EDT-freeze fix: a source
-		// with more than DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE records
+		// The direct regression test for the EDT-freeze fix: a stream
+		// with more than DEFAULT_INDIVIDUAL_REVEAL records
 		// only fingerprints (and LootTrackerView only ever renders) its
 		// most recent revealed window -- so fingerprinting cost, like
 		// rendering cost, never scales with a source's full historical
@@ -234,7 +234,7 @@ Files.deleteIfExists(testRoot);
 		// TOTALS -- unaffected by the cap -- are identical too); that
 		// record falls outside the capped window, so the two keys must
 		// be equal.
-		int totalRecords = LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE + 1;
+		int totalRecords = LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL + 1;
 		LootTrackerSnapshot.SourceEntry sourceA = buildSourceWithOldestRecordAt(T0.minusSeconds(1000), totalRecords);
 		LootTrackerSnapshot.SourceEntry sourceB = buildSourceWithOldestRecordAt(T0.minusSeconds(500), totalRecords);
 
@@ -247,15 +247,12 @@ Files.deleteIfExists(testRoot);
 	@Test
 	public void computeRenderKey_individualView_loadMoreReveal_producesDifferentKey()
 	{
-		LootTrackerSnapshot.SourceEntry source = buildSourceWithOldestRecordAt(T0.minusSeconds(1000), LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE + 1);
+		LootTrackerSnapshot.SourceEntry source = buildSourceWithOldestRecordAt(T0.minusSeconds(1000), LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL + 1);
 		List<LootTrackerSnapshot.SourceEntry> sources = Arrays.asList(source);
 
-		Map<String, Integer> defaultReveal = Collections.emptyMap();
-		Map<String, Integer> expandedReveal = new HashMap<>();
-		expandedReveal.put(source.getSourceKey(), LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE + LootTrackerView.INDIVIDUAL_REVEAL_INCREMENT);
-
-		String keyBefore = LootTrackerView.computeRenderKey(sources, sources, false, true, "", false, 0L, defaultReveal);
-		String keyAfter = LootTrackerView.computeRenderKey(sources, sources, false, true, "", false, 0L, expandedReveal);
+		String keyBefore = LootTrackerView.computeRenderKey(sources, sources, false, true, "", false, 0L, LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL);
+		String keyAfter = LootTrackerView.computeRenderKey(sources, sources, false, true, "", false, 0L,
+			LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL + LootTrackerView.INDIVIDUAL_REVEAL_INCREMENT);
 
 		assertNotEquals(keyBefore, keyAfter);
 	}
@@ -275,8 +272,8 @@ Files.deleteIfExists(testRoot);
 		indexB.apply(record("e2", "Gargoyles", 412, T0.plusSeconds(60), new LootTrackerItem(561, "Nature rune", 5)));
 		List<LootTrackerSnapshot.SourceEntry> allB = LootTrackerSnapshot.from(indexB, preferences).getAllSources();
 
-		String keyA = LootTrackerView.computeRenderKey(favoritesOnlyA, allA, true, false, "", false, 0L, Collections.emptyMap());
-		String keyB = LootTrackerView.computeRenderKey(favoritesOnlyA, allB, true, false, "", false, 0L, Collections.emptyMap());
+		String keyA = LootTrackerView.computeRenderKey(favoritesOnlyA, allA, true, false, "", false, 0L, LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL);
+		String keyB = LootTrackerView.computeRenderKey(favoritesOnlyA, allB, true, false, "", false, 0L, LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL);
 
 		assertNotEquals(keyA, keyB);
 	}
@@ -304,40 +301,8 @@ Files.deleteIfExists(testRoot);
 	// capRecords
 	// ------------------------------------------------------------------
 
-	@Test
-	public void capRecords_withinCap_returnsSameListUnchanged()
-	{
-		List<LootTrackerSnapshot.RecordEntry> records = buildRecords(5);
 
-		List<LootTrackerSnapshot.RecordEntry> capped = LootTrackerView.capRecords(records, 100);
 
-		assertSame(records, capped);
-	}
-
-	@Test
-	public void capRecords_exactlyAtCap_returnsSameListUnchanged()
-	{
-		List<LootTrackerSnapshot.RecordEntry> records = buildRecords(5);
-
-		List<LootTrackerSnapshot.RecordEntry> capped = LootTrackerView.capRecords(records, 5);
-
-		assertSame(records, capped);
-	}
-
-	@Test
-	public void capRecords_beyondCap_returnsLastNInOriginalOldestFirstOrder()
-	{
-		List<LootTrackerSnapshot.RecordEntry> records = buildRecords(10);
-
-		List<LootTrackerSnapshot.RecordEntry> capped = LootTrackerView.capRecords(records, 3);
-
-		assertEquals(3, capped.size());
-		// buildRecords(10) produces records at T0+0 .. T0+9, oldest first;
-		// the last 3 (most recent) are T0+7, T0+8, T0+9, still oldest-first.
-		assertEquals(T0.plusSeconds(7), capped.get(0).getObservedAt());
-		assertEquals(T0.plusSeconds(8), capped.get(1).getObservedAt());
-		assertEquals(T0.plusSeconds(9), capped.get(2).getObservedAt());
-	}
 
 	// ------------------------------------------------------------------
 	// newestFirst (Loot Tracker Load More placement/ordering fix --
@@ -348,145 +313,20 @@ Files.deleteIfExists(testRoot);
 	// reversed before display -- see newestFirst()'s own javadoc.)
 	// ------------------------------------------------------------------
 
-	@Test
-	public void newestFirst_reversesOldestFirstInputToNewestFirst()
-	{
-		List<LootTrackerSnapshot.RecordEntry> oldestFirst = buildRecords(3);
 
-		List<LootTrackerSnapshot.RecordEntry> newestFirst = LootTrackerView.newestFirst(oldestFirst);
 
-		assertEquals(3, newestFirst.size());
-		assertEquals(T0.plusSeconds(2), newestFirst.get(0).getObservedAt());
-		assertEquals(T0.plusSeconds(1), newestFirst.get(1).getObservedAt());
-		assertEquals(T0.plusSeconds(0), newestFirst.get(2).getObservedAt());
-	}
 
-	@Test
-	public void newestFirst_composedWithCapRecords_showsNewestOfTheRevealedWindowFirst()
-	{
-		// The exact end-to-end shape buildIndividualDropsPanel() now
-		// renders: capRecords() selects the most recent 3 of 10 (T0+7,
-		// T0+8, T0+9, oldest-first), then newestFirst() reverses that
-		// window for display -- T0+9 (newest overall) first, T0+7 (the
-		// oldest of the currently-revealed window) last, exactly the
-		// "newest record ... oldest currently revealed record" shape QA
-		// specified.
-		List<LootTrackerSnapshot.RecordEntry> records = buildRecords(10);
-		List<LootTrackerSnapshot.RecordEntry> capped = LootTrackerView.capRecords(records, 3);
 
-		List<LootTrackerSnapshot.RecordEntry> displayed = LootTrackerView.newestFirst(capped);
 
-		assertEquals(T0.plusSeconds(9), displayed.get(0).getObservedAt());
-		assertEquals(T0.plusSeconds(8), displayed.get(1).getObservedAt());
-		assertEquals(T0.plusSeconds(7), displayed.get(2).getObservedAt());
-	}
-
-	@Test
-	public void newestFirst_neverMutatesItsInput()
-	{
-		// capRecords() can return the ORIGINAL backing list unmodified
-		// when already within the cap (see capRecords_withinCap_...
-		// above) -- newestFirst() must never reorder that shared list out
-		// from under any other reader of it.
-		List<LootTrackerSnapshot.RecordEntry> records = buildRecords(3);
-		List<LootTrackerSnapshot.RecordEntry> snapshotBeforeCall = new ArrayList<>(records);
-
-		LootTrackerView.newestFirst(records);
-
-		assertEquals(snapshotBeforeCall, records);
-	}
-
-	@Test
-	public void newestFirst_empty_returnsEmpty()
-	{
-		assertTrue(LootTrackerView.newestFirst(Collections.emptyList()).isEmpty());
-	}
-
-	@Test
-	public void capRecords_maxZero_returnsEmptyList()
-	{
-		List<LootTrackerSnapshot.RecordEntry> records = buildRecords(5);
-
-		List<LootTrackerSnapshot.RecordEntry> capped = LootTrackerView.capRecords(records, 0);
-
-		assertTrue(capped.isEmpty());
-	}
-
-	private List<LootTrackerSnapshot.RecordEntry> buildRecords(int count)
-	{
-		LootTrackerIndex index = new LootTrackerIndex();
-		for (int i = 0; i < count; i++)
-		{
-			index.apply(record("e" + i, "Zulrah", 2042, T0.plusSeconds(i), new LootTrackerItem(2444, "Zulrah's scales", 1)));
-		}
-		return LootTrackerSnapshot.from(index, preferences).getAllSources().get(0).getRecords();
-	}
 
 	// ------------------------------------------------------------------
 	// allowedIndividualCount (total-budget bound, second EDT-freeze fix pass)
 	// ------------------------------------------------------------------
 
-	@Test
-	public void allowedIndividualCount_neverExceedsRequested()
-	{
-		assertEquals(10, LootTrackerView.allowedIndividualCount(10, 1000, 1000));
-	}
 
-	@Test
-	public void allowedIndividualCount_neverExceedsTotalAvailable()
-	{
-		assertEquals(3, LootTrackerView.allowedIndividualCount(50, 3, 1000));
-	}
 
-	@Test
-	public void allowedIndividualCount_neverExceedsRemainingBudget()
-	{
-		assertEquals(20, LootTrackerView.allowedIndividualCount(50, 1000, 20));
-	}
 
-	@Test
-	public void allowedIndividualCount_exhaustedBudget_returnsZero_neverNegative()
-	{
-		assertEquals(0, LootTrackerView.allowedIndividualCount(50, 1000, 0));
-		assertEquals(0, LootTrackerView.allowedIndividualCount(50, 1000, -5));
-	}
 
-	@Test
-	public void totalIndividualRecordBudget_isSharedAcrossManySources_neverExceedsHardCeiling()
-	{
-		// Simulates many long-lived, all-expanded sources at once (the
-		// exact live complaint: "30 sources x 100 drops"). Even though
-		// every individual source has far more records than the default
-		// per-source reveal, the SUM of records actually fingerprinted
-		// across all of them must never exceed
-		// MAX_TOTAL_INDIVIDUAL_RECORDS_RENDERED.
-		List<LootTrackerSnapshot.SourceEntry> manySources = new ArrayList<>();
-		int perSourceRecordCount = LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE + 20;
-		int sourceCount = 30;
-		for (int s = 0; s < sourceCount; s++)
-		{
-			LootTrackerIndex index = new LootTrackerIndex();
-			String name = "Source" + s;
-			for (int i = 0; i < perSourceRecordCount; i++)
-			{
-				index.apply(record("s" + s + "e" + i, name, s, T0.plusSeconds(i), new LootTrackerItem(1, "Item", 1)));
-			}
-			manySources.add(LootTrackerSnapshot.from(index, preferences).getAllSources().get(0));
-		}
-
-		int[] budget = {LootTrackerView.MAX_TOTAL_INDIVIDUAL_RECORDS_RENDERED};
-		int totalRendered = 0;
-		for (LootTrackerSnapshot.SourceEntry source : manySources)
-		{
-			int allowed = LootTrackerView.allowedIndividualCount(LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL_PER_SOURCE, source.getRecords().size(), budget[0]);
-			List<LootTrackerSnapshot.RecordEntry> visible = LootTrackerView.capRecords(source.getRecords(), allowed);
-			budget[0] -= visible.size();
-			totalRendered += visible.size();
-		}
-
-		assertTrue("expected the budget to actually constrain total rendering below the naive 30x50=1500", totalRendered <= LootTrackerView.MAX_TOTAL_INDIVIDUAL_RECORDS_RENDERED);
-		assertEquals(LootTrackerView.MAX_TOTAL_INDIVIDUAL_RECORDS_RENDERED, totalRendered);
-	}
 
 	// ------------------------------------------------------------------
 	// truncateSourceName (width/clipping fix)
@@ -776,5 +616,158 @@ Files.deleteIfExists(testRoot);
 		assertTrue("an expanded card's own maximum height should be at least as tall as a collapsed card's, "
 				+ "tracking real content rather than a fixed ceiling",
 			expandedHeight >= collapsedHeight);
+	}
+
+	// ------------------------------------------------------------------
+	// individualStream: ONE global chronological stream (Individual view)
+	// ------------------------------------------------------------------
+
+	private List<LootTrackerSnapshot.SourceEntry> chronologicalFive()
+	{
+		LootTrackerIndex index = new LootTrackerIndex();
+		index.apply(record("t1", "Kraken", 494, T0.plusSeconds(1), new LootTrackerItem(3272, "Kraken tentacle", 1)));
+		index.apply(record("t2", "Cave kraken", 492, T0.plusSeconds(2), new LootTrackerItem(995, "Coins", 40)));
+		index.apply(record("t3", "Kraken", 494, T0.plusSeconds(3), new LootTrackerItem(995, "Coins", 900)));
+		index.apply(record("t4", "Gargoyle", 412, T0.plusSeconds(4), new LootTrackerItem(1365, "Steel battleaxe", 1)));
+		index.apply(record("t5", "Kraken", 494, T0.plusSeconds(5), new LootTrackerItem(12004, "Kraken tentacle", 1)));
+		return LootTrackerSnapshot.from(index, preferences).getAllSources();
+	}
+
+	private static List<String> order(LootTrackerView.IndividualWindow window)
+	{
+		List<String> out = new ArrayList<>();
+		for (LootTrackerView.StreamRecord r : window.getRecords())
+		{
+			out.add(r.getSource().getSourceName() + "@" + (r.getRecord().getObservedAt().getEpochSecond() - T0.getEpochSecond()));
+		}
+		return out;
+	}
+
+	@Test
+	public void individualStream_eventOrderWinsOverSourceGrouping_newestFirst()
+	{
+		List<LootTrackerSnapshot.SourceEntry> sources = chronologicalFive();
+		assertEquals("Grouped stays one card per source", 3, sources.size());
+		LootTrackerView.IndividualWindow window = LootTrackerView.individualStream(sources, 50);
+		assertEquals(Arrays.asList("Kraken@5", "Gargoyle@4", "Kraken@3", "Cave kraken@2", "Kraken@1"), order(window));
+		assertEquals(5, window.getTotalAvailable());
+	}
+
+	@Test
+	public void individualStream_sameSourceRepeated_andAlternating()
+	{
+		LootTrackerIndex index = new LootTrackerIndex();
+		for (int i = 0; i < 6; i++)
+		{
+			index.apply(record("a" + i, i % 2 == 0 ? "Zulrah" : "Vorkath", i % 2 == 0 ? 2042 : 8061, T0.plusSeconds(i),
+				new LootTrackerItem(995, "Coins", i + 1)));
+		}
+		index.apply(record("z", "Zulrah", 2042, T0.plusSeconds(10), new LootTrackerItem(995, "Coins", 1)));
+		index.apply(record("z2", "Zulrah", 2042, T0.plusSeconds(11), new LootTrackerItem(995, "Coins", 1)));
+		List<String> got = order(LootTrackerView.individualStream(LootTrackerSnapshot.from(index, preferences).getAllSources(), 50));
+		assertEquals(Arrays.asList("Zulrah@11", "Zulrah@10", "Vorkath@5", "Zulrah@4", "Vorkath@3", "Zulrah@2", "Vorkath@1", "Zulrah@0"), got);
+	}
+
+	@Test
+	public void individualStream_eachRecordKeepsItsSource_andAStableKey()
+	{
+		List<LootTrackerSnapshot.SourceEntry> sources = chronologicalFive();
+		LootTrackerView.IndividualWindow before = LootTrackerView.individualStream(sources, 50);
+		for (LootTrackerView.StreamRecord r : before.getRecords())
+		{
+			assertTrue(r.getSource().getRecords().contains(r.getRecord()));
+		}
+		LootTrackerIndex index = new LootTrackerIndex();
+		index.apply(record("t1", "Kraken", 494, T0.plusSeconds(1), new LootTrackerItem(3272, "Kraken tentacle", 1)));
+		index.apply(record("t2", "Cave kraken", 492, T0.plusSeconds(2), new LootTrackerItem(995, "Coins", 40)));
+		index.apply(record("t3", "Kraken", 494, T0.plusSeconds(3), new LootTrackerItem(995, "Coins", 900)));
+		index.apply(record("t4", "Gargoyle", 412, T0.plusSeconds(4), new LootTrackerItem(1365, "Steel battleaxe", 1)));
+		index.apply(record("t5", "Kraken", 494, T0.plusSeconds(5), new LootTrackerItem(12004, "Kraken tentacle", 1)));
+		index.apply(record("t6", "Kraken", 494, T0.plusSeconds(6), new LootTrackerItem(995, "Coins", 1)));
+		LootTrackerView.IndividualWindow after = LootTrackerView.individualStream(LootTrackerSnapshot.from(index, preferences).getAllSources(), 50);
+		assertEquals("a new drop never changes older records' identity", before.getRecords().get(0).key, after.getRecords().get(1).key);
+		assertEquals(before.getRecords().get(4).key, after.getRecords().get(5).key);
+	}
+
+	@Test
+	public void individualStream_isBounded_andLoadMoreExtendsTheSameStream()
+	{
+		List<LootTrackerSnapshot.SourceEntry> many = new ArrayList<>();
+		LootTrackerIndex index = new LootTrackerIndex();
+		for (int s = 0; s < 30; s++)
+		{
+			for (int i = 0; i < 70; i++)
+			{
+				index.apply(record("s" + s + "e" + i, "Source" + s, s, T0.plusSeconds(i * 30L + s), new LootTrackerItem(1, "Item", 1)));
+			}
+		}
+		many.addAll(LootTrackerSnapshot.from(index, preferences).getAllSources());
+		LootTrackerView.IndividualWindow first = LootTrackerView.individualStream(many, LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL);
+		assertEquals(LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL, first.getRecords().size());
+		assertEquals(2100, first.getTotalAvailable());
+		LootTrackerView.IndividualWindow more = LootTrackerView.individualStream(many,
+			LootTrackerView.DEFAULT_INDIVIDUAL_REVEAL + LootTrackerView.INDIVIDUAL_REVEAL_INCREMENT);
+		for (int i = 0; i < first.getRecords().size(); i++)
+		{
+			assertEquals("load more appends older records; newer keep their place", first.getRecords().get(i).key, more.getRecords().get(i).key);
+		}
+		Instant previous = null;
+		for (LootTrackerView.StreamRecord r : more.getRecords())
+		{
+			assertTrue(previous == null || !r.getRecord().getObservedAt().isAfter(previous));
+			previous = r.getRecord().getObservedAt();
+		}
+		assertEquals("hard cap", LootTrackerView.MAX_TOTAL_INDIVIDUAL_RECORDS_RENDERED,
+			LootTrackerView.individualStream(many, 100_000).getRecords().size());
+		assertTrue(LootTrackerView.individualStream(many, 0).getRecords().isEmpty());
+		assertTrue(LootTrackerView.individualStream(Collections.<LootTrackerSnapshot.SourceEntry>emptyList(), 50).getRecords().isEmpty());
+	}
+
+	@Test
+	public void computeRenderKey_individual_followsGlobalOrder_groupedIgnoresIt()
+	{
+		List<LootTrackerSnapshot.SourceEntry> sources = chronologicalFive();
+		String individual = key(sources, false, true, "", false, 0L);
+		assertTrue(individual.indexOf("~stream~") > 0);
+		assertTrue("newest record first in the fingerprint", individual.indexOf("@" + T0.plusSeconds(5)) < individual.indexOf("@" + T0.plusSeconds(4)));
+		assertFalse(key(sources, false, false, "", false, 0L).contains("~stream~"));
+	}
+
+	@Test
+	public void recordTimeText_isSecondaryInformation()
+	{
+		assertEquals("Unknown time", LootTrackerView.recordTimeText(null));
+		assertFalse(LootTrackerView.recordTimeText(T0).isEmpty());
+	}
+
+	@Test
+	public void individualStream_sameDisplayNameDifferentIds_interleaveByEventTime_withUniqueKeys()
+	{
+		LootTrackerIndex index = new LootTrackerIndex();
+		index.apply(record("v1", "Kraken", 494, T0.plusSeconds(1), new LootTrackerItem(995, "Coins", 1)));
+		index.apply(record("v2", "Gargoyle", 412, T0.plusSeconds(2), new LootTrackerItem(995, "Coins", 2)));
+		index.apply(record("v3", "Kraken", 496, T0.plusSeconds(3), new LootTrackerItem(995, "Coins", 3)));
+		index.apply(record("v4", "Kraken", 494, T0.plusSeconds(4), new LootTrackerItem(995, "Coins", 4)));
+		index.apply(record("v5", "Kraken", 496, T0.plusSeconds(4), new LootTrackerItem(995, "Coins", 5)));
+		LootTrackerView.IndividualWindow window = LootTrackerView.individualStream(LootTrackerSnapshot.from(index, preferences).getAllSources(), 50);
+		assertEquals(5, window.totalAvailable);
+		List<String> names = new ArrayList<>();
+		List<Long> quantities = new ArrayList<>();
+		java.util.Set<String> keys = new java.util.HashSet<>();
+		Instant previous = null;
+		for (LootTrackerView.StreamRecord r : window.getRecords())
+		{
+			names.add(r.getSource().getSourceName());
+			quantities.add((long) r.getRecord().getItems().get(0).getQuantity());
+			assertTrue("record keys stay unique even at an identical instant", keys.add(r.key));
+			if (previous != null)
+			{
+				assertFalse("newest first", r.getRecord().getObservedAt().isAfter(previous));
+			}
+			previous = r.getRecord().getObservedAt();
+		}
+		assertEquals(Arrays.asList("Kraken", "Kraken", "Kraken", "Gargoyle", "Kraken"), names);
+		assertEquals("the Gargoyle drop keeps its place between the Kraken variants", 2L, (long) quantities.get(3));
+		assertEquals(1L, (long) quantities.get(4));
 	}
 }

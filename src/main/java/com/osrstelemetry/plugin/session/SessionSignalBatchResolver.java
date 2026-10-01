@@ -120,10 +120,21 @@ final class SessionSignalBatchResolver
 
 	static BatchResolution resolve(List<SessionSignal> batch, Session current, ActivitySignalClassifier classifier, ClassifierContext context)
 	{
-		List<SignalClassification> classifications = new ArrayList<>(batch.size());
-		for (SessionSignal signal : batch)
+		// Structured-activity location signals are classified first, so every
+		// other signal on the same tick sees the location as it stands after
+		// this tick (arrival order within a tick is not meaningful).
+		SignalClassification[] classified = new SignalClassification[batch.size()];
+		for (int i = 0; i < batch.size(); i++)
 		{
-			classifications.add(classifier.classify(signal, current, context));
+			if (batch.get(i).getKind() == SignalKind.STRUCTURED_ACTIVITY_LOCATION)
+			{
+				classified[i] = classifier.classify(batch.get(i), current, context);
+			}
+		}
+		List<SignalClassification> classifications = new ArrayList<>(batch.size());
+		for (int i = 0; i < batch.size(); i++)
+		{
+			classifications.add(classified[i] != null ? classified[i] : classifier.classify(batch.get(i), current, context));
 		}
 
 		// Boss self-consumption of its own Slayer task -- the
@@ -134,6 +145,7 @@ final class SessionSignalBatchResolver
 		// byIdentity is built below, since it can rewrite a
 		// SLAYER_TASK_PROGRESS classification in place.
 		applyBossSelfConsumptionCorroboration(batch, classifications, current, context);
+		applyBossOnTaskSlayerOwnership(classifications, current);
 
 		// Group lifecycle-carrying classifications by their resulting
 		// identity, remembering every originating signal's observedAt
@@ -366,8 +378,19 @@ final class SessionSignalBatchResolver
 		{
 			SessionSignal signal = batch.get(i);
 			SignalClassification c = classifications.get(i);
+			// Never an explicitly rejected drop (off-task KNOWN_MISMATCH): that is
+			// not the "no session to belong to" case this promotion exists for --
+			// see SignalClassification#ownershipRejected. The one exception: the
+			// rejection was against the PRE-batch Slayer session, and this same
+			// tick's own kill evidence (e.g. BOSS_KILL for the boss that dropped
+			// it) switches to a new session that the drop does NOT mismatch --
+			// that kill's loot belongs to the session it just created.
+			boolean rejectedButOwnedByTheNewSession = c.isOwnershipRejected()
+				&& sameKillEvidenceDrivesRealSwitch
+				&& !knownMismatchFor(winner, signal.getBossOrActivitySource());
 			if (signal.getKind() == SignalKind.SERVER_NPC_LOOT
 				&& c.getDecisionKind() == SignalDecisionKind.IGNORE_FOR_SESSION
+				&& (!c.isOwnershipRejected() || rejectedButOwnedByTheNewSession)
 				&& signal.getLootDrops() != null && !signal.getLootDrops().isEmpty())
 			{
 				metrics.add(MetricUpdate.loot(signal.getBossOrActivitySource(), signal.getObservedAt(), signal.getLootDrops()));
@@ -400,6 +423,13 @@ final class SessionSignalBatchResolver
 	 * a non-null EvidenceStrength; this method never sees an empty list,
 	 * since it is only ever called with byIdentity.get(winner).
 	 */
+	private static boolean knownMismatchFor(ActivityIdentity identity, String lootSource)
+	{
+		return identity.getActivityType() == ActivityType.SLAYER
+			&& SlayerTaskFamilyRegistry.lootSourceCompatibility(identity.getDisplayName(), lootSource)
+				== SlayerTaskFamilyRegistry.LootSourceCompatibility.KNOWN_MISMATCH;
+	}
+
 	private static EvidenceStrength strongestStrength(List<SignalClassification> winningClassifications)
 	{
 		EvidenceStrength strongest = EvidenceStrength.CONTEXTUAL;
@@ -499,6 +529,17 @@ final class SessionSignalBatchResolver
 			{
 				continue;
 			}
+			// BOSS-ON-TASK SLAYER OWNERSHIP: classifySlayerTaskProgress() now
+			// REFINES the boss session into the Slayer assignment instead of
+			// emitting the suppressed boss heartbeat this pass was written to
+			// reverse. Only that legacy shape may be rewritten; a refine must
+			// never be turned into a real switch (which would finalize/park the
+			// boss session and mint a fresh Slayer session).
+			if (classifications.get(i).getDecisionKind() != SignalDecisionKind.START_OR_HEARTBEAT
+				|| !preBatchCurrent.getActivityIdentity().equals(classifications.get(i).getIdentity()))
+			{
+				continue;
+			}
 			ActivityIdentity candidate = ActivitySignalClassifier.slayerIdentity(signal.getSlayerTaskName(), signal.getSlayerTaskLocation());
 			// EVIDENCE STRENGTH: this corroboration only ever fires when
 			// a same-tick, genuinely
@@ -515,6 +556,51 @@ final class SessionSignalBatchResolver
 	}
 
 	/**
+	 * BOSS-ON-TASK SLAYER OWNERSHIP -- the same-tick half of
+	 * ActivitySignalClassifier.classifySlayerTaskProgress()'s refine. When the
+	 * pre-batch current session is a boss (ACTIVE or SUSPENDED) and this batch
+	 * refines it into a Slayer assignment that boss belongs to, any same-batch
+	 * heartbeat of that boss (its BOSS_KILL, BOSS_ACTIVITY_CONTEXT) is folded
+	 * into the same refine. Without this, resolveOutcome()'s rank rule would
+	 * pick BOSSING over SLAYER and drop the refine for the tick, so ownership
+	 * would depend on whether the progress and the boss kill landed on the
+	 * same tick. Metrics and evidence strength are carried over unchanged.
+	 */
+	private static void applyBossOnTaskSlayerOwnership(List<SignalClassification> classifications, Session preBatchCurrent)
+	{
+		if (preBatchCurrent == null
+			|| (preBatchCurrent.getState() != SessionState.ACTIVE && preBatchCurrent.getState() != SessionState.SUSPENDED)
+			|| preBatchCurrent.getActivityIdentity().getActivityType() != ActivityType.BOSSING)
+		{
+			return;
+		}
+		ActivityIdentity boss = preBatchCurrent.getActivityIdentity();
+		ActivityIdentity slayerTarget = null;
+		for (SignalClassification c : classifications)
+		{
+			if (c.getDecisionKind() == SignalDecisionKind.REFINE
+				&& c.getIdentity().getActivityType() == ActivityType.SLAYER
+				&& BossTaskAffinity.isBossOwnTask(boss.getActivityKey(), c.getIdentity().getDisplayName()))
+			{
+				slayerTarget = c.getIdentity();
+				break;
+			}
+		}
+		if (slayerTarget == null)
+		{
+			return;
+		}
+		for (int i = 0; i < classifications.size(); i++)
+		{
+			SignalClassification c = classifications.get(i);
+			if (c.getDecisionKind() == SignalDecisionKind.START_OR_HEARTBEAT && boss.equals(c.getIdentity()))
+			{
+				classifications.set(i, SignalClassification.refine(slayerTarget, c.getMetricUpdates(), c.getEvidenceStrength()));
+			}
+		}
+	}
+
+	/**
 	 * Returns the single identity this batch honestly resolves to, or
 	 * null if the batch is genuinely ambiguous. See class javadoc for
 	 * the full step-by-step rule -- no lexicographic comparison
@@ -525,6 +611,27 @@ final class SessionSignalBatchResolver
 		if (distinctIdentities.size() == 1)
 		{
 			return distinctIdentities.iterator().next();
+		}
+
+		// A structured activity is only ever proposed from in-location,
+		// compatible evidence, so a single one outranks everything else
+		// proposed on the same tick (generic combat, skilling, npc combat).
+		ActivityIdentity structured = null;
+		for (ActivityIdentity id : distinctIdentities)
+		{
+			if (id.getActivityType() == ActivityType.STRUCTURED_ACTIVITY)
+			{
+				if (structured != null)
+				{
+					structured = null;
+					break;
+				}
+				structured = id;
+			}
+		}
+		if (structured != null)
+		{
+			return structured;
 		}
 
 		List<ActivityIdentity> specific = new ArrayList<>();

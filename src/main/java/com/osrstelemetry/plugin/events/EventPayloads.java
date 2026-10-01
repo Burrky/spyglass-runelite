@@ -165,6 +165,13 @@ public final class EventPayloads
 		private final int masterId;
 	}
 
+	/** See EventType.SLAYER_BRACELET_EFFECT. effect: "SLAUGHTER" or "EXPEDITIOUS". */
+	@Data
+	public static class SlayerBraceletEffect
+	{
+		private final String effect;
+	}
+
 	@Data
 	public static class SlayerTaskCompleted
 	{
@@ -172,6 +179,13 @@ public final class EventPayloads
 		private final int streak;
 		private final String streakLabel;
 		private final int points;
+		/**
+		 * True when the task was cleared WITHOUT being finished -- cancelled
+		 * or blocked for Slayer points (points went down, the completed-tasks
+		 * streak did not go up). Null (absent from the JSON) for a real
+		 * completion and for every event written before this field existed.
+		 */
+		private Boolean cancelled;
 	}
 
 	/**
@@ -376,5 +390,85 @@ public final class EventPayloads
 	public static class RawCombatXpObserved
 	{
 		private final String skillName;
+	}
+
+	/** Backs EventType.STRUCTURED_ACTIVITY_STATE. activityKey/locationPolicy are null when outside. */
+	@Data
+	public static class StructuredActivityState
+	{
+		private final String activityKey;
+		private final String locationPolicy;
+		private final int regionId;
+	}
+
+	/** Backs EventType.STRUCTURED_ACTIVITY_COMPLETION. completionCount is the game's running count, or null. */
+	@Data
+	public static class StructuredActivityCompletion
+	{
+		private final String activityKey;
+		private final Integer completionCount;
+		private final String source;
+	}
+
+	/**
+	 * Backs EventType.STRUCTURED_REWARD: one reward claim. sourceKey is the
+	 * canonical reward-source id (activity.StructuredRewardSource#getKey --
+	 * "barrows", "tempoross_reward_pool", ...), sourceName its player-facing
+	 * name. No valuation: GP is presentation-time only. An event written by
+	 * an earlier build may lack sourceKey; consumers canonicalize its
+	 * sourceName through the registry's declared aliases, never by guessing.
+	 */
+	@Data
+	public static class StructuredReward
+	{
+		private final String activityKey;
+		private final String sourceKey;
+		private final String sourceName;
+		private final java.util.List<StructuredRewardItem> items;
+	}
+
+	/** Backs EventType.STRUCTURED_ACTIVITY_SCORE. points null = final score not known. */
+	@Data
+	public static class StructuredActivityScore
+	{
+		private final String activityKey;
+		private final Integer completionCount;
+		private final Integer points;
+		private final boolean observedFromStart;
+	}
+
+	/** Backs EventType.STRUCTURED_ACTIVITY_CURRENCY. gained &gt; 0; balance is the game's value after it. */
+	@Data
+	public static class StructuredActivityCurrency
+	{
+		private final String activityKey;
+		private final String currency;
+		private final int gained;
+		private final int balance;
+	}
+
+	/** Backs EventType.STRUCTURED_ACTIVITY_PRODUCTION: exact produced quantities of one confirmed action. */
+	@Data
+	public static class StructuredActivityProduction
+	{
+		private final String activityKey;
+		private final java.util.List<ProducedItem> items;
+	}
+
+	/** One produced item and its exact quantity. Output, not loot. */
+	@Data
+	public static class ProducedItem
+	{
+		private final int itemId;
+		private final String itemName;
+		private final int quantity;
+	}
+
+	@Data
+	public static class StructuredRewardItem
+	{
+		private final int itemId;
+		private final String itemName;
+		private final int quantity;
 	}
 }

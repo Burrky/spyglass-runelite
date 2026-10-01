@@ -33,16 +33,18 @@ import net.runelite.client.game.ItemManager;
  * work onto the client thread, the same primitive
  * {@code ItemManager.getImage(...)} uses internally. Once that
  * resolution runs (on the client thread, where the ItemManager calls
- * are legal) and stores the result, the next render (roughly one
- * second later, via the poll timer) reads the real value and the loot
- * row re-sorts into its correct total-value position. A failed
+ * are legal) and stores the result, {@link #setOnResolved} asks the owning
+ * view for one coalesced refresh, which reads the real value and re-sorts
+ * the loot row into its correct total-value position. A failed
  * resolution clears its pending state so a later render can retry
  * rather than being stuck at a permanent zero.
  */
 final class ItemValuationCache
 {
-	private final ItemManager itemManager;
-	private final ClientThread clientThread;
+	private final java.util.function.IntToLongFunction gePriceLookup;
+	private final java.util.function.IntToLongFunction haPriceLookup;
+	/** Runs a lookup on the client thread (ClientThread#invokeLater in production). */
+	private final java.util.concurrent.Executor clientThreadExecutor;
 	private final ResolvingCache<Integer, Long> gePrices = new ResolvingCache<>();
 	private final ResolvingCache<Integer, Long> haPrices = new ResolvingCache<>();
 
@@ -60,10 +62,34 @@ final class ItemValuationCache
 	 */
 	private volatile long version = 0L;
 
+	/**
+	 * Optional: runs (client thread) after each newly resolved price, so the
+	 * owning view can request one coalesced refresh instead of waiting for
+	 * the next poll. Many resolutions in one burst still coalesce into one
+	 * EDT pass (see UiRefreshCoalescer).
+	 */
+	private volatile Runnable onResolved;
+
+	void setOnResolved(Runnable onResolved)
+	{
+		this.onResolved = onResolved;
+	}
+
 	ItemValuationCache(ItemManager itemManager, ClientThread clientThread)
 	{
-		this.itemManager = itemManager;
-		this.clientThread = clientThread;
+		// No client thread (headless tests): prices simply stay unresolved.
+		this(clientThread == null ? runnable -> { } : clientThread::invokeLater,
+			itemId -> itemManager.getItemPrice(itemId),
+			itemId -> itemManager.getItemComposition(itemId).getHaPrice());
+	}
+
+	/** Seam for tests: explicit client-thread executor and raw price lookups. */
+	ItemValuationCache(java.util.concurrent.Executor clientThreadExecutor, java.util.function.IntToLongFunction gePriceLookup,
+		java.util.function.IntToLongFunction haPriceLookup)
+	{
+		this.clientThreadExecutor = clientThreadExecutor;
+		this.gePriceLookup = gePriceLookup;
+		this.haPriceLookup = haPriceLookup;
 	}
 
 	/**
@@ -74,7 +100,7 @@ final class ItemValuationCache
 	 */
 	long getGePrice(int itemId)
 	{
-		return resolve(gePrices, itemId, () -> (long) Math.max(0, itemManager.getItemPrice(itemId)));
+		return resolve(gePrices, itemId, () -> Math.max(0L, gePriceLookup.applyAsLong(itemId)));
 	}
 
 	/**
@@ -85,7 +111,7 @@ final class ItemValuationCache
 	 */
 	long getHighAlchPrice(int itemId)
 	{
-		return resolve(haPrices, itemId, () -> (long) Math.max(0, itemManager.getItemComposition(itemId).getHaPrice()));
+		return resolve(haPrices, itemId, () -> Math.max(0L, haPriceLookup.applyAsLong(itemId)));
 	}
 
 	/** See {@link #version}'s own javadoc. Safe to call from the EDT. */
@@ -105,12 +131,17 @@ final class ItemValuationCache
 		// resolveIfAbsent is a no-op if a resolution for this item ID is
 		// already resolved or already in flight -- callers never pile up
 		// duplicate ClientThread round-trips for the same item ID.
-		cache.resolveIfAbsent(itemId, id -> clientThread.invokeLater(() ->
+		cache.resolveIfAbsent(itemId, id -> clientThreadExecutor.execute(() ->
 		{
 			try
 			{
 				cache.put(id, lookup.getAsLong());
 				version++;
+				Runnable listener = onResolved;
+				if (listener != null)
+				{
+					listener.run();
+				}
 			}
 			catch (RuntimeException e)
 			{

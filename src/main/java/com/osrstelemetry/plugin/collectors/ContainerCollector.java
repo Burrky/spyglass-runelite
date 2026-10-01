@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -216,7 +215,6 @@ public class ContainerCollector
 	private final ItemManager itemManager;
 	private final LocalStateStore store;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 	private final ScheduledExecutorService scheduledExecutor;
 
 	/**
@@ -333,14 +331,12 @@ public class ContainerCollector
 		ItemManager itemManager,
 		LocalStateStore store,
 		EventLedger eventLedger,
-		OsrsTelemetryConfig config,
 		ScheduledExecutorService scheduledExecutor)
 	{
 		this.client = client;
 		this.itemManager = itemManager;
 		this.store = store;
 		this.eventLedger = eventLedger;
-		this.config = config;
 		this.scheduledExecutor = scheduledExecutor;
 	}
 
@@ -595,17 +591,10 @@ public class ContainerCollector
 	 * rather than waiting for the next incidental ItemContainerChanged
 	 * — those are continuously-observable containers, so there is no
 	 * reason telemetry should lag behind what RuneLite already knows
-	 * the instant the plugin starts observing. Gated on config — called
-	 * both on login and on re-enable via ConfigChanged, and must not
-	 * seed inventory/equipment state at all while the category is
-	 * disabled.
+	 * the instant the plugin starts observing.
 	 */
 	public void captureInitialContinuousState()
 	{
-		if (!config.collectInventoryEquipment())
-		{
-			return;
-		}
 		captureIfPresent(InventoryID.INV);
 		captureIfPresent(InventoryID.WORN);
 	}
@@ -627,32 +616,7 @@ public class ContainerCollector
 		{
 			return;
 		}
-		if (!categoryEnabled(containerId))
-		{
-			return;
-		}
 		writeContainer(containerId, event.getItemContainer());
-	}
-
-	private boolean categoryEnabled(int containerId)
-	{
-		if (containerId == InventoryID.INV || containerId == InventoryID.WORN)
-		{
-			return config.collectInventoryEquipment();
-		}
-		if (containerId == InventoryID.BANK)
-		{
-			return config.collectBank();
-		}
-		if (containerId == InventoryID.SEED_VAULT)
-		{
-			return config.collectSeedVault();
-		}
-		if (containerId == InventoryID.INV_GROUP_TEMP)
-		{
-			return config.collectGroupStorage();
-		}
-		return true;
 	}
 
 	private void writeContainer(int containerId, ItemContainer container)

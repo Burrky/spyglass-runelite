@@ -154,7 +154,7 @@ public class CurrentSessionViewTest
 		// plus narrower/wider cases -- behavior depends only on component width.
 		for (int width : new int[] {150, 180, 213, 260})
 		{
-			CurrentSessionView view = new CurrentSessionView(null, null, null, DEFAULT_CONFIG, null);
+			CurrentSessionView view = new CurrentSessionView(null, null, null, DEFAULT_CONFIG);
 			view.setSize(width, 600);
 			layoutTree(view);
 			layoutTree(view); // second pass: label height recomputed at the now-known width
@@ -181,7 +181,7 @@ public class CurrentSessionViewTest
 	@Test
 	public void emptyState_wrapsOntoMultipleLines_whenNarrow()
 	{
-		CurrentSessionView view = new CurrentSessionView(null, null, null, DEFAULT_CONFIG, null);
+		CurrentSessionView view = new CurrentSessionView(null, null, null, DEFAULT_CONFIG);
 		view.setSize(150, 600);
 		layoutTree(view);
 		layoutTree(view);

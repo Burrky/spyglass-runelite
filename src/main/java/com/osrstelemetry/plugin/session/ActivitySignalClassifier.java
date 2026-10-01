@@ -132,8 +132,19 @@ public final class ActivitySignalClassifier
 		COMBAT_SKILLS.add("hitpoints");
 	}
 
+	private final StructuredActivityClassifier structuredActivities =
+		new StructuredActivityClassifier(com.osrstelemetry.plugin.activity.StructuredActivityRegistry.defaults());
+
 	public SignalClassification classify(SessionSignal signal, Session current, ClassifierContext context)
 	{
+		// Structured activities first: null means "not structured-activity
+		// business" and the ordinary rules below decide unchanged.
+		SignalClassification structured = structuredActivities.classify(signal, current, context);
+		if (structured != null)
+		{
+			return structured;
+		}
+
 		switch (signal.getKind())
 		{
 			case XP_CHANGE:
@@ -157,6 +168,17 @@ public final class ActivitySignalClassifier
 				return classifyRawCombatXpObserved(signal, current, context);
 			case SLAYER_TASK_PROGRESS:
 				return classifySlayerTaskProgress(signal, current, context);
+			case SLAYER_BRACELET_EFFECT:
+				// Annotation of the current Slayer assignment only: never lifecycle
+				// evidence, never credited to a non-Slayer session.
+				if (current != null && current.getState() != SessionState.FINALIZED
+					&& current.getActivityIdentity().getActivityType() == ActivityType.SLAYER
+					&& signal.getSlayerBraceletEffect() != null)
+				{
+					return SignalClassification.metricOnly(MetricUpdate.slayerBracelet(signal.getSlayerBraceletEffect())
+						.withReferenceTime(signal.getObservedAt()));
+				}
+				return SignalClassification.ignore();
 			case SLAYER_TASK_COMPLETED:
 				// Session-annotation only -- never its own standalone
 				// Recent Activity entry by itself
@@ -268,8 +290,7 @@ public final class ActivitySignalClassifier
 		// proportional/time-based guess (we deliberately do not know
 		// when within the window the XP was earned, only the two exact
 		// endpoints this comparison needs).
-		if (current != null && signal.getXpWindowStart() != null
-			&& signal.getXpWindowStart().isBefore(current.startedAtInstant()))
+		if (spansSessionStart(signal, current))
 		{
 			String spanningSkill = signal.getSkill();
 			Long xpAtSessionStart = context.getXpAtSessionStart(current.getSessionId(), spanningSkill);
@@ -307,8 +328,7 @@ public final class ActivitySignalClassifier
 		}
 
 		String skill = signal.getSkill();
-		long delta = signal.getXpDelta() == null ? 0L : signal.getXpDelta();
-		MetricUpdate metric = MetricUpdate.xp(skill, delta);
+		MetricUpdate metric = xpMetric(signal);
 
 		if (isCombatSkill(skill))
 		{
@@ -476,6 +496,25 @@ public final class ActivitySignalClassifier
 	 * dropped for session purposes (SLAYER
 	 * XP alone with no session does not create SKILLING/slayer).
 	 */
+	/** True when an XP window began before the current session did (see classifyXpChange). */
+	static boolean spansSessionStart(SessionSignal signal, Session current)
+	{
+		return current != null && signal.getXpWindowStart() != null
+			&& signal.getXpWindowStart().isBefore(current.startedAtInstant());
+	}
+
+	/**
+	 * The XP metric one (non-spanning) XP_CHANGE contributes. Reference time
+	 * = the XP window's own start (when this XP began accruing), else the
+	 * event time -- see MetricUpdate#referenceTime.
+	 */
+	static MetricUpdate xpMetric(SessionSignal signal)
+	{
+		long delta = signal.getXpDelta() == null ? 0L : signal.getXpDelta();
+		return MetricUpdate.xp(signal.getSkill(), delta)
+			.withReferenceTime(signal.getXpWindowStart() != null ? signal.getXpWindowStart() : signal.getObservedAt());
+	}
+
 	private SignalClassification classifySlayerXp(MetricUpdate metric, Session current)
 	{
 		if (current != null
@@ -564,9 +603,13 @@ public final class ActivitySignalClassifier
 		// can retain the latest value for the player-facing display,
 		// completely independent of the accumulated slayerProgressDelta
 		// below.
+		// Reference time = the event's own time: if this progress reaches
+		// remaining 0 it IS the completion, and the record's completedAt
+		// (which bounds final-kill XP crediting) must be stamped from it.
 		MetricUpdate metric = signal.getSlayerUnitsConsumed() == null
 			? null
-			: MetricUpdate.slayerProgress(signal.getSlayerUnitsConsumed(), signal.getSlayerCurrentRemaining());
+			: MetricUpdate.slayerProgress(signal.getSlayerUnitsConsumed(), signal.getSlayerCurrentRemaining())
+				.withReferenceTime(signal.getObservedAt());
 
 		// BOSS SELF-CONSUMPTION OF ITS OWN SLAYER TASK -- a regression
 		// introduced by the GG ->
@@ -624,24 +667,14 @@ public final class ActivitySignalClassifier
 		//
 		// When the current ACTIVE or (still resumable) SUSPENDED session
 		// is BOSSING for a boss confirmed to consume its own named task,
-		// the switch is SUPPRESSED BY DEFAULT (`false` below -- i.e.
-		// treated exactly like non-authoritative evidence, never-
-		// downgrade) rather than applied immediately. This is
-		// deliberately the narrowest correct fix: no bogus session is
-		// ever created for the self-consumption case, so there is
-		// nothing to reverse later. A ClassifierContext "pending boss
-		// task candidate" is armed so the ambiguity can still be
-		// resolved honestly once disambiguating evidence actually
-		// arrives -- see ClassifierContext's own javadoc,
-		// classifyBossKill() (aborts the candidate: a same-boss
-		// authoritative kill confirms self-consumption -- its own
-		// currentIdentity.equals(newIdentity) fast path in
-		// decideCombatBranch() already fires unconditionally regardless
-		// of ACTIVE/SUSPENDED),
-		// classifyServerNpcLoot() (confirms the candidate: a different-NPC
-		// loot proves a real switch), and
-		// SessionSignalBatchResolver.applyBossSelfConsumptionCorroboration()
-		// (the same-tick, order-independent half of this same fix).
+		// this progress no longer gets suppressed and buffered pending
+		// disambiguation (the historical behavior described above): under
+		// boss-on-task Slayer ownership the session is refined in place into
+		// the Slayer identity -- see the branch body below. The
+		// ClassifierContext boss-task candidate and its consumers
+		// (classifyBossKill(), classifyServerNpcLoot(),
+		// SessionSignalBatchResolver.applyBossSelfConsumptionCorroboration())
+		// are retained but are no longer armed by this path.
 		//
 		// Every OTHER SLAYER_TASK_PROGRESS -- naming a task the current
 		// boss is NOT confirmed to consume itself, or arriving with no
@@ -656,25 +689,25 @@ public final class ActivitySignalClassifier
 			&& current.getActivityIdentity().getActivityType() == ActivityType.BOSSING
 			&& BossTaskAffinity.isBossOwnTask(current.getActivityIdentity().getActivityKey(), signal.getSlayerTaskName()))
 		{
-			// CANDIDATE-METRIC BUFFERING: `metric` is now
-			// BUFFERED in the ClassifierContext candidate, never applied
-			// here -- see ClassifierContext's own javadoc for the full
-			// lifecycle. This heartbeat of the current boss identity
-			// therefore carries NO metric of its own (empty list, not
-			// `metric`); classifyBossKill()/classifyServerNpcLoot()/
-			// applyBossSelfConsumptionCorroboration() are the only three
-			// places this buffered metric is ever applied, exactly once,
-			// to whichever session it turns out to genuinely belong to.
-			context.armBossTaskCandidate(current.getActivityIdentity(), identity, metric);
-			// EVIDENCE STRENGTH: SPECIFIC -- SLAYER_TASK_PROGRESS is direct,
-			// per-kill telemetry naming a specific task, even though this
-			// particular occurrence is being suppressed pending
-			// disambiguation (see the comment above). Returned directly
-			// (see the SUSPENDED reactivation note above) rather than via
-			// decideCombatBranch(), so this one, already-disambiguated
-			// case is never subject to that method's ACTIVE-vs-SUSPENDED
-			// default asymmetry.
-			return SignalClassification.startOrHeartbeat(current.getActivityIdentity(), Collections.<MetricUpdate>emptyList(), EvidenceStrength.SPECIFIC);
+			// BOSS-ON-TASK SLAYER OWNERSHIP (supersedes the earlier
+			// suppress-and-disambiguate buffering for this case). The product
+			// rule is now: when the player's active Slayer assignment is
+			// compatible with a boss (the boss is a member of that task's
+			// family -- BossTaskAffinity), SLAYER owns the encounter. This
+			// progress names exactly such an assignment, so the old ambiguity
+			// ("was this the boss's own kill or a different NPC on the same
+			// task?") no longer changes the owner: either way the kill belongs
+			// to that Slayer assignment. The boss session is therefore REFINED
+			// in place into the Slayer identity -- same sessionId, same
+			// startedAt, same aggregates (its boss loot seeds the assignment
+			// ledger on the next applyMetrics) -- never finalized, never
+			// replaced by a fresh session. This progress' own metric rides
+			// along immediately; nothing is buffered. Covers the cold-start
+			// case (a boss kill seen before any Slayer session exists, e.g.
+			// right after login). Same-tick boss evidence is folded into this
+			// refine by SessionSignalBatchResolver.applyBossOnTaskSlayerOwnership().
+			context.clearBossTaskCandidate();
+			return SignalClassification.refine(identity, singleMetric(metric), EvidenceStrength.SPECIFIC);
 		}
 
 		// GG -> Gargoyles activity-switch: `true`
@@ -735,7 +768,11 @@ public final class ActivitySignalClassifier
 	private SignalClassification classifySlayerTaskCompleted(SessionSignal signal, Session current, ClassifierContext context)
 	{
 		MetricUpdate metric = null;
-		if (current != null
+		// A cancelled/blocked task was never finished: no outstanding units
+		// are credited and remaining is not forced to 0 (so the record is
+		// never COMPLETED); the next real assignment marks it Skipped.
+		if (!signal.isSlayerTaskCancelled()
+			&& current != null
 			&& current.getState() != SessionState.FINALIZED
 			&& current.getActivityIdentity().getActivityType() == ActivityType.SLAYER
 			&& context.hasReliableActiveSlayerTask()
@@ -744,7 +781,7 @@ public final class ActivitySignalClassifier
 		{
 			Integer lastKnownRemaining = context.getLastKnownSlayerCurrentRemaining();
 			int outstandingUnits = lastKnownRemaining == null ? 0 : Math.max(0, lastKnownRemaining);
-			metric = MetricUpdate.slayerProgress(outstandingUnits, 0);
+			metric = MetricUpdate.slayerProgress(outstandingUnits, 0).withReferenceTime(signal.getObservedAt());
 		}
 		context.onSlayerTaskCompleted();
 		return SignalClassification.completionOnly(CompletionNature.SESSION_ANNOTATION_ONLY, metric);
@@ -788,7 +825,7 @@ public final class ActivitySignalClassifier
 		// EVIDENCE STRENGTH: AUTHORITATIVE -- a hard completion signal for
 		// exactly this identity. Always switches/refines immediately,
 		// never gated by any candidate mechanism.
-		return decideCombatBranch(identity, current, combineMetrics(bufferedProgress, killMetric), false, EvidenceStrength.AUTHORITATIVE);
+		return decideCombatBranch(slayerOwnerOrBoss(identity, current), current, combineMetrics(bufferedProgress, killMetric), false, EvidenceStrength.AUTHORITATIVE);
 	}
 
 	/**
@@ -821,7 +858,40 @@ public final class ActivitySignalClassifier
 		// specifically names this boss, but is not itself a completion
 		// (see EvidenceStrength's own javadoc example, which is this
 		// exact case).
-		return decideCombatBranch(identity, current, Collections.<MetricUpdate>emptyList(), false, EvidenceStrength.SPECIFIC);
+		return decideCombatBranch(slayerOwnerOrBoss(identity, current), current, Collections.<MetricUpdate>emptyList(), false, EvidenceStrength.SPECIFIC);
+	}
+
+	/**
+	 * BOSS-ON-TASK SLAYER OWNERSHIP. Returns the identity that owns evidence
+	 * naming `bossIdentity`: the CURRENT Slayer session's identity when that
+	 * session is still in progress (ACTIVE, or SUSPENDED inside its resume
+	 * window -- the classifier is never handed an expired one) and its
+	 * assignment is compatible with the boss (the boss belongs to that
+	 * task's family per BossTaskAffinity / SlayerTaskFamilyRegistry -- e.g.
+	 * Kraken on Cave kraken, Cerberus on Hellhounds, Vorkath on Blue
+	 * dragons); otherwise `bossIdentity` itself, unchanged.
+	 *
+	 * Root cause this closes: decideCombatBranch() deliberately treats
+	 * SLAYER -&gt; BOSSING as a real switch ("unknown compatibility means
+	 * switch"). With no compatibility check, the first Kraken evidence on a
+	 * Cave kraken assignment displaced the broader Slayer session -- parked
+	 * it when ACTIVE, and FINALIZED it into History when it was SUSPENDED
+	 * (SessionLifecycleEngine finalizes, never parks, on specific evidence
+	 * against a SUSPENDED session) -- and minted a standalone boss session.
+	 * Returning the Slayer identity instead makes the boss evidence an
+	 * ordinary same-identity heartbeat (or SUSPENDED resume) of that
+	 * session. Generic membership lookup only -- no boss name appears here.
+	 */
+	private static ActivityIdentity slayerOwnerOrBoss(ActivityIdentity bossIdentity, Session current)
+	{
+		if (current != null
+			&& (current.getState() == SessionState.ACTIVE || current.getState() == SessionState.SUSPENDED)
+			&& current.getActivityIdentity().getActivityType() == ActivityType.SLAYER
+			&& BossTaskAffinity.isBossOwnTask(bossIdentity.getActivityKey(), current.getActivityIdentity().getDisplayName()))
+		{
+			return current.getActivityIdentity();
+		}
+		return bossIdentity;
 	}
 
 	private SignalClassification classifyServerNpcLoot(SessionSignal signal, Session current, ClassifierContext context)
@@ -878,6 +948,22 @@ public final class ActivitySignalClassifier
 			// confirming the real switch (not itself a completion signal
 			// the way an authoritative BOSS_KILL/reliable count is).
 			return SignalClassification.startOrHeartbeat(candidate, combineMetrics(bufferedProgress, confirmingMetric), EvidenceStrength.SPECIFIC);
+		}
+
+		// OFF-TASK LOOT: a Slayer session does not OWN loot whose source NPC
+		// is provably another task's target (KNOWN_MISMATCH). Loot is never
+		// lifecycle evidence, so this cannot switch or suspend anything; it is
+		// a Current Session ownership decision only (the raw event and Loot
+		// Tracker are separate EventLedger consumers). The identity stays the
+		// just-completed task through AWAITING_TASK, so a final kill's loot
+		// arriving after completion still validates. MATCH and UNKNOWN keep
+		// the existing crediting (a false rejection would silently lose loot).
+		// rejectOwnership(), not ignore(): see SignalClassification#ownershipRejected.
+		if (current.getActivityIdentity().getActivityType() == ActivityType.SLAYER
+			&& SlayerTaskFamilyRegistry.lootSourceCompatibility(current.getActivityIdentity().getDisplayName(), signal.getBossOrActivitySource())
+				== SlayerTaskFamilyRegistry.LootSourceCompatibility.KNOWN_MISMATCH)
+		{
+			return SignalClassification.rejectOwnership();
 		}
 
 		MetricUpdate metric = MetricUpdate.loot(signal.getBossOrActivitySource(), signal.getObservedAt(), signal.getLootDrops());
@@ -1333,6 +1419,11 @@ public final class ActivitySignalClassifier
 		String key = bossName == null ? "unknown" : bossName.trim().toLowerCase(Locale.ROOT);
 		String displayName = bossName == null ? "Boss" : bossName;
 		return new ActivityIdentity(ActivityType.BOSSING, key, displayName);
+	}
+
+	static ActivityIdentity structuredActivityIdentity(com.osrstelemetry.plugin.activity.StructuredActivityDefinition definition)
+	{
+		return new ActivityIdentity(ActivityType.STRUCTURED_ACTIVITY, definition.getKey(), definition.getDisplayName());
 	}
 
 	static ActivityIdentity skillingIdentity(String skill)

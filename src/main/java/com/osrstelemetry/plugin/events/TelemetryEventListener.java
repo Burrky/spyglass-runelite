@@ -29,4 +29,16 @@ import java.time.Instant;
 public interface TelemetryEventListener
 {
 	void onEvent(long accountHash, EventType type, Object payload, Instant observedAt);
+
+	/**
+	 * Same as {@link #onEvent(long, EventType, Object, Instant)} plus the
+	 * durable envelope's own eventId -- the exact id written to events.jsonl,
+	 * so a listener that also rebuilds from that file (the Loot Tracker) can
+	 * deduplicate live and rebuilt copies of one event. EventLedger always
+	 * calls this overload; the default ignores the id.
+	 */
+	default void onEvent(long accountHash, EventType type, Object payload, Instant observedAt, String eventId)
+	{
+		onEvent(accountHash, type, payload, observedAt);
+	}
 }

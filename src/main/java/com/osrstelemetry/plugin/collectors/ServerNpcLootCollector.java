@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -224,17 +223,15 @@ public class ServerNpcLootCollector
 	private final Client client;
 	private final ItemManager itemManager;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 
 	private volatile PickpocketSuppressionState pickpocketSuppression = PickpocketSuppressionState.notArmed();
 
 	@Inject
-	public ServerNpcLootCollector(Client client, ItemManager itemManager, EventLedger eventLedger, OsrsTelemetryConfig config)
+	public ServerNpcLootCollector(Client client, ItemManager itemManager, EventLedger eventLedger)
 	{
 		this.client = client;
 		this.itemManager = itemManager;
 		this.eventLedger = eventLedger;
-		this.config = config;
 	}
 
 	/**
@@ -256,10 +253,6 @@ public class ServerNpcLootCollector
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
-		if (!config.collectLoot())
-		{
-			return;
-		}
 		if (event.getType() != ChatMessageType.GAMEMESSAGE)
 		{
 			return;
@@ -289,11 +282,6 @@ public class ServerNpcLootCollector
 	@Subscribe
 	public void onServerNpcLoot(ServerNpcLoot event)
 	{
-		if (!config.collectLoot())
-		{
-			return;
-		}
-
 		NPCComposition composition = event.getComposition();
 		String sourceName = composition.getName();
 		int rawSourceId = composition.getId();

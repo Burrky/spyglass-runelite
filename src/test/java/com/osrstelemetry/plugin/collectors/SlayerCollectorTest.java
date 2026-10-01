@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -457,31 +456,6 @@ public class SlayerCollectorTest
 		assertEquals("Aberrant spectres", hydration.getLastKnown().getTaskName());
 	}
 
-	// --- I. disable/re-enable while already on a task -> no fabricated assignment ---
-
-	@Test
-	public void baselineI_disableReenableWhileAlreadyOnTask_noFabricatedAssignment()
-	{
-		// seedSilently() (the re-enable path) calls
-		// hydration.hydrateDirectly() -- bypasses the stabilization
-		// window entirely and sets the baseline directly, with no call
-		// to evaluateSlayerTransition()/emitTransitionEvents() at all.
-		// By construction, no event can be fabricated for the task that
-		// was already running while the category was disabled.
-		SlayerBaselineHydration hydration = new SlayerBaselineHydration();
-		SlayerState reseeded = task("Gargoyles", "Wilderness", 124);
-		hydration.hydrateDirectly(reseeded);
-
-		assertTrue(hydration.isHydrated());
-		assertEquals("Gargoyles", hydration.getLastKnown().getTaskName());
-
-		// The very next observation (identical state) must diff to
-		// NONE, confirming the reseeded baseline is not immediately
-		// stale/mismatched against the real current state.
-		SlayerTransitionResult result = SlayerCollector.evaluateSlayerTransition(hydration.getLastKnown(), reseeded);
-		assertEquals(Kind.NONE, result.kind);
-	}
-
 	// --- J: THE reproduced race, explicitly -- sync NONE,
 	// first async NONE, later settled Gargoyles/124 -> Gargoyles becomes
 	// current persisted state, NO SLAYER_TASK_ASSIGNED ---
@@ -889,9 +863,7 @@ public class SlayerCollectorTest
 		// javadoc above -- so null is safe here (same established
 		// precedent as the rest of this test class; no Mockito
 		// dependency).
-		return new SlayerCollector(null, null, null, null, null, new OsrsTelemetryConfig()
-		{
-		});
+		return new SlayerCollector(null, null, null, null, null, null);
 	}
 
 	// Test C: rapid sequential relevant changes within the SAME arming

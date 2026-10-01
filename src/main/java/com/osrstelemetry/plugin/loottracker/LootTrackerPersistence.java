@@ -11,8 +11,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.util.Filepath;
 
@@ -20,13 +18,14 @@ import net.runelite.client.util.Filepath;
  * Durable rebuild: reads this account's {@code events.jsonl} directly (the SAME
  * append-only file {@code EventLedger} writes -- see
  * TelemetryPaths.eventsFile()'s own javadoc), extracts every
- * {@code SERVER_NPC_LOOT} line, and applies each one to a
+ * {@code SERVER_NPC_LOOT} and {@code STRUCTURED_REWARD} line (converted by
+ * the same {@link LootTrackerEvents} the live path uses), and applies each one to a
  * {@link LootTrackerIndex}. This is what lets the Loot Tracker survive
  * a client restart with its full history intact, entirely independent
  * of any session-state file (Phase 2's "independence from session
  * lifecycle" requirement) and without needing a second, competing
  * persisted-state format of its own -- events.jsonl already IS the
- * durable source of truth for every SERVER_NPC_LOOT this account has
+ * durable source of truth for every loot event this account has
  * ever produced.
  *
  * PERFORMANCE (spec requirement -- "no full events.jsonl reread per
@@ -84,7 +83,7 @@ public final class LootTrackerPersistence
 	 * (streamed, never loading the whole file into memory at once --
 	 * this file can grow to contain every telemetry event this account
 	 * has ever produced, not just loot) and applies every qualifying
-	 * {@code SERVER_NPC_LOOT} record to {@code index}.
+	 * loot record (NPC loot and structured rewards) to {@code index}.
 	 *
 	 * @param minObservedAt records observed strictly before this instant
 	 * are not loaded (retention bound -- see class javadoc); pass null
@@ -113,7 +112,7 @@ public final class LootTrackerPersistence
 				{
 					continue;
 				}
-				LootTrackerRecord record = parseIfServerNpcLoot(line, lineNumber, minObservedAt);
+				LootTrackerRecord record = parseIfLoot(line, lineNumber, minObservedAt);
 				if (record != null && index.apply(record))
 				{
 					applied++;
@@ -150,7 +149,7 @@ public final class LootTrackerPersistence
 		JsonElement payload;
 	}
 
-	private LootTrackerRecord parseIfServerNpcLoot(String line, int lineNumber, Instant minObservedAt)
+	private LootTrackerRecord parseIfLoot(String line, int lineNumber, Instant minObservedAt)
 	{
 		RawEnvelope envelope;
 		try
@@ -163,7 +162,8 @@ public final class LootTrackerPersistence
 			return null;
 		}
 
-		if (envelope == null || envelope.eventType != EventType.SERVER_NPC_LOOT || envelope.payload == null)
+		if (envelope == null || envelope.payload == null
+			|| (envelope.eventType != EventType.SERVER_NPC_LOOT && envelope.eventType != EventType.STRUCTURED_REWARD))
 		{
 			return null;
 		}
@@ -174,31 +174,21 @@ public final class LootTrackerPersistence
 			return null;
 		}
 
-		EventPayloads.ServerNpcLoot payload;
 		try
 		{
-			payload = gson.fromJson(envelope.payload, EventPayloads.ServerNpcLoot.class);
+			if (envelope.eventType == EventType.STRUCTURED_REWARD)
+			{
+				EventPayloads.StructuredReward reward = gson.fromJson(envelope.payload, EventPayloads.StructuredReward.class);
+				return reward == null ? null : LootTrackerEvents.fromStructuredReward(envelope.eventId, reward, observedAt);
+			}
+			EventPayloads.ServerNpcLoot loot = gson.fromJson(envelope.payload, EventPayloads.ServerNpcLoot.class);
+			return loot == null ? null : LootTrackerEvents.fromServerNpcLoot(envelope.eventId, loot, observedAt);
 		}
 		catch (JsonSyntaxException e)
 		{
-			log.warn("Skipping events.jsonl line {} with malformed SERVER_NPC_LOOT payload during Loot Tracker rebuild", lineNumber, e);
+			log.warn("Skipping events.jsonl line {} with malformed {} payload during Loot Tracker rebuild", lineNumber, envelope.eventType, e);
 			return null;
 		}
-		if (payload == null)
-		{
-			return null;
-		}
-
-		List<LootTrackerItem> items = new ArrayList<>();
-		if (payload.getItems() != null)
-		{
-			for (EventPayloads.ServerNpcLootItem item : payload.getItems())
-			{
-				items.add(new LootTrackerItem(item.getItemId(), item.getItemName(), item.getQuantity()));
-			}
-		}
-
-		return new LootTrackerRecord(envelope.eventId, payload.getSourceName(), payload.getSourceId(), observedAt, items);
 	}
 
 	private static Instant parseInstantOrNull(String occurredAt)

@@ -1,87 +1,107 @@
 # Spyglass
 
-Spyglass is a local RuneLite activity and loot tracker built around three
-player-facing views: **Session**, **Loot**, and **History**.
+**The all-in-one activity tracker for RuneLite.** Track sessions, loot, XP,
+loadouts, Slayer, bosses, minigames, and detailed activity history — all
+automatically, all stored locally on your computer.
 
-Everything Spyglass records stays on your own computer. It does not make
-network requests, and it does not automate or assist gameplay in any way —
-see [Data / Security](#data--security) below.
+Spyglass works in three tabs: **Session**, **Loot**, and **History**. There is
+nothing to start or stop — play normally and Spyglass recognizes what you are
+doing.
 
 ## Features
 
-### Session
+### Session — what you're doing right now
 
-The Session tab shows what you're doing right now:
+- **Automatic activity detection** for skilling, combat, Slayer, bosses and
+  supported minigames, including picking a session back up when you return
+  from the bank or a short break.
+- **XP** per skill with level progress and XP/hr. Rates appear after five
+  minutes of activity, so a single large XP drop can't project an unrealistic
+  hourly rate; totals are always exact.
+- **Loot** for the current session, valued at Grand Exchange or High Alch
+  prices.
 
-- your current activity (skilling, Slayer, bossing, and more), identified
-  automatically as you play
-- live XP and XP/hr for the skill you're training
-- Slayer task progress, including task identity and kills remaining
-- boss and combat activity tracking where RuneLite can observe it
-- live session metrics — duration, XP gained, and loot collected so far
+**Smart Slayer**
 
-If you step away or switch to something else, Spyglass notices and quietly
-picks the session back up (or starts a new one) without you having to do
-anything.
+- Your current task with kills remaining, progress, and an estimate of the
+  Slayer XP left.
+- Kills, kills/hr and loot per kill for the task; reward points, task streak
+  and when your next bonus task is.
+- Slayer master, Konar task location and Mortimer task modifiers when the game
+  reports them, plus Bracelet of slaughter / Expeditious bracelet effects.
+- **Task History**: every task of the session with its own loot, XP and kills.
+  XP can be shown for all tasks or only the current task.
+- Bosses killed on a matching task (for example Kraken on a Cave kraken task)
+  stay part of the same Slayer session.
 
-### Loot
+**Minigames and activities**
 
-The Loot tab is a persistent record of everything you've picked up, grouped
-by source (NPC or activity):
+- **Guardians of the Rift** — the current game (guardian power, elemental and
+  catalytic energy), games, games/hr, reward points earned, average and best
+  game points, and an exact **Runes crafted** count. Rewards from the Rewards Guardian
+  are tracked as loot, never as runes you crafted.
+- **Tempoross** — the game's own energy, essence and storm intensity, games,
+  permits earned, and average / best points.
+- **Barrows** — the brothers you've killed this run and chests opened.
+- **Wintertodt, Pest Control and Giants' Foundry** — tracked as one session
+  across many games, with a games count where the game reports one.
 
-- **Grouped** and **Individual** views, so you can see totals per source or
-  every drop individually
-- item search across your whole loot history
-- **Favorites**, so you can pin the sources you care about to the top
-- Grand Exchange and High Alch valuation, configurable in settings
-- kill/source counts where RuneLite exposes them
+### Loot — everything you've picked up
 
-Loot Tracker data survives client restarts — it's rebuilt from your local
-history each time you log in, not re-collected from scratch.
+- **Grouped** view: totals per source (NPC, boss, or activity reward), with the
+  kill count where RuneLite reports a reliable one.
+- **Individual** view: your drops in the order they actually happened, newest
+  first, each labelled with its source.
+- Search across all sources, favorites, hide items you don't care about, and
+  Grand Exchange / High Alch values.
+- Right-click a source to reset its displayed totals. Your recorded history is
+  never deleted.
+- Loot from the past year is rebuilt from your local data each time you log in.
 
-### History
+### History — your recent sessions
 
-The History tab is a browsable list of your recent finalized activities:
+- Every finished session from the last 10 days, newest first.
+- Open a session to see its duration, activity summary, XP, loot, items or
+  runes produced, and the loadout (equipment and inventory) you started with.
+- Slayer sessions list each task; Guardians of the Rift and Tempoross show
+  their own session summary.
 
-- active duration and when each session happened
-- XP gained during that session
-- the loot collected during that session
-- your starting loadout (equipment and inventory) for that session
-- a click-through detail view for any recent entry
+## Settings
 
-History shows a recent window of activity rather than every raw event —
-see [Known Limitations](#known-limitations).
+Settings change how things are shown, never what is recorded:
+
+- **General** — *Loot valuation*: value and sort loot by Grand Exchange or High
+  Alch price.
+- **Current Session** — *XP / Loot order*: which section comes first (Task
+  History counts as Loot during Slayer); *Slayer XP scope*: all tasks or only
+  your current task (also switchable from the XP section itself).
+
+To stop all tracking, disable the plugin.
 
 ## Privacy / Local Data
 
-- Spyglass makes no custom network requests. It does not upload your data
-  anywhere.
-- All data is stored locally under RuneLite's own configuration directory,
-  scoped to your account using RuneLite's account hash (not your display
-  name, so a name change never orphans your history):
+- Spyglass does not send your data anywhere. It makes no network requests of
+  its own, and it never automates or assists gameplay.
+- Everything is stored locally under RuneLite's own directory, per account
+  (by RuneLite's account hash, so a name change never orphans your history):
 
   ```
   .runelite/plugin-data/spyglass/<accountHash>/
   ```
 
-  (Older installs used `.runelite/osrs-telemetry/<accountHash>/` — RuneLite
-  itself moves this automatically, once, the first time you run an
-  updated Spyglass; nothing is lost and no action is needed.)
+  (Older installs used `.runelite/osrs-telemetry/<accountHash>/`; RuneLite
+  moves it automatically the first time an updated Spyglass runs.)
 
-- Typical stored information includes your activity/session records, XP,
-  loot, and inventory/equipment/storage snapshots — the same kind of data
-  RuneLite's own built-in trackers already keep, just organized around
-  Spyglass's Session/Loot/History views.
-- Retention today: bank snapshots are automatically bounded and pruned to
-  stay under a fixed local size. Your event history and finalized session
-  records are currently kept locally without automatic deletion.
+- Stored data includes your activity sessions, XP, loot, and inventory /
+  equipment / storage snapshots — the same kind of data RuneLite's own trackers
+  keep.
+- Bank snapshots are automatically capped in size. Session records and event
+  history are kept locally without automatic deletion; the tabs show a recent
+  window (History: 10 days, Loot: one year).
 
 ## Installation
 
 Install Spyglass from the RuneLite Plugin Hub.
-
-*(Once approved, Spyglass will be available through the RuneLite Plugin
-Hub. Until then, see the developer build note below.)*
 
 <details>
 <summary>Building from source (developers)</summary>
@@ -92,42 +112,21 @@ cd spyglass
 ./gradlew build
 ```
 
-This is not the recommended way to install Spyglass for normal play —
-use the Plugin Hub once Spyglass is available there.
 </details>
-
-## Configuration
-
-Spyglass's settings panel lets you:
-
-- choose whether loot is valued and sorted by **Grand Exchange** or
-  **High Alch** price
-- toggle which categories of data are collected (skills, inventory/
-  equipment, bank, seed vault, potion storage, group storage, quests,
-  Slayer, collection log, combat achievements, boss/activity kill counts,
-  loot, and NPC deaths) — every toggle is honest and does exactly what it
-  says, with no hidden behavior behind an unrelated setting
 
 ## Known Limitations
 
-- History shows a recent window of finalized activities rather than every
-  raw telemetry event ever recorded.
-- Some counts and signals depend on what RuneLite itself can observe for a
-  given activity, so coverage can vary between activity types.
-- Local event and session data currently has no automatic lifetime
-  deletion (see Privacy / Local Data above).
-
-## Data / Security
-
-- Observational only — Spyglass reads game state, it never acts on your
-  behalf.
-- No gameplay automation of any kind.
-- No click or input automation.
-- No remote backend — everything stays on your machine.
+- Coverage depends on what RuneLite can observe for each activity, so some
+  counts and details vary between activities.
+- Purpose-built tracking exists for the activities listed above; other
+  skilling and minigames are tracked as general sessions (XP, loot, duration).
+  Fight Caves / Inferno wave tracking is not included yet.
+- Reward chests or caskets opened away from their activity are not attributed
+  back to it.
 
 ## Bug Reports / Feedback
 
-Please use the GitHub Issues page once the public repository is available.
+Please use the GitHub Issues page of the public repository.
 
 ## License
 

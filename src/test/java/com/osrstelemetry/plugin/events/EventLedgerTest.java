@@ -12,6 +12,7 @@ import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.After;
@@ -46,9 +47,15 @@ public class EventLedgerTest
 
 	private EventLedger ledger;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("event-ledger-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir();
 		ledger = new EventLedger(TEST_GSON);
 		// EventLedger now requires
@@ -65,6 +72,7 @@ public class EventLedgerTest
 	{
 		ledger.shutdown();
 		deleteAccountDir();
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private void deleteAccountDir() throws Exception

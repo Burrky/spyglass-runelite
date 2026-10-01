@@ -123,13 +123,13 @@ public class EventLedger
 	 * otherwise affect that already-submitted durable write; it only
 	 * affects whether THIS method call returns normally to its caller.
 	 */
-	private void notifyListeners(long accountHash, EventType type, Object payload, Instant observedAt)
+	private void notifyListeners(long accountHash, EventType type, Object payload, Instant observedAt, String eventId)
 	{
 		for (TelemetryEventListener listener : listeners)
 		{
 			try
 			{
-				listener.onEvent(accountHash, type, payload, observedAt);
+				listener.onEvent(accountHash, type, payload, observedAt, eventId);
 			}
 			catch (VirtualMachineError | ThreadDeath fatal)
 			{
@@ -186,7 +186,8 @@ public class EventLedger
 		}
 
 		Instant observedAt = Instant.now();
-		String json = buildEnvelopeJson(accountHash, type, payload, observedAt);
+		String eventId = UUID.randomUUID().toString();
+		String json = buildEnvelopeJson(eventId, accountHash, type, payload, observedAt);
 
 		// Durable acceptance FIRST, structurally -- see class-level
 		// ordering note above. If this event isn't even accepted for a
@@ -201,7 +202,7 @@ public class EventLedger
 			return;
 		}
 
-		notifyListeners(accountHash, type, payload, observedAt);
+		notifyListeners(accountHash, type, payload, observedAt, eventId);
 	}
 
 	/**
@@ -247,7 +248,8 @@ public class EventLedger
 		}
 
 		Instant observedAt = Instant.now();
-		String json = buildEnvelopeJson(accountHash, type, payload, observedAt);
+		String eventId = UUID.randomUUID().toString();
+		String json = buildEnvelopeJson(eventId, accountHash, type, payload, observedAt);
 
 		// EXACT ENFORCED ORDER: (1) submit the durable write --
 		// durably ACCEPTED onto the single-writer executor; (2)
@@ -274,7 +276,7 @@ public class EventLedger
 			return false;
 		}
 
-		notifyListeners(accountHash, type, payload, observedAt);
+		notifyListeners(accountHash, type, payload, observedAt, eventId);
 
 		try
 		{
@@ -300,10 +302,10 @@ public class EventLedger
 	 * either method touches the executor, mirrors this class's
 	 * existing documented discipline (see class javadoc).
 	 */
-	private String buildEnvelopeJson(long accountHash, EventType type, Object payload, Instant observedAt)
+	private String buildEnvelopeJson(String eventId, long accountHash, EventType type, Object payload, Instant observedAt)
 	{
 		TelemetryEvent event = new TelemetryEvent(
-			UUID.randomUUID().toString(),
+			eventId,
 			Long.toString(accountHash),
 			type,
 			observedAt.toString(),

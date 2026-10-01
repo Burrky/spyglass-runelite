@@ -5,7 +5,8 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * ONE atomic {@code SERVER_NPC_LOOT} notification, exactly as it happened -- the
+ * ONE atomic loot notification ({@code SERVER_NPC_LOOT}, or one
+ * {@code STRUCTURED_REWARD} claim under its explicit {@link #getSourceKey()}), exactly as it happened -- the
  * Loot Tracker's fundamental unit of truth. Deliberately preserves the
  * SAME atomic event boundary {@code EventPayloads.ServerNpcLoot}
  * itself carries (one record = one real {@code net.runelite.client.
@@ -38,14 +39,33 @@ public final class LootTrackerRecord
 	private final Integer sourceId;
 	private final Instant observedAt;
 	private final List<LootTrackerItem> items;
+	/**
+	 * Canonical source key for a non-NPC source (a structured reward:
+	 * {@link LootTrackerIndex#structuredSourceKey}); null for NPC loot, whose
+	 * key stays the historical (sourceName, sourceId) key.
+	 */
+	private final String sourceKey;
 
 	public LootTrackerRecord(String eventId, String sourceName, Integer sourceId, Instant observedAt, List<LootTrackerItem> items)
 	{
+		this(eventId, sourceName, sourceId, observedAt, items, null);
+	}
+
+	public LootTrackerRecord(String eventId, String sourceName, Integer sourceId, Instant observedAt, List<LootTrackerItem> items,
+		String sourceKey)
+	{
+		this.sourceKey = sourceKey;
 		this.eventId = eventId;
 		this.sourceName = sourceName;
 		this.sourceId = sourceId;
 		this.observedAt = observedAt;
 		this.items = Collections.unmodifiableList(new java.util.ArrayList<>(items));
+	}
+
+	/** Explicit canonical key (structured rewards), or null for NPC loot. */
+	public String getSourceKey()
+	{
+		return sourceKey;
 	}
 
 	public String getEventId()

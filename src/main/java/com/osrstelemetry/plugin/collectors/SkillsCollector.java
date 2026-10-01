@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -36,7 +35,6 @@ public class SkillsCollector
 	private final Client client;
 	private final LocalStateStore store;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 	private final SessionRuntimeCoordinator sessionRuntimeCoordinator;
 	private final SkillsState state = new SkillsState();
 
@@ -104,13 +102,11 @@ public class SkillsCollector
 		Client client,
 		LocalStateStore store,
 		EventLedger eventLedger,
-		OsrsTelemetryConfig config,
 		SessionRuntimeCoordinator sessionRuntimeCoordinator)
 	{
 		this.client = client;
 		this.store = store;
 		this.eventLedger = eventLedger;
-		this.config = config;
 		this.sessionRuntimeCoordinator = sessionRuntimeCoordinator;
 	}
 
@@ -135,11 +131,7 @@ public class SkillsCollector
 
 	/**
 	 * Called once on login/plugin enable to seed current levels/XP
-	 * immediately rather than waiting for the next StatChanged. Gated
-	 * on config, since this is
-	 * called both on login and on re-enable via ConfigChanged — if
-	 * Skills is disabled, this must not write state at all, not just
-	 * skip emitting events.
+	 * immediately rather than waiting for the next StatChanged.
 	 *
 	 * This deliberately does NOT ALSO seed
 	 * windowBaselineXp/windowStart directly from this same read. Real
@@ -161,10 +153,6 @@ public class SkillsCollector
 	 */
 	public void captureInitialState()
 	{
-		if (!config.collectSkills())
-		{
-			return;
-		}
 		for (Skill skill : Skill.values())
 		{
 			int xp = client.getSkillExperience(skill);
@@ -212,11 +200,6 @@ public class SkillsCollector
 	@Subscribe
 	public void onStatChanged(StatChanged event)
 	{
-		if (!config.collectSkills())
-		{
-			return;
-		}
-
 		Skill skill = event.getSkill();
 		String skillName = skill.name();
 
@@ -281,7 +264,7 @@ public class SkillsCollector
 		long liveDelta = evaluateLiveXpDelta(previousLiveXp, event.getXp());
 		if (liveDelta > 0)
 		{
-			sessionRuntimeCoordinator.recordLiveXpDelta(skillName, liveDelta);
+			sessionRuntimeCoordinator.recordLiveXpDelta(skillName, liveDelta, (long) event.getXp());
 		}
 
 		// Deliberately UNCONDITIONAL (unlike the gated
@@ -293,60 +276,6 @@ public class SkillsCollector
 		// javadoc for how this feeds an exact split of an XP_CHANGE
 		// window that spans a real session switch.
 		sessionRuntimeCoordinator.noteAbsoluteXp(skillName, event.getXp());
-	}
-
-	/**
-	 * Without this method, OsrsTelemetryPlugin's collectSkills
-	 * re-enable branch calling ONLY captureInitialState() would leave a
-	 * bug: since captureInitialState() correctly does not touch
-	 * windowBaselineXp/windowStart/lastKnownLevel (see its own javadoc),
-	 * and nothing else clears or reseeds those maps on disable either
-	 * (onConfigChanged()'s disable branch is intentionally a no-op — see
-	 * its own javadoc), they would simply keep whatever value they held
-	 * from before Skills was disabled. Both onStatChanged() and
-	 * closeXpWindowsFor() are gated
-	 * on config.collectSkills() and no-op while disabled, so
-	 * state.getSkills() also goes stale during that window — meaning any
-	 * XP/level actually gained while disabled would, at the first real
-	 * StatChanged after re-enable, get diffed against the STALE
-	 * pre-disable baseline instead of a fresh one — fabricating a single
-	 * XP_CHANGE/LEVEL_UP that misrepresents an entire disabled-period
-	 * gap as an instantaneous post-re-enable change: "persistence state
-	 * accidentally reused as comparison state." This method is what
-	 * prevents it.
-	 *
-	 * Unlike the LOGIN case (where seeding must be deferred because the
-	 * very first read can be unsettled — see captureInitialState()'s own
-	 * javadoc), re-enabling mid-session has NO sync-gap risk: the client
-	 * has already been logged in and running normally, so an immediate
-	 * reseed from the read captureInitialState() just took is safe.
-	 * Mirrors SlayerCollector.seedSilently() and
-	 * QuestCollector.checkAndFlush() — both already reseed immediately
-	 * and unconditionally at their own re-enable call sites for the same
-	 * reason.
-	 *
-	 * Called ONLY from OsrsTelemetryPlugin.onConfigChanged()'s
-	 * collectSkills re-enable branch, immediately after
-	 * captureInitialState() has refreshed state.getSkills().
-	 */
-	public void reseedTransitionBaselinesSilently()
-	{
-		if (!config.collectSkills())
-		{
-			return;
-		}
-		windowBaselineXp.clear();
-		windowStart.clear();
-		lastKnownLevel.clear();
-		lastKnownXpForRawPulse.clear();
-		String now = Instant.now().toString();
-		for (Map.Entry<String, SkillsState.SkillEntry> entry : state.getSkills().entrySet())
-		{
-			windowBaselineXp.put(entry.getKey(), entry.getValue().getXp());
-			windowStart.put(entry.getKey(), now);
-			lastKnownLevel.put(entry.getKey(), entry.getValue().getLevel());
-			lastKnownXpForRawPulse.put(entry.getKey(), entry.getValue().getXp());
-		}
 	}
 
 	/**
@@ -406,8 +335,8 @@ public class SkillsCollector
 	 * exact same reason as evaluateXpWindow()/evaluateLevelTransition():
 	 * unit-testable without mocking RuneLite's Client. previousXp ==
 	 * null means this skill's raw-pulse baseline has never been observed
-	 * since the last reset (fresh session, account switch, or Skills
-	 * re-enable) -- always seed silently, never emit, regardless of
+	 * since the last reset (fresh session or account switch) -- always
+	 * seed silently, never emit, regardless of
 	 * currentXp's value, mirroring evaluateXpWindow()'s own "an existing
 	 * large XP total must never be misread as an instantaneous gain on
 	 * first observation" contract. A real pulse only exists once a
@@ -488,7 +417,7 @@ public class SkillsCollector
 
 	public void flushStateIfDirty()
 	{
-		if (!config.collectSkills() || !dirty)
+		if (!dirty)
 		{
 			return;
 		}
@@ -501,10 +430,6 @@ public class SkillsCollector
 	 * XP_FLUSH_INTERVAL_TICKS), not every tick. */
 	public void closeXpWindowsIfDue()
 	{
-		if (!config.collectSkills())
-		{
-			return;
-		}
 		closeXpWindowsFor(client.getAccountHash());
 	}
 

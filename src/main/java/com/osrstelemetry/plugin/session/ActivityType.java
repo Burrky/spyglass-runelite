@@ -17,5 +17,12 @@ public enum ActivityType
 	COMBAT,
 	SLAYER,
 	BOSSING,
-	SKILLING
+	SKILLING,
+	/**
+	 * A registered structured activity (minigame, activity boss, repeatable
+	 * arena) -- one broad category; which activity lives on the activityKey
+	 * (see activity.StructuredActivityRegistry). Not part of the combat
+	 * precedence branch: incomparable with every other type.
+	 */
+	STRUCTURED_ACTIVITY
 }

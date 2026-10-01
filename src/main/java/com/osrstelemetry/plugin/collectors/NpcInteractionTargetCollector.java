@@ -67,10 +67,8 @@ import net.runelite.client.eventbus.Subscribe;
  * legitimately changes runtime NPC id mid-fight, e.g. a phase
  * transition, must not read as "a different NPC" here either).
  *
- * NO PLAYER-FACING TOGGLE: matches BossActivityContextCollector's own
- * "runs unconditionally whenever the plugin/session runtime is
- * enabled" design -- there is deliberately no config item gating this
- * collector.
+ * Like every collector, runs unconditionally while the plugin is enabled
+ * (see OsrsTelemetryConfig).
  */
 public class NpcInteractionTargetCollector
 {

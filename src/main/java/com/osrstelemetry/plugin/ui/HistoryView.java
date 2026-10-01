@@ -2,7 +2,6 @@ package com.osrstelemetry.plugin.ui;
 
 import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.history.HistoryEntry;
-import com.osrstelemetry.plugin.session.ActivityIdentity;
 import com.osrstelemetry.plugin.session.Session;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -39,9 +38,9 @@ import net.runelite.client.ui.FontManager;
  * ARCHITECTURE (matches CurrentSessionView's own established pattern):
  * this class has NO reference to {@code HistoryCoordinator} -- it is
  * handed already-built {@link HistoryEntry} summaries via {@link #render}
- * (called on every poll tick, same cadence and off-EDT-safe cheap read
- * as every other tab -- see {@code HistoryCoordinator#getRecentEntries()}'s
- * own javadoc) and reports "the player opened this session" purely via
+ * (called when the History list changed or the tab is shown -- a cheap
+ * cached read, see {@code HistoryCoordinator#getRecentEntries()}'s own
+ * javadoc) and reports "the player opened this session" purely via
  * the constructor-supplied {@code onEntryOpened} callback, exactly the
  * same opaque-Runnable/Consumer shape {@code CurrentSessionView}'s
  * "Re-evaluate Session" button already uses. {@code OsrsTelemetryPanel}
@@ -59,7 +58,7 @@ import net.runelite.client.ui.FontManager;
  * completes and is marshalled back onto the EDT by the caller.
  *
  * RENDER-KEY SKIP (list card only -- mirrors LootTrackerView's own
- * mechanism): a poll tick whose entry set is identical to what is
+ * mechanism): a render whose entry set is identical to what is
  * already on screen (same session ids, same order) is a pure string
  * comparison, no Swing tree rebuild.
  *
@@ -97,6 +96,13 @@ final class HistoryView extends JPanel
 	private final HistoryDetailView detailView;
 
 	private String lastRenderKey;
+	/**
+	 * The session whose detail was opened and not yet left, or null. A
+	 * detail result for any other session (a late load after Back, or from
+	 * before an account switch) is ignored, and the detail closes when its
+	 * session is no longer in the list (another account's list, or aged out).
+	 */
+	private String openDetailSessionId;
 
 	HistoryView(SkillIconManager skillIconManager, ItemManager itemManager, ClientThread clientThread, OsrsTelemetryConfig config, Consumer<String> onEntryOpened)
 	{
@@ -109,7 +115,7 @@ final class HistoryView extends JPanel
 		listContent.setBackground(SpyglassTheme.BACKGROUND_MAIN);
 		listContent.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
 
-		this.detailView = new HistoryDetailView(skillIconManager, itemManager, clientThread, config, () -> cardLayout.show(cards, CARD_LIST));
+		this.detailView = new HistoryDetailView(skillIconManager, itemManager, clientThread, config, this::showList);
 
 		cards.add(listContent, CARD_LIST);
 		cards.add(detailView, CARD_DETAIL);
@@ -118,7 +124,7 @@ final class HistoryView extends JPanel
 		render(java.util.Collections.emptyList());
 	}
 
-	/** Called on every poll tick (see class javadoc) -- cheap, off-EDT-free, skips rebuilding when nothing changed. */
+	/** Called when History changed or is shown (see class javadoc) -- cheap, skips rebuilding when nothing changed. */
 	void render(List<HistoryEntry> entries)
 	{
 		String key = computeRenderKey(entries);
@@ -145,6 +151,48 @@ final class HistoryView extends JPanel
 
 		listContent.revalidate();
 		listContent.repaint();
+
+		if (openDetailSessionId != null && !containsSession(entries, openDetailSessionId))
+		{
+			showList();
+		}
+	}
+
+	private static boolean containsSession(List<HistoryEntry> entries, String sessionId)
+	{
+		for (HistoryEntry entry : entries)
+		{
+			if (sessionId.equals(entry.getSessionId()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void showList()
+	{
+		openDetailSessionId = null;
+		cardLayout.show(cards, CARD_LIST);
+	}
+
+	/**
+	 * Re-values the open detail once prices resolved or GE/HA changed since
+	 * it was drawn (cheap no-op otherwise). The detail is loaded once; its
+	 * item values come from its own price cache, which resolves later.
+	 */
+	void refreshDetailValues()
+	{
+		if (openDetailSessionId != null)
+		{
+			detailView.refreshValuesIfChanged();
+		}
+	}
+
+	/** Called (any thread) when the detail's own price cache resolves new prices. */
+	void setValuationListener(Runnable listener)
+	{
+		detailView.setValuationListener(listener);
 	}
 
 	/** Package-private, pure, testable -- see LootTrackerView.computeRenderKey()'s own javadoc for why this pattern exists. */
@@ -168,6 +216,12 @@ final class HistoryView extends JPanel
 	/** Called once OsrsTelemetryPanel's background loadDetail() call completes with a real Session. */
 	void showDetail(Session session)
 	{
+		if (openDetailSessionId == null || (session != null && !openDetailSessionId.equals(session.getSessionId())))
+		{
+			// Stale result: the player went Back, opened another session, or
+			// the account changed while this detail was loading.
+			return;
+		}
 		HistoryDetailModel model = HistoryDetailModel.from(session);
 		if (model == null)
 		{
@@ -181,20 +235,27 @@ final class HistoryView extends JPanel
 	/** Called when loadDetail() failed or returned a malformed/missing session -- see HistoryDetailModel.from()'s fail-open contract. */
 	void showDetailUnavailable()
 	{
+		if (openDetailSessionId == null)
+		{
+			return;
+		}
 		detailView.showUnavailable();
 		cardLayout.show(cards, CARD_DETAIL);
 	}
 
+	static final String EMPTY_TITLE = "No sessions yet";
+	static final String EMPTY_TEXT = "Finished sessions from the last 10 days appear here automatically.";
+
 	private void renderEmptyState()
 	{
-		JLabel title = new JLabel("No completed sessions yet");
+		JLabel title = new JLabel(EMPTY_TITLE);
 		title.setFont(FontManager.getRunescapeBoldFont());
 		title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
 		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
 		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
-		JLabel subtitle = new WrappingHtmlLabel("Finalized sessions from the last 10 days will appear here.", true);
+		JLabel subtitle = new WrappingHtmlLabel(EMPTY_TEXT, true);
 		subtitle.setFont(FontManager.getRunescapeSmallFont());
 		subtitle.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		subtitle.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -238,39 +299,63 @@ final class HistoryView extends JPanel
 		row.setBorder(rowBorder(SpyglassTheme.BORDER_SOFT));
 		row.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 
-		ActivityIdentity identity = entry.getActivityIdentity();
-		String headline = identity == null || identity.getDisplayName() == null ? "Unknown activity" : identity.getDisplayName();
+		String headline = HistoryEntry.displayTitle(entry.getActivityIdentity(), entry.getSlayerAssignmentCount());
 
 		JPanel textColumn = new JPanel();
 		textColumn.setLayout(new BoxLayout(textColumn, BoxLayout.Y_AXIS));
 		textColumn.setOpaque(false);
 
 		JLabel headlineLabel = new JLabel(headline);
+		headlineLabel.setName(ROW_TITLE_NAME);
 		headlineLabel.setFont(FontManager.getRunescapeBoldFont());
 		headlineLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		headlineLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		textColumn.add(headlineLabel);
 
-		StringBuilder secondary = new StringBuilder();
-		String when = formatRelativeOrAbsolute(entry.getFinalizedAt());
-		if (when != null)
+		// RELEASE CANDIDATE: two short fact lines that wrap between facts,
+		// instead of one long line that was truncated at every sidebar width.
+		// Plain-label FactLines, not HTML: see FactLine's javadoc (cost).
+		// Line 1 -- when, and for how long.
+		FactLine whenLine = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		whenLine.setName(ROW_WHEN_NAME);
+		String compactWhen = formatCompact(entry.getFinalizedAt());
+		if (compactWhen != null)
 		{
-			secondary.append(when);
+			whenLine.fact(compactWhen);
 		}
-		secondary.append("   •   ").append(formatDuration(entry.getAccumulatedActiveDurationMillis()));
+		whenLine.fact(formatDuration(entry.getAccumulatedActiveDurationMillis()));
+		textColumn.add(whenLine);
+
+		// Line 2 -- what it produced: task/game count first, then XP and drops.
+		FactLine statsLine = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		statsLine.setName(ROW_STATS_NAME);
+		if (entry.getSlayerAssignmentCount() > 1)
+		{
+			statsLine.fact(HistoryEntry.taskCountText(entry.getSlayerAssignmentCount()));
+		}
+		String completionLabel = entry.getActivityCompletionCount() == null ? null
+			: CompletionMetricText.labelFor(entry.getActivityIdentity().getActivityType(), entry.getActivityIdentity().getActivityKey());
+		if (completionLabel != null)
+		{
+			statsLine.fact(CompletionMetricText.countText(completionLabel, entry.getActivityCompletionCount()));
+		}
 		if (entry.getTotalXpGained() > 0)
 		{
-			secondary.append("   •   ").append(formatNumber(entry.getTotalXpGained())).append(" XP");
+			statsLine.fact(formatNumber(entry.getTotalXpGained()) + " XP");
 		}
 		if (entry.getLootDropCount() > 0)
 		{
-			secondary.append("   •   ").append(entry.getLootDropCount()).append(entry.getLootDropCount() == 1 ? " drop" : " drops");
+			statsLine.fact(entry.getLootDropCount() + (entry.getLootDropCount() == 1 ? " drop" : " drops"));
 		}
-		JLabel secondaryLabel = new JLabel(secondary.toString());
-		secondaryLabel.setFont(FontManager.getRunescapeSmallFont());
-		secondaryLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
-		secondaryLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
-		textColumn.add(secondaryLabel);
+		if (!statsLine.isEmpty())
+		{
+			textColumn.add(statsLine);
+		}
+
+		// On the ROW, not a child label: a label with a tooltip would swallow
+		// the click that opens this entry.
+		String fullWhen = formatRelativeOrAbsolute(entry.getFinalizedAt());
+		row.setToolTipText(fullWhen == null ? headline : headline + " \u2014 " + fullWhen);
 
 		row.add(textColumn, BorderLayout.CENTER);
 
@@ -282,6 +367,7 @@ final class HistoryView extends JPanel
 		String sessionId = entry.getSessionId();
 		row.addMouseListener(new ClickListener(() ->
 		{
+			openDetailSessionId = sessionId;
 			showDetailLoading();
 			if (onEntryOpened != null)
 			{
@@ -338,6 +424,30 @@ final class HistoryView extends JPanel
 			return String.format("%d:%02d:%02d", hours, minutes, seconds);
 		}
 		return String.format("%d:%02d", minutes, seconds);
+	}
+
+	static final String ROW_TITLE_NAME = "historyRowTitle";
+	static final String ROW_WHEN_NAME = "historyRowWhen";
+	static final String ROW_STATS_NAME = "historyRowStats";
+
+	private static final DateTimeFormatter COMPACT_DATE = DateTimeFormatter.ofPattern("MMM d", java.util.Locale.getDefault());
+
+	/** "Sep 20, 11:00 AM" -- History only spans ~10 days, so no year; null (never throws) when unparseable. */
+	static String formatCompact(String isoInstant)
+	{
+		if (isoInstant == null)
+		{
+			return null;
+		}
+		try
+		{
+			java.time.ZonedDateTime at = Instant.parse(isoInstant).atZone(ZoneId.systemDefault());
+			return COMPACT_DATE.format(at) + ", " + DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(at);
+		}
+		catch (RuntimeException e)
+		{
+			return null;
+		}
 	}
 
 	/** Best-effort; returns null (never throws) on anything unparseable so a malformed timestamp never blanks out the row. */

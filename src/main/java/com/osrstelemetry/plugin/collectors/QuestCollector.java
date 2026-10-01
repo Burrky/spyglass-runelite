@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -56,17 +55,15 @@ public class QuestCollector
 	private final Client client;
 	private final LocalStateStore store;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 
 	private Map<Quest, QuestState> lastKnown = null;
 
 	@Inject
-	public QuestCollector(Client client, LocalStateStore store, EventLedger eventLedger, OsrsTelemetryConfig config)
+	public QuestCollector(Client client, LocalStateStore store, EventLedger eventLedger)
 	{
 		this.client = client;
 		this.store = store;
 		this.eventLedger = eventLedger;
-		this.config = config;
 	}
 
 	/**
@@ -84,11 +81,6 @@ public class QuestCollector
 
 	public void checkAndFlush()
 	{
-		if (!config.collectQuests())
-		{
-			return;
-		}
-
 		Map<Quest, QuestState> current = readCurrent();
 
 		if (Objects.equals(current, lastKnown))
@@ -141,17 +133,9 @@ public class QuestCollector
 	 * silent reseed — zero events — before ever comparing against a
 	 * live baseline. No new/arbitrary tick delay was introduced: this
 	 * reuses the plugin's own already-proven-sufficient cadence.
-	 *
-	 * Mirrors SlayerCollector.seedSilently()'s existing, already-correct
-	 * separation of "persist/seed" from "compare and emit."
 	 */
 	public void captureInitialStateWithoutBaseline()
 	{
-		if (!config.collectQuests())
-		{
-			return;
-		}
-
 		writeState(readCurrent());
 		// Deliberately no `lastKnown = current` here — see javadoc above.
 	}

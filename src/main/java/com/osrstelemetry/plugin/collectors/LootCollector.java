@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -82,25 +81,18 @@ public class LootCollector
 	private final Client client;
 	private final ItemManager itemManager;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 
 	@Inject
-	public LootCollector(Client client, ItemManager itemManager, EventLedger eventLedger, OsrsTelemetryConfig config)
+	public LootCollector(Client client, ItemManager itemManager, EventLedger eventLedger)
 	{
 		this.client = client;
 		this.itemManager = itemManager;
 		this.eventLedger = eventLedger;
-		this.config = config;
 	}
 
 	@Subscribe
 	public void onNpcLootReceived(NpcLootReceived event)
 	{
-		if (!config.collectLoot())
-		{
-			return;
-		}
-
 		NPC npc = event.getNpc();
 		String sourceName = npc.getName();
 		int sourceId = npc.getId();

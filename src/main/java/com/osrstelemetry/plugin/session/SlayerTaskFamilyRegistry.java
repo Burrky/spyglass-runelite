@@ -348,6 +348,105 @@ final class SlayerTaskFamilyRegistry
 			: normalizedTaskName;
 	}
 
+	/** See {@link #lootSourceCompatibility}. */
+	enum LootSourceCompatibility
+	{
+		MATCH,
+		KNOWN_MISMATCH,
+		UNKNOWN
+	}
+
+	/**
+	 * OFF-TASK LOOT ATTRIBUTION: is a SERVER_NPC_LOOT source NPC (its
+	 * authoritative sourceName) compatible with Slayer task `taskName`?
+	 *
+	 * MATCH: RuneLite's own Slayer-target semantics -- the source name
+	 * CONTAINS one of the task's target names in this table (so "Undead
+	 * chicken" matches Zombies' "undead", "Kalphite Worker" matches
+	 * "kalphite", listed superiors/variants match), or the source is a
+	 * boss confirmed to consume this task (BossTaskAffinity).
+	 *
+	 * KNOWN_MISMATCH: the source is positively identified as ANOTHER
+	 * task's Slayer target (it contains, as a whole word, a target name
+	 * of some other catalogued task) and does not match this one -- e.g.
+	 * an Undead chicken (Zombies/Birds) on a Turoth task.
+	 *
+	 * UNKNOWN: anything this table cannot prove is off task -- no source
+	 * name or task, or a source that is no catalogued task's target (a
+	 * summoned/subordinate NPC such as a Nechryael's Death Spawn, or an
+	 * NPC no Slayer task covers). Callers keep the existing behavior for
+	 * UNKNOWN: a false rejection would silently drop legitimate loot.
+	 */
+	static LootSourceCompatibility lootSourceCompatibility(String taskName, String sourceName)
+	{
+		if (taskName == null || sourceName == null || sourceName.trim().isEmpty())
+		{
+			return LootSourceCompatibility.UNKNOWN;
+		}
+		String task = normalize(taskName);
+		String source = normalize(sourceName);
+		Set<String> members = FAMILY_MEMBERS_NORMALIZED.get(task);
+		if (source.contains(singularize(task)))
+		{
+			return LootSourceCompatibility.MATCH;
+		}
+		if (members != null)
+		{
+			for (String member : members)
+			{
+				if (!member.isEmpty() && source.contains(member))
+				{
+					return LootSourceCompatibility.MATCH;
+				}
+			}
+		}
+		if (BossTaskAffinity.isBossOwnTask(source, taskName))
+		{
+			return LootSourceCompatibility.MATCH;
+		}
+		for (Map.Entry<String, Set<String>> other : FAMILY_MEMBERS_NORMALIZED.entrySet())
+		{
+			if (other.getKey().equals(task))
+			{
+				continue;
+			}
+			for (String member : other.getValue())
+			{
+				if (containsWord(source, member))
+				{
+					return LootSourceCompatibility.KNOWN_MISMATCH;
+				}
+			}
+		}
+		return LootSourceCompatibility.UNKNOWN;
+	}
+
+	/** `phrase` appears in `text` bounded by start/end or a non-letter on both sides. */
+	private static boolean containsWord(String text, String phrase)
+	{
+		if (phrase.isEmpty())
+		{
+			return false;
+		}
+		int from = 0;
+		while (true)
+		{
+			int i = text.indexOf(phrase, from);
+			if (i < 0)
+			{
+				return false;
+			}
+			int end = i + phrase.length();
+			boolean startOk = i == 0 || !Character.isLetter(text.charAt(i - 1));
+			boolean endOk = end == text.length() || !Character.isLetter(text.charAt(end));
+			if (startOk && endOk)
+			{
+				return true;
+			}
+			from = i + 1;
+		}
+	}
+
 	private static String normalize(String s)
 	{
 		return s.trim().toLowerCase(Locale.ROOT);

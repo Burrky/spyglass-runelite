@@ -8,8 +8,8 @@ package com.osrstelemetry.plugin;
  */
 public enum CurrentSessionSectionOrder
 {
-	XP_FIRST("XP First"),
-	LOOT_FIRST("Loot First");
+	XP_FIRST("XP first"),
+	LOOT_FIRST("Loot first");
 
 	private final String label;
 

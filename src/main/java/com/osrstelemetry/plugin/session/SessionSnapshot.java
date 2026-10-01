@@ -49,7 +49,9 @@ public final class SessionSnapshot
 	private static final SessionSnapshot ABSENT = new SessionSnapshot(
 		false, null, null, null, null, 0L, null,
 		Collections.<String, Long>emptyMap(), null, null, Collections.<SessionAggregates.LootDropGroup>emptyList(), null,
-		Collections.<String, Long>emptyMap(), Collections.<String, Long>emptyMap());
+		Collections.<String, Long>emptyMap(), Collections.<String, Long>emptyMap(), null, null,
+		Collections.<SessionAggregates.SlayerAssignmentRecord>emptyList(), null, null, null,
+		Collections.<SessionAggregates.ProducedItemAggregate>emptyList());
 
 	private final boolean present;
 	private final String sessionId;
@@ -101,6 +103,25 @@ public final class SessionSnapshot
 	 */
 	private final Map<String, Long> absoluteXpBySkill;
 
+	/** Copies of SessionAggregates' per-assignment baselines (see that class). Null = single-assignment session. */
+	private final Integer slayerAssignmentBaselineProgressDelta;
+	private final Long slayerAssignmentBaselineSlayerXp;
+
+	/** Deep, unmodifiable copy of SessionAggregates#slayerAssignments (oldest -> newest). Empty when none. */
+	private final List<SessionAggregates.SlayerAssignmentRecord> slayerAssignments;
+
+	/** Stable activity key of the session identity (null when absent). */
+	private final String activityKey;
+
+	/** Copy of SessionAggregates#activityCompletions, or null. */
+	private final SessionAggregates.ActivityCompletionCount activityCompletions;
+
+	/** Copy of SessionAggregates#activityStats, or null. */
+	private final SessionAggregates.ActivitySessionStats activityStats;
+
+	/** Deep copy of SessionAggregates#producedItems (output, not loot); empty when none. */
+	private final List<SessionAggregates.ProducedItemAggregate> producedItems;
+
 	private SessionSnapshot(
 		boolean present,
 		String sessionId,
@@ -115,8 +136,22 @@ public final class SessionSnapshot
 		List<SessionAggregates.LootDropGroup> lootDrops,
 		Integer latestSlayerCurrentRemaining,
 		Map<String, Long> livePendingXpBySkill,
-		Map<String, Long> absoluteXpBySkill)
+		Map<String, Long> absoluteXpBySkill,
+		Integer slayerAssignmentBaselineProgressDelta,
+		Long slayerAssignmentBaselineSlayerXp,
+		List<SessionAggregates.SlayerAssignmentRecord> slayerAssignments,
+		String activityKey,
+		SessionAggregates.ActivityCompletionCount activityCompletions,
+		SessionAggregates.ActivitySessionStats activityStats,
+		List<SessionAggregates.ProducedItemAggregate> producedItems)
 	{
+		this.activityStats = activityStats;
+		this.producedItems = producedItems;
+		this.activityKey = activityKey;
+		this.activityCompletions = activityCompletions;
+		this.slayerAssignments = slayerAssignments;
+		this.slayerAssignmentBaselineProgressDelta = slayerAssignmentBaselineProgressDelta;
+		this.slayerAssignmentBaselineSlayerXp = slayerAssignmentBaselineSlayerXp;
 		this.present = present;
 		this.sessionId = sessionId;
 		this.activityType = activityType;
@@ -235,7 +270,55 @@ public final class SessionSnapshot
 				: Collections.unmodifiableMap(new LinkedHashMap<>(livePendingXpBySkill)),
 			absoluteXpBySkill == null
 				? Collections.<String, Long>emptyMap()
-				: Collections.unmodifiableMap(new LinkedHashMap<>(absoluteXpBySkill)));
+				: Collections.unmodifiableMap(new LinkedHashMap<>(absoluteXpBySkill)),
+			aggregates == null ? null : aggregates.getSlayerAssignmentBaselineProgressDelta(),
+			aggregates == null ? null : aggregates.getSlayerAssignmentBaselineSlayerXp(),
+			copySlayerAssignments(aggregates),
+			identity == null ? null : identity.getActivityKey(),
+			copyActivityCompletions(aggregates),
+			copyActivityStats(aggregates),
+			copyProducedItems(aggregates));
+	}
+
+	private static List<SessionAggregates.ProducedItemAggregate> copyProducedItems(SessionAggregates aggregates)
+	{
+		if (aggregates == null || aggregates.getProducedItems() == null || aggregates.getProducedItems().isEmpty())
+		{
+			return Collections.emptyList();
+		}
+		List<SessionAggregates.ProducedItemAggregate> copy = new ArrayList<>();
+		for (SessionAggregates.ProducedItemAggregate source : aggregates.getProducedItems())
+		{
+			if (source == null)
+			{
+				continue;
+			}
+			SessionAggregates.ProducedItemAggregate c = new SessionAggregates.ProducedItemAggregate();
+			c.setItemId(source.getItemId());
+			c.setItemName(source.getItemName());
+			c.setQuantity(source.getQuantity());
+			copy.add(c);
+		}
+		return Collections.unmodifiableList(copy);
+	}
+
+	private static SessionAggregates.ActivitySessionStats copyActivityStats(SessionAggregates aggregates)
+	{
+		if (aggregates == null || aggregates.getActivityStats() == null)
+		{
+			return null;
+		}
+		SessionAggregates.ActivitySessionStats source = aggregates.getActivityStats();
+		SessionAggregates.ActivitySessionStats copy = new SessionAggregates.ActivitySessionStats();
+		copy.setActivityKey(source.getActivityKey());
+		copy.setCurrencyGained(source.getCurrencyGained());
+		copy.setCurrencyGainedByKey(source.getCurrencyGainedByKey() == null ? null
+			: Collections.unmodifiableMap(new LinkedHashMap<>(source.getCurrencyGainedByKey())));
+		copy.setScoredCompletions(source.getScoredCompletions());
+		copy.setScoreTotal(source.getScoreTotal());
+		copy.setBestScore(source.getBestScore());
+		copy.setLastScoredCompletionCount(source.getLastScoredCompletionCount());
+		return copy;
 	}
 
 	private static Map<String, Long> copyXp(SessionAggregates aggregates)
@@ -245,6 +328,20 @@ public final class SessionSnapshot
 			return Collections.emptyMap();
 		}
 		return Collections.unmodifiableMap(new LinkedHashMap<>(aggregates.getXpGainedBySkill()));
+	}
+
+	private static SessionAggregates.ActivityCompletionCount copyActivityCompletions(SessionAggregates aggregates)
+	{
+		if (aggregates == null || aggregates.getActivityCompletions() == null)
+		{
+			return null;
+		}
+		SessionAggregates.ActivityCompletionCount source = aggregates.getActivityCompletions();
+		SessionAggregates.ActivityCompletionCount copy = new SessionAggregates.ActivityCompletionCount();
+		copy.setActivityKey(source.getActivityKey());
+		copy.setSessionCompletions(source.getSessionCompletions());
+		copy.setLatestAuthoritativeValue(source.getLatestAuthoritativeValue());
+		return copy;
 	}
 
 	private static SessionAggregates.ReliableCount copyReliableCount(SessionAggregates aggregates)
@@ -260,6 +357,55 @@ public final class SessionSnapshot
 		copy.setAuthoritativeCurrentValue(source.getAuthoritativeCurrentValue());
 		copy.setSessionOccurrences(source.getSessionOccurrences());
 		return copy;
+	}
+
+	/**
+	 * Deep copy (every assignment and item object is new) so the UI never
+	 * holds a reference into the engine's live, mutable ledger.
+	 */
+	private static List<SessionAggregates.SlayerAssignmentRecord> copySlayerAssignments(SessionAggregates aggregates)
+	{
+		if (aggregates == null || aggregates.getSlayerAssignments() == null || aggregates.getSlayerAssignments().isEmpty())
+		{
+			return Collections.emptyList();
+		}
+		List<SessionAggregates.SlayerAssignmentRecord> copy = new ArrayList<>();
+		for (SessionAggregates.SlayerAssignmentRecord a : aggregates.getSlayerAssignments())
+		{
+			if (a == null)
+			{
+				continue;
+			}
+			SessionAggregates.SlayerAssignmentRecord c = new SessionAggregates.SlayerAssignmentRecord();
+			c.setOrdinal(a.getOrdinal());
+			c.setTaskName(a.getTaskName());
+			c.setAssignmentKey(a.getAssignmentKey());
+			c.setAssignedAt(a.getAssignedAt());
+			c.setInitialAmount(a.getInitialAmount());
+			c.setAssignedInitialAmount(a.getAssignedInitialAmount());
+			c.setLatestRemaining(a.getLatestRemaining());
+			c.setEndedAt(a.getEndedAt());
+			c.setBootstrapped(a.isBootstrapped());
+			c.setEndReason(a.getEndReason());
+			c.setCompletedAt(a.getCompletedAt());
+			c.setUnitsCompleted(a.getUnitsCompleted());
+			c.setMasterId(a.getMasterId());
+			c.setSlaughterProcs(a.getSlaughterProcs());
+			c.setExpeditiousProcs(a.getExpeditiousProcs());
+			c.setXpGainedBySkill(a.getXpGainedBySkill() == null ? null
+				: Collections.unmodifiableMap(new LinkedHashMap<>(a.getXpGainedBySkill())));
+			c.setActiveDurationStartMillis(a.getActiveDurationStartMillis());
+			c.setActiveDurationEndMillis(a.getActiveDurationEndMillis());
+			c.setItems(copyItems(a.getItems()));
+			copy.add(c);
+		}
+		return Collections.unmodifiableList(copy);
+	}
+
+	/** See SessionAggregates#slayerAssignments. Deep copy, oldest first; empty when none. */
+	public List<SessionAggregates.SlayerAssignmentRecord> getSlayerAssignments()
+	{
+		return slayerAssignments;
 	}
 
 	private static List<SessionAggregates.LootDropGroup> copyLootDrops(SessionAggregates aggregates)
@@ -279,25 +425,29 @@ public final class SessionSnapshot
 			SessionAggregates.LootDropGroup groupCopy = new SessionAggregates.LootDropGroup();
 			groupCopy.setSourceName(group.getSourceName());
 			groupCopy.setObservedAt(group.getObservedAt());
+			groupCopy.setItems(copyItems(group.getItems()));
+			copy.add(groupCopy);
+		}
+		return Collections.unmodifiableList(copy);
+	}
 
-			List<SessionAggregates.LootItemAggregate> itemsCopy = new ArrayList<>();
-			if (group.getItems() != null)
+	/** Unmodifiable deep copy of a loot item list (null-safe; null items dropped). */
+	private static List<SessionAggregates.LootItemAggregate> copyItems(List<SessionAggregates.LootItemAggregate> items)
+	{
+		List<SessionAggregates.LootItemAggregate> copy = new ArrayList<>();
+		if (items != null)
+		{
+			for (SessionAggregates.LootItemAggregate item : items)
 			{
-				for (SessionAggregates.LootItemAggregate item : group.getItems())
+				if (item != null)
 				{
-					if (item == null)
-					{
-						continue;
-					}
-					SessionAggregates.LootItemAggregate itemCopy = new SessionAggregates.LootItemAggregate();
-					itemCopy.setItemId(item.getItemId());
-					itemCopy.setItemName(item.getItemName());
-					itemCopy.setQuantity(item.getQuantity());
-					itemsCopy.add(itemCopy);
+					SessionAggregates.LootItemAggregate c = new SessionAggregates.LootItemAggregate();
+					c.setItemId(item.getItemId());
+					c.setItemName(item.getItemName());
+					c.setQuantity(item.getQuantity());
+					copy.add(c);
 				}
 			}
-			groupCopy.setItems(Collections.unmodifiableList(itemsCopy));
-			copy.add(groupCopy);
 		}
 		return Collections.unmodifiableList(copy);
 	}
@@ -310,6 +460,29 @@ public final class SessionSnapshot
 	public String getSessionId()
 	{
 		return sessionId;
+	}
+
+	public String getActivityKey()
+	{
+		return activityKey;
+	}
+
+	/** Independent copy of the session's structured-activity completion metric, or null. */
+	public SessionAggregates.ActivityCompletionCount getActivityCompletions()
+	{
+		return activityCompletions;
+	}
+
+	/** Copy of the session's activity stats (Tempoross permits / scores), or null. */
+	public SessionAggregates.ActivitySessionStats getActivityStats()
+	{
+		return activityStats;
+	}
+
+	/** Items the session's activity produced (output, not loot), first-produced order; empty when none. */
+	public List<SessionAggregates.ProducedItemAggregate> getProducedItems()
+	{
+		return producedItems;
 	}
 
 	public ActivityType getActivityType()
@@ -372,6 +545,18 @@ public final class SessionSnapshot
 	public Integer getLatestSlayerCurrentRemaining()
 	{
 		return latestSlayerCurrentRemaining;
+	}
+
+	/** See SessionAggregates#slayerAssignmentBaselineProgressDelta. */
+	public Integer getSlayerAssignmentBaselineProgressDelta()
+	{
+		return slayerAssignmentBaselineProgressDelta;
+	}
+
+	/** See SessionAggregates#slayerAssignmentBaselineSlayerXp. */
+	public Long getSlayerAssignmentBaselineSlayerXp()
+	{
+		return slayerAssignmentBaselineSlayerXp;
 	}
 
 	/**

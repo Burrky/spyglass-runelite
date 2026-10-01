@@ -273,14 +273,18 @@ public class CurrentSessionSnapshotTest
 		session.getAggregates().getXpGainedBySkill().put("SLAYER", 3600L);
 		SessionSnapshot sessionSnapshot = SessionSnapshot.capture(session);
 
-		Instant belowThreshold = T0.plusSeconds(30);
-		CurrentSessionSnapshot below = CurrentSessionSnapshot.from(sessionSnapshot, belowThreshold);
+		// The shared floor is five minutes of active play (release-candidate XP spike fix).
+		assertEquals(300_000L, CurrentSessionSnapshot.MIN_DURATION_FOR_RATE_MILLIS);
+		CurrentSessionSnapshot below = CurrentSessionSnapshot.from(sessionSnapshot, T0.plusSeconds(299));
 		assertNull(below.getXpEntries().get(0).getXpPerHour());
+		assertEquals("the total is exact even while the rate waits", 3600L, below.getXpEntries().get(0).getXpGained());
+		assertEquals(Long.valueOf(1_000L), below.getXpEntries().get(0).getRateWarmupRemainingMillis());
 
-		Instant atThreshold = T0.plusSeconds(60);
-		CurrentSessionSnapshot at = CurrentSessionSnapshot.from(sessionSnapshot, atThreshold);
-		assertEquals(Long.valueOf(216_000L), at.getXpEntries().get(0).getXpPerHour());
+		CurrentSessionSnapshot at = CurrentSessionSnapshot.from(sessionSnapshot, T0.plusSeconds(300));
+		assertEquals(Long.valueOf(43_200L), at.getXpEntries().get(0).getXpPerHour());
+		assertNull(at.getXpEntries().get(0).getRateWarmupRemainingMillis());
 	}
+
 
 	@Test
 	public void xpPerHour_reflectsTheImmediateLiveTotal_notJustDurable()
@@ -294,11 +298,12 @@ public class CurrentSessionSnapshotTest
 		livePending.put("SLAYER", 3000L);
 		SessionSnapshot sessionSnapshot = SessionSnapshot.capture(session, livePending);
 
-		Instant atThreshold = T0.plusSeconds(60);
+		Instant atThreshold = T0.plusSeconds(300);
 		CurrentSessionSnapshot at = CurrentSessionSnapshot.from(sessionSnapshot, atThreshold);
 		assertEquals(3600L, at.getXpEntries().get(0).getXpGained());
-		assertEquals(Long.valueOf(216_000L), at.getXpEntries().get(0).getXpPerHour());
+		assertEquals(Long.valueOf(43_200L), at.getXpEntries().get(0).getXpPerHour());
 	}
+
 
 	@Test
 	public void from_doesNotMutateSessionOrSnapshot()

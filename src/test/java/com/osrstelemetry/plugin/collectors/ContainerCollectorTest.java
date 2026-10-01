@@ -18,6 +18,7 @@ import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -54,11 +55,11 @@ import org.junit.Test;
  * files under this account's real TelemetryPaths, a real
  * ScheduledExecutorService, and real thread races — rather than
  * re-asserting isolated pure methods. ContainerCollector's Client/
- * ItemManager/OsrsTelemetryConfig fields are never touched by any of
+ * ItemManager fields are never touched by any of
  * the methods these tests call (takeImmutableBankSnapshot(),
  * finalizeBankSnapshotBlocking(), flushPending(), flushPendingAndWait(),
  * scheduleBankSnapshot(), runScheduledBankFinalizeForTest()) — verified
- * by direct audit — so null is passed for those three constructor
+ * by direct audit — so null is passed for those two constructor
  * arguments here, exactly as ContainerCollector's own existing
  * testability javadoc anticipates.
  */
@@ -132,9 +133,15 @@ public class ContainerCollectorTest
 	private ScheduledExecutorService scheduledExecutor;
 	private ContainerCollector collector;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUpLifecycle() throws Exception
 	{
+		testRoot = Files.createTempDirectory("container-collector-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		// A fresh accountHash per test avoids any cross-test bleed
 		// through shared on-disk state (bank.json / bank_snapshots /
 		// events.jsonl all key off accountHash).
@@ -149,7 +156,7 @@ public class ContainerCollectorTest
 
 		scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
 
-		collector = new ContainerCollector(null, null, store, eventLedger, null, scheduledExecutor);
+		collector = new ContainerCollector(null, null, store, eventLedger, scheduledExecutor);
 	}
 
 	@After
@@ -159,6 +166,7 @@ public class ContainerCollectorTest
 		store.shutdown();
 		eventLedger.shutdown();
 		deleteAccountDir(accountHash);
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private static void deleteAccountDir(long accountHash) throws IOException

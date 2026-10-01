@@ -49,7 +49,9 @@ import javax.inject.Singleton;
  * rename -- same durability guarantees every other state document in
  * this project already gets). An in-memory copy is kept authoritative
  * between writes (read-your-own-write consistency for the UI, which
- * polls this class far more often than any write actually happens) --
+ * reads this class far more often than any write actually happens;
+ * a click updates the UI first and the write is asynchronous, and a bulk
+ * change is one write via the collection setters) --
  * mirrors LiveXpTracker/lastKnownAbsoluteXpBySkill's own "authoritative
  * in-memory, asynchronously durable" split elsewhere in this project.
  */
@@ -200,6 +202,38 @@ public final class LootTrackerPreferences
 		else
 		{
 			document.collapsedSourceKeys.remove(sourceKey);
+		}
+		persist();
+	}
+
+	/**
+	 * Batch form of {@link #setCollapsed(String, boolean)}: every key in
+	 * one in-memory update and ONE persisted write (Collapse All / Open All,
+	 * or one card that represents several raw source keys).
+	 */
+	public synchronized void setCollapsed(java.util.Collection<String> sourceKeys, boolean collapsed)
+	{
+		if (collapsed)
+		{
+			document.collapsedSourceKeys.addAll(sourceKeys);
+		}
+		else
+		{
+			document.collapsedSourceKeys.removeAll(sourceKeys);
+		}
+		persist();
+	}
+
+	/** Batch form of {@link #setFavorite(String, boolean)}: one persisted write. */
+	public synchronized void setFavorite(java.util.Collection<String> sourceKeys, boolean favorite)
+	{
+		if (favorite)
+		{
+			document.favoriteSourceKeys.addAll(sourceKeys);
+		}
+		else
+		{
+			document.favoriteSourceKeys.removeAll(sourceKeys);
 		}
 		persist();
 	}

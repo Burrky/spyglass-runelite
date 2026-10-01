@@ -18,6 +18,8 @@ import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Collections;
 import org.junit.After;
@@ -42,16 +44,23 @@ public class HistoryDetailModelTest
 		new ActivityIdentity(ActivityType.SLAYER, "gargoyles:catacombs", "Gargoyles");
 	private static final Gson TEST_GSON = new Gson();
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
-	public void setUp()
+	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("history-detail-model-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir();
 	}
 
 	@After
-	public void tearDown()
+	public void tearDown() throws Exception
 	{
 		deleteAccountDir();
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private static void deleteAccountDir()

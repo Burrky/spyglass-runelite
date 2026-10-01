@@ -1,6 +1,7 @@
 package com.osrstelemetry.plugin.history;
 
 import com.osrstelemetry.plugin.session.ActivityIdentity;
+import com.osrstelemetry.plugin.session.ActivityType;
 import com.osrstelemetry.plugin.session.Session;
 import com.osrstelemetry.plugin.session.SessionAggregates;
 import java.util.Map;
@@ -40,11 +41,25 @@ public final class HistoryEntry
 	private final int lootDropCount;
 	private final boolean hasStartingLoadout;
 	private final boolean hasEndingLoadout;
+	/**
+	 * Persisted Slayer assignment INSTANCES in this session (same-name tasks
+	 * counted separately, skipped ones included); 0 for non-Slayer sessions
+	 * and legacy files without a ledger. Presentation only -- see
+	 * {@link #displayTitle}.
+	 */
+	private final int slayerAssignmentCount;
+	/** Structured-activity completions this session; null when the session has no completion metric. */
+	private final Integer activityCompletionCount;
+
+	/** Title of a Slayer session that spanned more than one assignment. */
+	public static final String MULTI_TASK_SLAYER_TITLE = "Slayer Session";
 
 	private HistoryEntry(String sessionId, ActivityIdentity activityIdentity, String startedAt, String finalizedAt,
 		long accumulatedActiveDurationMillis, long totalXpGained, SessionAggregates.ReliableCount reliableCount,
-		int lootDropCount, boolean hasStartingLoadout, boolean hasEndingLoadout)
+		int lootDropCount, boolean hasStartingLoadout, boolean hasEndingLoadout, int slayerAssignmentCount,
+		Integer activityCompletionCount)
 	{
+		this.activityCompletionCount = activityCompletionCount;
 		this.sessionId = sessionId;
 		this.activityIdentity = activityIdentity;
 		this.startedAt = startedAt;
@@ -55,6 +70,7 @@ public final class HistoryEntry
 		this.lootDropCount = lootDropCount;
 		this.hasStartingLoadout = hasStartingLoadout;
 		this.hasEndingLoadout = hasEndingLoadout;
+		this.slayerAssignmentCount = slayerAssignmentCount;
 	}
 
 	/**
@@ -95,6 +111,47 @@ public final class HistoryEntry
 
 		return new HistoryEntry(session.getSessionId(), session.getActivityIdentity(), session.getStartedAt(),
 			session.getFinalizedAt(), session.getAccumulatedActiveDurationMillis(), totalXp, reliableCount,
-			lootDropCount, session.getStartingLoadout() != null, session.getEndingLoadout() != null);
+			lootDropCount, session.getStartingLoadout() != null, session.getEndingLoadout() != null,
+			slayerAssignmentCount(session),
+			session.getActivityIdentity().getActivityType() == ActivityType.STRUCTURED_ACTIVITY
+				? (aggregates == null || aggregates.getActivityCompletions() == null ? 0 : aggregates.getActivityCompletions().getSessionCompletions())
+				: null);
+	}
+
+	/**
+	 * Number of persisted Slayer assignment records, or 0 when the session
+	 * is not a Slayer session or has no ledger (never inferred from loot).
+	 */
+	public static int slayerAssignmentCount(Session session)
+	{
+		if (session == null || session.getActivityIdentity() == null
+			|| session.getActivityIdentity().getActivityType() != ActivityType.SLAYER
+			|| session.getAggregates() == null || session.getAggregates().getSlayerAssignments() == null)
+		{
+			return 0;
+		}
+		return session.getAggregates().getSlayerAssignments().size();
+	}
+
+	/**
+	 * History's title for a finalized session. A Slayer session that spanned
+	 * several assignments is a "Slayer Session", never just its final task;
+	 * everything else (including a single-task Slayer session and every
+	 * legacy file) keeps its activity's own display name. Presentation only:
+	 * the session's persisted identity and ID never change.
+	 */
+	public static String displayTitle(ActivityIdentity identity, int slayerAssignmentCount)
+	{
+		if (slayerAssignmentCount > 1)
+		{
+			return MULTI_TASK_SLAYER_TITLE;
+		}
+		return identity == null || identity.getDisplayName() == null ? "Unknown activity" : identity.getDisplayName();
+	}
+
+	/** "1 task" / "6 tasks". */
+	public static String taskCountText(int count)
+	{
+		return count + (count == 1 ? " task" : " tasks");
 	}
 }

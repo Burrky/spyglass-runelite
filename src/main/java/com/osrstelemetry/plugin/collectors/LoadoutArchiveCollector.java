@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.model.StorageState;
 import com.osrstelemetry.plugin.session.LoadoutSnapshot;
 import java.time.Instant;
@@ -75,15 +74,13 @@ public class LoadoutArchiveCollector
 
 	private final Client client;
 	private final ItemManager itemManager;
-	private final OsrsTelemetryConfig config;
 	private final LoadoutArchive archive;
 
 	@Inject
-	public LoadoutArchiveCollector(Client client, ItemManager itemManager, OsrsTelemetryConfig config, LoadoutArchive archive)
+	public LoadoutArchiveCollector(Client client, ItemManager itemManager, LoadoutArchive archive)
 	{
 		this.client = client;
 		this.itemManager = itemManager;
-		this.config = config;
 		this.archive = archive;
 	}
 
@@ -112,10 +109,6 @@ public class LoadoutArchiveCollector
 
 	private void captureIfBothAvailable()
 	{
-		if (!config.collectInventoryEquipment())
-		{
-			return;
-		}
 		ItemContainer inventoryContainer = client.getItemContainer(InventoryID.INV);
 		ItemContainer equipmentContainer = client.getItemContainer(InventoryID.WORN);
 		if (inventoryContainer == null || equipmentContainer == null)

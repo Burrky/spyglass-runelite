@@ -136,22 +136,32 @@ public final class LootTrackerSnapshot
 		// -- final presentation order is still entirely decided by
 		// LootTrackerSourceOrdering.COMPARATOR at the very end).
 		Map<String, List<LootTrackerSource>> rawByCanonicalName = new LinkedHashMap<>();
+		// Raw keys of the same card whose records are all behind a reset
+		// watermark: they show nothing, but still carry the card's
+		// preferences, so a favorite/hide/collapse/reset on the card must
+		// keep writing them too (otherwise a raw variant that later returns
+		// would bring back stale state).
+		Map<String, List<String>> resetRawKeysByCanonicalName = new LinkedHashMap<>();
 		for (LootTrackerSource source : index.snapshotSources())
 		{
 			Instant watermark = preferences == null ? null : preferences.getResetWatermark(source.getSourceKey());
 			LootTrackerSource filtered = source.filteredAfter(watermark);
+			// A structured reward source is already canonical (its key); it
+			// never merges with an NPC that happens to share its display name.
+			String canonicalName = filtered.isStructuredReward() ? filtered.getSourceKey() : canonicalDisplayName(filtered.getSourceName());
 			if (filtered.getRecords().isEmpty())
 			{
+				resetRawKeysByCanonicalName.computeIfAbsent(canonicalName, k -> new ArrayList<>()).add(source.getSourceKey());
 				continue;
 			}
-			String canonicalName = canonicalDisplayName(filtered.getSourceName());
 			rawByCanonicalName.computeIfAbsent(canonicalName, k -> new ArrayList<>()).add(filtered);
 		}
 
 		List<SourceEntry> entries = new ArrayList<>();
-		for (List<LootTrackerSource> group : rawByCanonicalName.values())
+		for (Map.Entry<String, List<LootTrackerSource>> group : rawByCanonicalName.entrySet())
 		{
-			entries.add(buildCanonicalEntry(group, preferences));
+			entries.add(buildCanonicalEntry(group.getValue(),
+				resetRawKeysByCanonicalName.getOrDefault(group.getKey(), Collections.<String>emptyList()), preferences));
 		}
 
 		// ADDED (Loot Tracker source-ordering fix); CORRECTED (small
@@ -206,7 +216,7 @@ public final class LootTrackerSnapshot
 	 * shows one true chronological timeline even when it spans multiple
 	 * raw composition ids.
 	 */
-	private static SourceEntry buildCanonicalEntry(List<LootTrackerSource> group, LootTrackerPreferences preferences)
+	private static SourceEntry buildCanonicalEntry(List<LootTrackerSource> group, List<String> resetRawKeys, LootTrackerPreferences preferences)
 	{
 		List<String> rawSourceKeys = new ArrayList<>(group.size());
 		int killCount = 0;
@@ -239,6 +249,12 @@ public final class LootTrackerSnapshot
 				collapsed = true;
 			}
 			allRecords.addAll(member.getRecords());
+		}
+		for (String resetKey : resetRawKeys)
+		{
+			rawSourceKeys.add(resetKey);
+			favorite |= preferences != null && preferences.isFavorite(resetKey);
+			collapsed |= preferences != null && preferences.isCollapsed(resetKey);
 		}
 		allRecords.sort(BY_OBSERVED_AT_ASCENDING);
 
@@ -273,7 +289,7 @@ public final class LootTrackerSnapshot
 
 		LootTrackerSource representative = group.get(0);
 		return new SourceEntry(
-			canonicalSourceKey(representative.getSourceName()),
+			representative.isStructuredReward() ? representative.getSourceKey() : canonicalSourceKey(representative.getSourceName()),
 			representative.getSourceName(),
 			representative.getSourceId(),
 			killCount,
@@ -378,6 +394,12 @@ public final class LootTrackerSnapshot
 		}
 
 		/** The CANONICAL (player-facing) identity -- see class javadoc's CANONICAL PLAYER-FACING IDENTITY note. Never a valid {@link LootTrackerPreferences} key on its own; use {@link #getRawSourceKeys()} for preference reads/writes. */
+		/** A structured activity reward source (its records are reward claims, not kills). */
+		public boolean isStructuredReward()
+		{
+			return LootTrackerIndex.isStructuredSourceKey(getSourceKey());
+		}
+
 		public String getSourceKey()
 		{
 			return sourceKey;

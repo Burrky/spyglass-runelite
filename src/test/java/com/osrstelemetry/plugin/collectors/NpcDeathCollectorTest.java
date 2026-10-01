@@ -44,11 +44,9 @@ import org.junit.Test;
  *  - "no dependency on loot": enforced by construction —
  *    NpcDeathCollector has no reference to LootCollector, NpcLootAttributed,
  *    or EventType.NPC_LOOT_ATTRIBUTED anywhere in its source.
- *  - "config gating still works": onActorDeath()'s first line is
- *    `if (!config.collectNpcDeaths()) { return; }` — architectural,
- *    same pattern as every other collector in this project (see
- *    OsrsTelemetryConfig javadoc: "read live by its collector on every
- *    relevant event").
+ *  - no config gating: core telemetry collection is not
+ *    user-configurable, so onActorDeath() runs unconditionally while the
+ *    plugin is enabled (see CoreTelemetryCollectionNotConfigurableTest).
  *  - "null/unavailable NPC metadata is not fabricated": tested directly
  *    below (scenarios 2-3).
  */

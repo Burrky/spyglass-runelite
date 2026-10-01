@@ -15,6 +15,7 @@ import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -41,9 +42,15 @@ public class HistoryIndexTest
 	private LocalStateStore store;
 	private SessionPersistence persistence;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
-	public void setUp()
+	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("history-index-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir(TEST_ACCOUNT_HASH);
 		store = new LocalStateStore(TEST_GSON);
 		store.start();
@@ -51,10 +58,11 @@ public class HistoryIndexTest
 	}
 
 	@After
-	public void tearDown()
+	public void tearDown() throws Exception
 	{
 		store.shutdown();
 		deleteAccountDir(TEST_ACCOUNT_HASH);
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private static void deleteAccountDir(long accountHash)
@@ -254,5 +262,29 @@ public class HistoryIndexTest
 
 		assertEquals("a file that was skipped for being malformed must be retried, not permanently blacklisted",
 			1, second.size());
+	}
+
+	@Test
+	public void refresh_corruptFile_isReadOnce_untilItChangesOnDisk() throws Exception
+	{
+		Path file = TestFilepaths.path(TelemetryPaths.sessionFile(TEST_ACCOUNT_HASH, "broken"));
+		Files.write(file, "{ not json".getBytes(StandardCharsets.UTF_8));
+		java.nio.file.attribute.FileTime stamp = java.nio.file.attribute.FileTime.fromMillis(1_700_000_000_000L);
+		Files.setLastModifiedTime(file, stamp);
+
+		HistoryIndex index = new HistoryIndex();
+		assertTrue(index.refresh(TEST_ACCOUNT_HASH, persistence, Duration.ofDays(10), NOW).isEmpty());
+
+		// Same file, same timestamp, now valid content: a re-scan must NOT re-read it
+		// (before this fix every History open re-parsed and re-logged a bad file).
+		writeSessionFileDirect(TEST_ACCOUNT_HASH, "broken", "2026-01-15T11:00:00Z");
+		Files.setLastModifiedTime(file, stamp);
+		assertTrue("unchanged rejected file is skipped", index.refresh(TEST_ACCOUNT_HASH, persistence, Duration.ofDays(10), NOW).isEmpty());
+
+		// Once it changes on disk it is retried -- a repaired file is never lost.
+		Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(1_700_000_100_000L));
+		List<HistoryEntry> result = index.refresh(TEST_ACCOUNT_HASH, persistence, Duration.ofDays(10), NOW);
+		assertEquals(1, result.size());
+		assertEquals("broken", result.get(0).getSessionId());
 	}
 }

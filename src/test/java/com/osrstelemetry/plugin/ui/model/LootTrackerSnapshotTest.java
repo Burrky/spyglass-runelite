@@ -13,6 +13,7 @@ import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -43,9 +44,15 @@ public class LootTrackerSnapshotTest
 
 	private LootTrackerPreferences preferences;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("loot-tracker-snapshot-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir();
 		preferences = new LootTrackerPreferences(new LocalStateStore(new Gson()));
 		preferences.loadForAccount(TEST_ACCOUNT_HASH);
@@ -55,6 +62,7 @@ public class LootTrackerSnapshotTest
 	public void tearDown() throws Exception
 	{
 		deleteAccountDir();
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private void deleteAccountDir() throws Exception

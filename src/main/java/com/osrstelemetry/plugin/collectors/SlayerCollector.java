@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -10,6 +9,7 @@ import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import java.time.Instant;
 import java.util.Objects;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.VarbitChanged;
@@ -17,55 +17,60 @@ import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
-import net.runelite.client.plugins.slayer.SlayerPluginService;
 
 /**
- * Task-resolution reads go through RuneLite's published
- * net.runelite.client.plugins.slayer.SlayerPluginService. Points/streak/
- * master still read directly via varbits, since the service doesn't
- * expose those.
+ * Spyglass's Slayer collector. ALL Slayer state is read natively -- no other
+ * RuneLite plugin is involved (Spyglass must never require one):
+ * task name / location / remaining / initial amount come from
+ * {@link SlayerNativeTaskReader} (Slayer varps + the game cache's Slayer DB
+ * tables); points, streak and master come straight from varbits.
  *
- * VARP VS VARBIT: SlayerPlugin.java's own onVarbitChanged shows that
- * SLAYER_COUNT, SLAYER_AREA, and SLAYER_TARGET are VarPlayer changes,
- * delivered via VarbitChanged.getVarpId(), NOT getVarbitId() -- a
- * collector that checked ONLY varbitId-based conditions would never
- * react to a kill (SLAYER_COUNT decrementing) or a new assignment
- * (SLAYER_TARGET changing). Both varpId and varbitId are watched below,
- * mirroring the real plugin's actual condition exactly (see
- * isRelevantSlayerVarbitChange()).
+ * VARP VS VARBIT: SLAYER_COUNT, SLAYER_AREA, SLAYER_TARGET and
+ * SLAYER_COUNT_ORIGINAL are VarPlayer changes, delivered via
+ * VarbitChanged.getVarpId(), NOT getVarbitId() -- a collector that checked
+ * ONLY varbitId-based conditions would never react to a kill (SLAYER_COUNT
+ * decrementing) or a new assignment (SLAYER_TARGET changing). Both varpId
+ * and varbitId are watched (see isRelevantSlayerVarbitChange()).
  *
- * ON MORTIMER: verified against the
- * complete current SlayerPlugin.java. There is no MORTIMER_SLAYER_MASTER
- * constant, no VarPlayerID.SLAYER_MORTIMER_TASKS_COMPLETED, no
- * SLAYER_MODIFIER_* varbits, anywhere in the file. The only
- * master-specific streak logic that exists is the same two-way check:
- *   client.getVarbitValue(VarbitID.SLAYER_MASTER) == KRYSTILIA_SLAYER_MASTER
- *       ? WILDERNESS_TASKS_COMPLETED : SLAYER_TASKS_COMPLETED
- * masterId is still captured correctly for every master including
- * Mortimer; his streak specifically stays unverified since his numeric
- * master id is not available from any source this project can reach,
- * so the code cannot special-case detection of "this might be wrong."
+ * STREAK SOURCE: the streak shown and used for cancellation detection is
+ * the CURRENT master's own counter -- Krystilia's Wilderness streak, Mortimer's
+ * separate streak (varp SLAYER_MORTIMER_TASKS_COMPLETED, verified against
+ * RuneLite 1.13.1's SlayerPlugin.addCounter()), otherwise the normal streak.
+ *
+ * BRACELET EFFECTS: the game's own chat messages for a Bracelet of slaughter
+ * ("prevents your slayer count from decreasing") or an Expeditious bracelet
+ * ("helps you progress your slayer task faster") are recorded as
+ * SLAYER_BRACELET_EFFECT events -- the exact wording RuneLite's own
+ * ItemChargePlugin matches. A changed remaining count alone is never taken
+ * as a bracelet proc.
  */
+@Slf4j
 public class SlayerCollector
 {
 	private static final int KRYSTILIA_MASTER_ID = 7;
+	private static final int MORTIMER_MASTER_ID = 10;
+
+	static final String BRACELET_SLAUGHTER = "SLAUGHTER";
+	static final String BRACELET_EXPEDITIOUS = "EXPEDITIOUS";
+	private static final java.util.regex.Pattern SLAUGHTER_ACTIVATE = java.util.regex.Pattern.compile(
+		"Your bracelet of slaughter prevents your slayer count from decreasing\\. (?:It has (\\d{1,2}) charges? left\\.|It then crumbles to dust\\.|It then regenerates itself to full charge!)");
+	private static final java.util.regex.Pattern EXPEDITIOUS_ACTIVATE = java.util.regex.Pattern.compile(
+		"Your expeditious bracelet helps you progress your slayer (?:task )?faster\\. (?:It has (\\d{1,2}) charges? left\\.|It then crumbles to dust\\.|It then regenerates itself to full charge!)");
 
 	private final Client client;
 	private final ClientThread clientThread;
-	private final SlayerPluginService slayerPluginService;
+	private final SlayerNativeTaskReader nativeTaskReader;
+	private final SlayerCommittedTask committedTask;
 	private final LocalStateStore store;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 
 	/**
 	 * A naive design -- a synchronous "no task"
 	 * read leaving hydration open for "the first async check," then
 	 * treating THAT first async check as automatically final -- has a
 	 * lifecycle hole: the first async check can ALSO observe a transient
-	 * "no task" (racing
-	 * RuneLite's own SlayerPlugin, which independently resolves
-	 * SlayerPluginService's cached task fields off the same varbits via
-	 * its own clientThread.invokeLater(this::updateTask)). That would still
+	 * "no task" (Slayer varps not yet synced from the server at login or
+	 * mid-hop). That would still
 	 * allow: sync=no-task -> first async=no-task (locked in as the
 	 * baseline) -> next async=Gargoyles/124 (diffed against the wrong
 	 * "no task" baseline) -> fabricated SLAYER_TASK_ASSIGNED.
@@ -99,17 +104,17 @@ public class SlayerCollector
 	public SlayerCollector(
 		Client client,
 		ClientThread clientThread,
-		SlayerPluginService slayerPluginService,
+		SlayerNativeTaskReader nativeTaskReader,
+		SlayerCommittedTask committedTask,
 		LocalStateStore store,
-		EventLedger eventLedger,
-		OsrsTelemetryConfig config)
+		EventLedger eventLedger)
 	{
 		this.client = client;
 		this.clientThread = clientThread;
-		this.slayerPluginService = slayerPluginService;
+		this.nativeTaskReader = nativeTaskReader;
+		this.committedTask = committedTask;
 		this.store = store;
 		this.eventLedger = eventLedger;
-		this.config = config;
 	}
 
 	public void resetForAccountSwitch()
@@ -117,39 +122,20 @@ public class SlayerCollector
 		hydration.reset();
 		pendingRecheck = false;
 		armedAtTick = -1;
+		publishCommitted(null);
 	}
 
-	/**
-	 * Gated on config — called on
-	 * re-enable via ConfigChanged, and must not seed Slayer state at
-	 * all while the category is disabled.
-	 *
-	 * NOT called from login (see
-	 * captureInitialStateWithoutBaseline() below for why) — this
-	 * remains correct for the re-enable case specifically because
-	 * there is no post-login client-sync gap to worry about there: the
-	 * category was merely toggled off/on mid-session, RuneLite's
-	 * varp/varbit values are already fully settled, and no
-	 * VarbitChanged has fired yet for this reseed to race against.
-	 * Hydrating immediately and directly (bypassing the stabilization
-	 * window entirely) is what correctly prevents whatever changed
-	 * while the category was disabled (e.g. a task completed) from
-	 * being fabricated as a transition the moment collection resumes.
-	 */
-	public void seedSilently()
+	/** Mirrors the committed baseline into the shared SlayerCommittedTask (NPC_DEATH annotation). */
+	private void publishCommitted(SlayerState state)
 	{
-		if (!config.collectSlayer())
+		if (committedTask != null)
 		{
-			return;
+			committedTask.set(state);
 		}
-		SlayerState current = resolveCurrent();
-		hydration.hydrateDirectly(current);
-		writeState(current);
 	}
 
 	/**
-	 * Called from
-	 * OsrsTelemetryPlugin.handleLogin() INSTEAD of seedSilently().
+	 * Called from OsrsTelemetryPlugin.handleLogin().
 	 *
 	 * A naive approach -- diffing the login-time reading directly against
 	 * whatever state was last known -- produces a real bug: a
@@ -171,8 +157,8 @@ public class SlayerCollector
 	 * stabilization countdown otherwise.
 	 *
 	 * A same-account world hop is
-	 * NOT exempt from this. RuneLite's Slayer state (SlayerPluginService/
-	 * varps) can transiently blank out mid-hop, and carrying an OLD
+	 * NOT exempt from this. The Slayer varps can transiently blank out
+	 * mid-hop, and carrying an OLD
 	 * trusted baseline across that gap would let the transient blank reading
 	 * get diffed as a genuine COMPLETED, then the real post-hop settle
 	 * diffed as a genuine ASSIGNED — two fabricated events for what was
@@ -189,16 +175,18 @@ public class SlayerCollector
 	 */
 	public void captureInitialStateWithoutBaseline()
 	{
-		if (!config.collectSlayer())
+		SlayerState current = resolveCurrent();
+		if (current == null)
 		{
+			// UNRESOLVED (cache not ready): unknown, not "no task" -- never
+			// fed into hydration; the next relevant varp change rechecks.
 			return;
 		}
-		SlayerState current = resolveCurrent();
 		writeState(current);
 
-		if (!hydration.isHydrated())
+		if (!hydration.isHydrated() && hydration.observeBeforeHydration(current))
 		{
-			hydration.observeBeforeHydration(current);
+			publishCommitted(current);
 		}
 	}
 
@@ -216,51 +204,47 @@ public class SlayerCollector
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
-		if (!config.collectSlayer())
-		{
-			return;
-		}
-		if (hydration.onGameTick())
-		{
-			writeState(hydration.getLastKnown());
-		}
-
-		// See onVarbitChanged()'s comment for the root cause this
-		// resolves. Resolves the
-		// coalesced recheck exactly once client.getTickCount() has
-		// genuinely moved past the tick that armed it -- see
-		// shouldResolvePendingRecheck()'s own javadoc for why this is the
-		// deterministic point RuneLite's own SlayerPlugin.updateTask() is
-		// guaranteed to have already run.
+		// The coalesced recheck resolves FIRST (see onVarbitChanged()'s and
+		// shouldResolvePendingRecheck()'s comments): it can only resolve once
+		// a tick has passed since its relevant VarbitChanged, so every varp
+		// that changed on that tick has been applied.
+		boolean resolvedRecheck = false;
 		if (shouldResolvePendingRecheck(pendingRecheck, armedAtTick, client.getTickCount()))
 		{
 			pendingRecheck = false;
 			armedAtTick = -1;
 			performCoalescedCheck();
+			resolvedRecheck = true;
+		}
+
+		// "No task" stabilization: only an UNDISTURBED tick counts toward
+		// confirming NONE. A tick that resolved a recheck, or that has a
+		// relevant varp change still pending, is evidence something is
+		// settling -- exactly SlayerBaselineHydration's documented rule.
+		// (Advancing the countdown before the recheck, as this used to,
+		// could confirm NONE on the very tick a hop/login resync arrived
+		// and then diff the real task against it as a fabricated
+		// SLAYER_TASK_ASSIGNED.) No-op once hydrated.
+		if (!resolvedRecheck && !pendingRecheck && hydration.onGameTick())
+		{
+			writeState(hydration.getLastKnown());
+			publishCommitted(hydration.getLastKnown());
 		}
 	}
 
 	/**
-	 * Pure decision function (Hooks.tick()'s own posted
-	 * order proves this): a coalesced recheck armed on tick T is only
-	 * guaranteed to observe RuneLite SlayerPlugin's settled
-	 * SlayerPluginService state once we are dispatched for a STRICTLY
-	 * LATER tick than T -- never on tick T itself, no matter how late in
-	 * tick T's own processing this check runs. See onVarbitChanged()'s
-	 * comment for the full derivation from RuneLite's actual
-	 * Hooks.tick()/tickEnd() source (GAME_TICK is posted, and our
-	 * onGameTick() runs, BEFORE that same tick's clientThread.invoke()
-	 * drains the invokeLater(this::updateTask) call SlayerPlugin's own
-	 * onVarbitChanged queued this tick -- so even a same-tick,
-	 * end-of-tick read via invokeAtTickEnd() can still run before
-	 * updateTask() does. Only the NEXT tick's onGameTick() call is
-	 * guaranteed to run after tick T's invoke() has fully drained).
-	 * currentTick strictly greater than armedAtTick is exactly "at least
-	 * one full tick boundary, and therefore at least one full
-	 * clientThread.invoke() drain, has elapsed since arming" --
-	 * regardless of how many ticks have actually passed, so a missed or
-	 * delayed onGameTick() call never leaves this permanently stuck
-	 * (first later tick observed resolves it).
+	 * Pure decision function: a coalesced recheck armed on tick T resolves
+	 * on the first onGameTick() of a STRICTLY LATER tick. By then every varp
+	 * the server changed on tick T has been applied, so the native read sees
+	 * a whole assignment change at once (target, area, original count and
+	 * count arrive together), never a half-applied one that could look like
+	 * an intermediate task. currentTick &gt; armedAtTick (rather than ==
+	 * armedAtTick + 1) means a missed or delayed onGameTick() call never
+	 * leaves this permanently stuck: the first later tick observed resolves
+	 * it. This one-tick (~0.6s) resolution is the timing that passed live
+	 * QA; it is kept deliberately by the native-source migration (originally
+	 * it also waited out RuneLite's Slayer plugin, which is no longer
+	 * involved).
 	 */
 	static boolean shouldResolvePendingRecheck(boolean pendingRecheck, int armedAtTick, int currentTick)
 	{
@@ -270,68 +254,14 @@ public class SlayerCollector
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event)
 	{
-		if (!config.collectSlayer())
-		{
-			return;
-		}
-
 		if (!isRelevantSlayerVarbitChange(event.getVarpId(), event.getVarbitId()))
 		{
 			return;
 		}
 
-		// ============================================================
-		// WHY invokeAtTickEnd() DOES NOT WORK HERE: it is tempting to
-		// assume that invokeAtTickEnd()'s queue drains strictly after
-		// invokeLater()'s queue WITHIN THE SAME TICK, so a same-tick
-		// invokeAtTickEnd() recheck would always see SlayerPlugin's
-		// already-updated state -- that is true about ClientThread's queue
-		// STRUCTURE, but false about WHEN each queue actually drains
-		// relative to VarbitChanged, once RuneLite's real client-loop
-		// hook (net.runelite.client.callback.Hooks, which is what
-		// actually calls clientThread.invoke()/invokeTickEnd() -- not
-		// ClientThread itself) is inspected instead of ClientThread in
-		// isolation:
-		//
-		//   Hooks.tick():     eventBus.post(GAME_TICK); clientThread.invoke();
-		//   Hooks.tickEnd():  clientThread.invokeTickEnd(); eventBus.post(new PostClientTick());
-		//
-		// Both `tick()` and `tickEnd()` fire once per client tick, and
-		// `tick()` (which drains invokeLater()) runs BEFORE `tickEnd()`
-		// (which drains invokeAtTickEnd()) -- so structurally
-		// invokeAtTickEnd() SHOULD still observe a same-tick
-		// invokeLater() task. The actual problem is finer-grained: varp
-		// diffing/VarbitChanged posting for a tick's server update
-		// happens as its own step, and by the time our onVarbitChanged()
-		// runs and arms a recheck, that tick's `Hooks.tick()` call --
-		// the one that would drain SlayerPlugin's freshly-queued
-		// invokeLater(this::updateTask) -- has, in the observed live
-		// failure, ALREADY happened for the tick in which the varp
-		// changed. That leaves updateTask() queued but not yet run until
-		// the FOLLOWING tick's `Hooks.tick()` call -- one full tick
-		// later than an invokeAtTickEnd()-deferred read, which resolves
-		// at THIS tick's `tickEnd()`, still before updateTask() ever
-		// executes. This produces a deterministic (not racy) one-decrement
-		// lag: invokeAtTickEnd()
-		// always resolves one tick too early relative to when
-		// updateTask() actually runs.
-		//
-		// Instead, this does not schedule anything via ClientThread at all here.
-		// It records the CURRENT tick number (client.getTickCount())
-		// as `armedAtTick`, and defers resolution to onGameTick() --
-		// specifically, only once client.getTickCount() has advanced to
-		// a STRICTLY LATER value than armedAtTick (see
-		// shouldResolvePendingRecheck()'s javadoc). Since onGameTick()
-		// itself only runs once per tick and (per Hooks.tick() above) is
-		// posted BEFORE that same tick's clientThread.invoke() drains,
-		// waiting for the NEXT tick's onGameTick() call guarantees the
-		// PRIOR tick's entire `Hooks.tick()` call -- GAME_TICK post AND
-		// clientThread.invoke() drain, i.e. updateTask() -- has already
-		// completed before we read. This is a bounded, deterministic
-		// ONE-GAMETICK latency (~0.6s), never a guess, never a race, and
-		// never a per-kill accumulating lag: every relevant VarbitChanged
-		// arms (or, if already armed, coalesces into) exactly one
-		// pending recheck, resolved on the first later tick observed.
+		// Coalesce: record the tick this relevant change arrived on and
+		// resolve on the next tick (see shouldResolvePendingRecheck()).
+		// Several varps changing on one tick arm exactly one recheck.
 		if (!pendingRecheck)
 		{
 			pendingRecheck = true;
@@ -341,10 +271,9 @@ public class SlayerCollector
 
 	/**
 	 * Pure predicate (package-private, directly unit-testable with no
-	 * RuneLite runtime) mirroring exactly what current
-	 * SlayerPlugin.java's own onVarbitChanged checks -- see class
-	 * javadoc for how that was independently reconfirmed against the
-	 * complete current source. Extracted from onVarbitChanged() so the
+	 * RuneLite runtime): every varp/varbit the native task resolution
+	 * (SlayerNativeTaskResolver, including the quantity modifier) and the
+	 * points/streak/master reads depend on. Extracted from onVarbitChanged() so the
 	 * "which varp/varbit changes matter" decision is testable without a
 	 * real Client/VarbitChanged-dispatch pipeline.
 	 */
@@ -355,9 +284,13 @@ public class SlayerCollector
 			|| varpId == VarPlayerID.SLAYER_TARGET
 			|| varpId == VarPlayerID.SLAYER_COUNT_ORIGINAL
 			|| varbitId == VarbitID.SLAYER_TARGET_BOSSID
+			|| varbitId == VarbitID.SLAYER_MODIFIER_ID
+			|| varbitId == VarbitID.SLAYER_MODIFIER_VALUE
+			|| varbitId == VarbitID.SLAYER_MODIFIER_NEGATIVE
 			|| varbitId == VarbitID.SLAYER_POINTS
 			|| varbitId == VarbitID.SLAYER_TASKS_COMPLETED
 			|| varbitId == VarbitID.SLAYER_WILDERNESS_TASKS_COMPLETED
+			|| varpId == VarPlayerID.SLAYER_MORTIMER_TASKS_COMPLETED
 			|| varbitId == VarbitID.SLAYER_MASTER;
 	}
 
@@ -366,8 +299,8 @@ public class SlayerCollector
 	 * SessionRuntimeCoordinator's testProcessTick()/testEnqueueSignal()
 	 * elsewhere in this project): let a test drive the pendingRecheck/
 	 * armedAtTick state machine directly, without needing a real
-	 * Client/SlayerPluginService (this project's test suite deliberately
-	 * never mocks those -- no Mockito dependency).
+	 * Client (this project's test suite deliberately never mocks it -- no
+	 * Mockito dependency).
 	 */
 	void testArmPendingRecheck(int tick)
 	{
@@ -400,6 +333,12 @@ public class SlayerCollector
 		// (onGameTick()'s shouldResolvePendingRecheck() branch) before
 		// this method runs -- see that method's own comment.
 		SlayerState current = resolveCurrent();
+		if (current == null)
+		{
+			// UNRESOLVED: keep the previous baseline untouched (RuneLite's own
+			// resolution does the same); a later varp change rechecks.
+			return;
+		}
 
 		if (!hydration.isHydrated())
 		{
@@ -411,7 +350,10 @@ public class SlayerCollector
 			// onGameTick() is what eventually confirms NONE once that
 			// countdown genuinely elapses undisturbed. Either way,
 			// nothing is ever diffed/emitted from this branch.
-			hydration.observeBeforeHydration(current);
+			if (hydration.observeBeforeHydration(current))
+			{
+				publishCommitted(current);
+			}
 			writeState(current);
 			return;
 		}
@@ -424,6 +366,7 @@ public class SlayerCollector
 
 		emitTransitionEvents(previous, current);
 		hydration.commit(current);
+		publishCommitted(current);
 		writeState(current);
 	}
 
@@ -431,10 +374,10 @@ public class SlayerCollector
 	 * Owns ALL mutable Slayer baseline-hydration state, extracted so
 	 * SlayerCollectorTest can drive the exact stabilization rule
 	 * directly with plain SlayerState inputs and simulated GameTicks --
-	 * no Client/SlayerPluginService/ClientThread mocking needed (this
+	 * no Client/ClientThread mocking needed (this
 	 * project has no Mockito dependency). SlayerCollector's
 	 * captureInitialStateWithoutBaseline()/performCoalescedCheck()/
-	 * onGameTick()/seedSilently()/resetForAccountSwitch() all delegate
+	 * onGameTick()/resetForAccountSwitch() all delegate
 	 * here; production and tests share this exact class.
 	 *
 	 * THE STABILIZATION RULE: a
@@ -473,9 +416,7 @@ public class SlayerCollector
 		 * baseline. Deliberately small, deterministic, and GameTick-
 		 * driven (RuneLite's own tick cadence, ~0.6s each) rather than
 		 * an arbitrary wall-clock sleep -- 2 full ticks is comfortably
-		 * beyond the single-tick ordering race identified above (our own VarbitChanged-triggered read
-		 * landing before RuneLite's own SlayerPlugin has resolved its
-		 * task cache for the same tick), while staying short enough
+		 * beyond the varp-sync settling identified above, while staying short enough
 		 * that a genuinely-no-task account is confirmed within ~1.2s of
 		 * login, not stuck open indefinitely.
 		 */
@@ -494,9 +435,9 @@ public class SlayerCollector
 			noTaskTicksRemaining = -1;
 		}
 
-		/** seedSilently()'s immediate, un-stabilized seed (re-enable
-		 * path only -- see its own javadoc for why no stabilization
-		 * window is needed there). */
+		/** Test seam: sets a hydrated baseline directly, bypassing the
+		 * stabilization window (used to model "already hydrated" before
+		 * a world hop). */
 		void hydrateDirectly(SlayerState state)
 		{
 			lastKnown = state;
@@ -592,13 +533,16 @@ public class SlayerCollector
 		switch (result.kind)
 		{
 			case COMPLETED:
-				eventLedger.append(
-					client.getAccountHash(),
-					EventType.SLAYER_TASK_COMPLETED,
-					new EventPayloads.SlayerTaskCompleted(
-						previous.getTaskName(), current.getStreak(), current.getStreakLabel(), current.getPoints())
-				);
+			{
+				EventPayloads.SlayerTaskCompleted completed = new EventPayloads.SlayerTaskCompleted(
+					previous.getTaskName(), current.getStreak(), current.getStreakLabel(), current.getPoints());
+				if (looksCancelled(previous, current))
+				{
+					completed.setCancelled(Boolean.TRUE);
+				}
+				eventLedger.append(client.getAccountHash(), EventType.SLAYER_TASK_COMPLETED, completed);
 				break;
+			}
 			case ASSIGNED:
 				eventLedger.append(
 					client.getAccountHash(),
@@ -718,6 +662,23 @@ public class SlayerCollector
 	}
 
 	/**
+	 * A task that disappears is not necessarily finished: cancelling or
+	 * blocking it at a master clears it the same way. Only positive evidence
+	 * marks a cancellation -- Slayer points went DOWN (a completion never
+	 * costs points) while the completed-tasks streak for the same streak
+	 * type did NOT go up (a completion always advances it). Anything less
+	 * certain (e.g. the varbits settling on a later check) stays an
+	 * ordinary completion, exactly as before.
+	 */
+	static boolean looksCancelled(SlayerState previous, SlayerState current)
+	{
+		return previous != null && current != null
+			&& current.getPoints() < previous.getPoints()
+			&& Objects.equals(previous.getStreakLabel(), current.getStreakLabel())
+			&& current.getStreak() <= previous.getStreak();
+	}
+
+	/**
 	 * Richer pure result type — needed since PROGRESS carries payload data alongside
 	 * its classification, rather than duplicating decision logic elsewhere.
 	 * previousRemaining/currentRemaining/remainingDelta/taskUnitsConsumed
@@ -769,43 +730,99 @@ public class SlayerCollector
 		}
 	}
 
+	/**
+	 * The streak belonging to `masterId`: Krystilia's Wilderness counter,
+	 * Mortimer's separate counter, else the normal streak. Pure (tests).
+	 */
+	static void applyStreakSource(SlayerState state, int masterId, int normalStreak, int wildernessStreak, int mortimerStreak)
+	{
+		if (masterId == KRYSTILIA_MASTER_ID)
+		{
+			state.setStreak(wildernessStreak);
+			state.setStreakLabel("WILDERNESS");
+		}
+		else if (masterId == MORTIMER_MASTER_ID)
+		{
+			state.setStreak(mortimerStreak);
+			state.setStreakLabel("MORTIMER");
+		}
+		else
+		{
+			state.setStreak(normalStreak);
+			state.setStreakLabel("NORMAL");
+		}
+		state.setStreakSourceVerified(true);
+	}
+
+	@Subscribe
+	public void onChatMessage(net.runelite.api.events.ChatMessage event)
+	{
+		if (event.getType() != net.runelite.api.ChatMessageType.GAMEMESSAGE
+			&& event.getType() != net.runelite.api.ChatMessageType.SPAM)
+		{
+			return;
+		}
+		String effect = parseBraceletEffect(net.runelite.client.util.Text.removeTags(event.getMessage()));
+		if (effect != null)
+		{
+			eventLedger.append(client.getAccountHash(), EventType.SLAYER_BRACELET_EFFECT, new EventPayloads.SlayerBraceletEffect(effect));
+		}
+	}
+
+	/** SLAUGHTER / EXPEDITIOUS for the game's own bracelet activation message, else null. Pure (tests). */
+	static String parseBraceletEffect(String message)
+	{
+		if (message == null)
+		{
+			return null;
+		}
+		if (SLAUGHTER_ACTIVATE.matcher(message).find())
+		{
+			return BRACELET_SLAUGHTER;
+		}
+		if (EXPEDITIOUS_ACTIVATE.matcher(message).find())
+		{
+			return BRACELET_EXPEDITIOUS;
+		}
+		return null;
+	}
+
 	private SlayerState resolveCurrent()
 	{
-		SlayerState state = new SlayerState();
-
-		int remaining = slayerPluginService.getRemainingAmount();
-		state.setAmountRemaining(Math.max(remaining, 0));
-
-		// Task identity
-		// (taskName/taskLocation) must be captured from the service's
-		// own task fields, never gated on amountRemaining > 0 --
-		// amountRemaining == 0 does not by itself mean "no task exists"
-		// (see evaluateSlayerTransition()'s javadoc). A blank/null task name from the
-		// service is still the correct "no task" signal.
-		String taskName = slayerPluginService.getTask();
-		if (taskName != null && !taskName.isEmpty())
+		SlayerNativeTask nativeTask = nativeTaskReader.read();
+		if (nativeTask.isUnresolved())
 		{
-			state.setTaskName(taskName);
-			state.setTaskLocation(slayerPluginService.getTaskLocation());
-			state.setInitialAmount(slayerPluginService.getInitialAmount());
+			return null;
+		}
+
+		SlayerState state = new SlayerState();
+		state.setAmountRemaining(Math.max(nativeTask.getRemaining(), 0));
+		state.setNativeCountOriginal(nativeTask.getRaw().getCountOriginal());
+
+		// Task identity (taskName/taskLocation) comes from the native
+		// task's own resolved fields -- set only when it is ACTIVE; NO_TASK
+		// (SLAYER_COUNT <= 0) leaves them null, which is the "no task"
+		// signal evaluateSlayerTransition() keys on (see its javadoc).
+		if (nativeTask.isActive())
+		{
+			state.setTaskName(nativeTask.getTaskName());
+			state.setTaskLocation(nativeTask.getTaskLocation());
+			state.setInitialAmount(nativeTask.getInitialAmount());
 		}
 
 		int masterId = client.getVarbitValue(VarbitID.SLAYER_MASTER);
 		state.setMasterId(masterId);
 		state.setPoints(client.getVarbitValue(VarbitID.SLAYER_POINTS));
 
-		if (masterId == KRYSTILIA_MASTER_ID)
-		{
-			state.setStreak(client.getVarbitValue(VarbitID.SLAYER_WILDERNESS_TASKS_COMPLETED));
-			state.setStreakLabel("WILDERNESS");
-			state.setStreakSourceVerified(true);
-		}
-		else
-		{
-			state.setStreak(client.getVarbitValue(VarbitID.SLAYER_TASKS_COMPLETED));
-			state.setStreakLabel("NORMAL");
-			state.setStreakSourceVerified(true);
-		}
+		applyStreakSource(state, masterId,
+			client.getVarbitValue(VarbitID.SLAYER_TASKS_COMPLETED),
+			client.getVarbitValue(VarbitID.SLAYER_WILDERNESS_TASKS_COMPLETED),
+			client.getVarpValue(VarPlayerID.SLAYER_MORTIMER_TASKS_COMPLETED));
+
+		SlayerNativeTaskResolver.RawVars raw = nativeTask.getRaw();
+		state.setModifierId(raw.modifierId);
+		state.setModifierValue(raw.modifierValue);
+		state.setModifierNegative(raw.modifierNegative == 1);
 
 		return preserveTrustworthyInitialAmount(state);
 	}
@@ -815,17 +832,14 @@ public class SlayerCollector
 	 * hydration, telemetry showed a real, already-named task
 	 * (amountRemaining=116, taskName="Gargoyles") with initialAmount=0;
 	 * a later read of the SAME task showed initialAmount=137. Root
-	 * cause, traced against RuneLite's own SlayerPlugin.updateTask():
-	 * `initialAmount` (like `taskName`) is only ever committed via
-	 * setTask() -- read at that moment from the SLAYER_COUNT_ORIGINAL
-	 * varp. If SLAYER_COUNT/SLAYER_TARGET (which drive amountRemaining
-	 * and taskName) have already synced client-side at login but
-	 * SLAYER_COUNT_ORIGINAL genuinely has not yet arrived from the
-	 * server, that FIRST setTask() call legitimately captures
-	 * initialAmount=0 -- this is SlayerPluginService's real "not yet
-	 * populated" transient state for that one field, not a lie about
-	 * the task itself (taskName/amountRemaining are still correct at
-	 * the same moment).
+	 * cause: SLAYER_COUNT/SLAYER_TARGET (which drive amountRemaining and
+	 * taskName) can sync client-side at login before the
+	 * SLAYER_COUNT_ORIGINAL varp arrives from the server, so a read in
+	 * that window legitimately sees initialAmount=0 -- a real "not yet
+	 * populated" transient for that one field, not a lie about the task
+	 * itself (taskName/amountRemaining are still correct at the same
+	 * moment). The native reader re-reads the varp on every recheck, so
+	 * the real value arrives with the next relevant change.
 	 *
 	 * 0 is never persisted as if it were authoritative task
 	 * metadata once we have already observed a real (non-zero)
@@ -838,7 +852,7 @@ public class SlayerCollector
 	 * the prior baseline's own initialAmount was itself still 0, this is
 	 * a no-op and 0 passes through unchanged -- honestly representing
 	 * "not yet known" rather than guessing. The moment
-	 * SlayerPluginService itself reports a real value for this task
+	 * the native read reports a real value for this task
 	 * (e.g. once SLAYER_COUNT_ORIGINAL syncs and triggers another
 	 * recheck), this method stops intervening and the real value flows
 	 * through untouched, correcting slayer.json without ever emitting a

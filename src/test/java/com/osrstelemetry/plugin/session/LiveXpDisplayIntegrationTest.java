@@ -11,6 +11,7 @@ import com.osrstelemetry.plugin.storage.TestFilepaths;
 import com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import org.junit.After;
 import org.junit.Before;
@@ -42,9 +43,15 @@ public class LiveXpDisplayIntegrationTest
 	private LocalStateStore store;
 	private SessionRuntimeCoordinator coordinator;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("live-xp-display-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir(ACCOUNT_LIVE_XP_TEST);
 		deleteAccountDir(ACCOUNT_LIVE_XP_TEST_B);
 		store = new LocalStateStore(GSON);
@@ -58,6 +65,7 @@ public class LiveXpDisplayIntegrationTest
 		store.shutdown();
 		deleteAccountDir(ACCOUNT_LIVE_XP_TEST);
 		deleteAccountDir(ACCOUNT_LIVE_XP_TEST_B);
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private void deleteAccountDir(long accountHash) throws Exception

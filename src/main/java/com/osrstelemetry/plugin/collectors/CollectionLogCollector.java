@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -53,23 +52,17 @@ public class CollectionLogCollector
 
 	private final Client client;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 
 	@Inject
-	public CollectionLogCollector(Client client, EventLedger eventLedger, OsrsTelemetryConfig config)
+	public CollectionLogCollector(Client client, EventLedger eventLedger)
 	{
 		this.client = client;
 		this.eventLedger = eventLedger;
-		this.config = config;
 	}
 
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
-		if (!config.collectCollectionLog())
-		{
-			return;
-		}
 		if (event.getType() != ChatMessageType.GAMEMESSAGE)
 		{
 			return;

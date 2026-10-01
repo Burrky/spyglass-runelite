@@ -45,6 +45,12 @@ public final class LootTrackerSource
 		return sourceKey;
 	}
 
+	/** A structured activity reward source (Barrows, Tempoross Reward Pool, ...) rather than an NPC. */
+	public boolean isStructuredReward()
+	{
+		return LootTrackerIndex.isStructuredSourceKey(sourceKey);
+	}
+
 	public String getSourceName()
 	{
 		return sourceName;
@@ -73,14 +79,37 @@ public final class LootTrackerSource
 		return records.size();
 	}
 
+	/**
+	 * Earliest / latest observedAt over every record. Not list position:
+	 * a live record applied while an account-load rebuild is still reading
+	 * older records from disk lands BEFORE them in the list.
+	 */
 	public Instant getFirstObservedAt()
 	{
-		return records.isEmpty() ? null : records.get(0).getObservedAt();
+		Instant first = null;
+		for (LootTrackerRecord record : records)
+		{
+			Instant at = record.getObservedAt();
+			if (at != null && (first == null || at.isBefore(first)))
+			{
+				first = at;
+			}
+		}
+		return first;
 	}
 
 	public Instant getLastObservedAt()
 	{
-		return records.isEmpty() ? null : records.get(records.size() - 1).getObservedAt();
+		Instant last = null;
+		for (LootTrackerRecord record : records)
+		{
+			Instant at = record.getObservedAt();
+			if (at != null && (last == null || at.isAfter(last)))
+			{
+				last = at;
+			}
+		}
+		return last;
 	}
 
 	/**

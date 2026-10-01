@@ -199,6 +199,13 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		{
 			return;
 		}
+		ensureAccountLoadedCore(accountHash);
+		// A different account's (or no) session must not linger on screen.
+		notifyCurrentSessionChanged();
+	}
+
+	private void ensureAccountLoadedCore(long accountHash)
+	{
 
 		if (currentAccountHash != NO_ACCOUNT)
 		{
@@ -236,6 +243,10 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 
 		currentAccountHash = accountHash;
 		classifierContext = new ClassifierContext();
+		lastObservedAssignment = null;
+		slayerTaskCancelledSinceLastAssignment = false;
+		nativeInitialAssignmentKey = null;
+		nativeInitialAmount = null;
 		// A brand-new account must never inherit
 		// a stale live-XP owner/pending amount left over from whichever
 		// account was previously loaded -- see LiveXpTracker.reset()'s
@@ -257,11 +268,38 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		// backward compatible with an account that predates this
 		// feature.
 		InterruptedCandidateRecord interruptedCandidateRecord = persistence.loadInterruptedCandidate(accountHash);
-		SessionLifecycleEngine.RehydrationResult rehydrated = SessionLifecycleEngine.rehydrate(persisted, Instant.now(),
-			interruptedCandidateRecord == null ? null : interruptedCandidateRecord.getSession(),
-			interruptedCandidateRecord == null ? null : interruptedCandidateRecord.interruptedAtInstant(),
-			interruptedCandidateRecord == null ? null : interruptedCandidateRecord.expiresAtInstant());
+		SessionLifecycleEngine.RehydrationResult rehydrated;
+		try
+		{
+			rehydrated = SessionLifecycleEngine.rehydrate(persisted, Instant.now(),
+				interruptedCandidateRecord == null ? null : interruptedCandidateRecord.getSession(),
+				interruptedCandidateRecord == null ? null : interruptedCandidateRecord.interruptedAtInstant(),
+				interruptedCandidateRecord == null ? null : interruptedCandidateRecord.expiresAtInstant());
+		}
+		catch (RuntimeException e)
+		{
+			// A parseable but incomplete saved state (e.g. hand-edited or from
+			// a newer version) must not leave the PREVIOUS account's engine
+			// live under this account or abort login handling. Start with no
+			// current session; the files are left exactly as they are.
+			log.warn("Could not restore the saved session state for account {}; starting with no current session", accountHash, e);
+			engine = SessionLifecycleEngine.rehydrate(null, Instant.now(), null, null, null).getEngine();
+			return;
+		}
 		engine = rehydrated.getEngine();
+
+		// SMART SLAYER: a pre-ledger Slayer session (current or parked) gets
+		// its single bootstrapped record now, so the task ledger renders
+		// right after restart. Persisted by the persistCurrent()/
+		// syncInterruptedCandidatePersistence() calls below.
+		for (Session restored : new Session[] {engine.getCurrentSession(), engine.getInterruptedCandidate()})
+		{
+			if (restored != null)
+			{
+				SessionAggregateUpdater.ensureSlayerAssignmentLedger(restored.getAggregates(), restored.getActivityIdentity(),
+					restored.getAccumulatedActiveDurationMillis());
+			}
+		}
 
 		if (rehydrated.getFinalizedDuringRehydration() != null)
 		{
@@ -362,6 +400,16 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	}
 
 	synchronized void processTick(long currentTick, Instant now)
+	{
+		String before = visibleStamp();
+		processTickCore(currentTick, now);
+		if (!before.equals(visibleStamp()))
+		{
+			notifyCurrentSessionChanged();
+		}
+	}
+
+	private void processTickCore(long currentTick, Instant now)
 	{
 		if (currentAccountHash == NO_ACCOUNT)
 		{
@@ -516,6 +564,27 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	 * unchanged -- an idle session with no open activity times out on
 	 * ordinary wall-clock time exactly as before this fix.
 	 */
+	/**
+	 * A manual re-evaluate is stamped strictly BEFORE every still-pending
+	 * signal: those signals were observed before the click but resolve at the
+	 * next tick close, and the engine rejects anything older than the
+	 * session's lastActiveAt -- stamping the click at wall-clock `now` would
+	 * silently drop the pending XP window / task progress / loot.
+	 */
+	private Instant beforePendingSignals(Instant now)
+	{
+		Instant stamp = now;
+		for (SessionSignal signal : pendingSignals)
+		{
+			Instant cap = signal.getObservedAt().minusNanos(1);
+			if (cap.isBefore(stamp))
+			{
+				stamp = cap;
+			}
+		}
+		return stamp;
+	}
+
 	private Instant timeoutWatermark(long currentTick, Instant now)
 	{
 		Instant watermark = now;
@@ -610,6 +679,13 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		List<List<SessionSignal>> batches = SessionSignalBatchResolver.groupIntoBatches(toProcess);
 		for (List<SessionSignal> batch : batches)
 		{
+			// SMART SLAYER TASK STATE: installed BEFORE this batch's own
+			// lifecycle resolution, so a same-batch SLAYER_TASK_PROGRESS for
+			// the new task already matches the retained session's (re-keyed)
+			// assignment instead of looking like a brand-new activity. Never
+			// itself a lifecycle transition -- see applySlayerAssignmentUpdates().
+			applySlayerAssignmentUpdates(batch);
+
 			Session preBatchCurrent = engine.getCurrentSession();
 			SessionSignalBatchResolver.BatchResolution resolution =
 				SessionSignalBatchResolver.resolve(batch, preBatchCurrent, classifier, classifierContext);
@@ -775,9 +851,286 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 					persistence.persistCurrent(currentAccountHash, target);
 				}
 			}
+			attachStructuredLiveXp(batch, preBatchCurrent);
 		}
 
 		return anyLifecycleTransitionApplied;
+	}
+
+	/**
+	 * SMART SLAYER TASK STATE. For every authoritative SLAYER_TASK_ASSIGNED
+	 * in `batch` (SlayerCollector emits it for no-task -&gt; task and for a
+	 * direct task-A -&gt; task-B replacement; never for plain progress),
+	 * installs the new assignment on the RETAINED broader Slayer session,
+	 * if any, via SessionLifecycleEngine.reassignSlayerTask() -- see that
+	 * method for exactly which session is eligible and why this can never
+	 * create, resume, or steal a session. The signal itself still reaches
+	 * the classifier afterwards unchanged (ClassifierContext's tracked
+	 * task/family context is updated there, exactly as before).
+	 *
+	 * When the assignment actually changed, or the target was AWAITING a
+	 * task (remaining == 0 -- e.g. the same task name assigned again),
+	 * the new assignment's amount becomes the live remaining count
+	 * (AWAITING_TASK -&gt; ACTIVE_TASK; the "Grab a new task" card goes
+	 * away on the next render) and the per-assignment XP-estimate
+	 * baselines are recorded. Session-wide totals (task units, XP, loot,
+	 * kills, duration) are never touched. A duplicate observation of the
+	 * assignment already installed and in progress is a pure no-op.
+	 */
+	private void applySlayerAssignmentUpdates(List<SessionSignal> batch)
+	{
+		for (SessionSignal signal : batch)
+		{
+			if (signal.getKind() == SignalKind.SLAYER_TASK_COMPLETED)
+			{
+				slayerTaskCancelledSinceLastAssignment = signal.isSlayerTaskCancelled();
+				continue;
+			}
+			if (signal.getKind() == SignalKind.SLAYER_TASK_PROGRESS)
+			{
+				noteNativeInitialAmount(signal);
+				noteAssignmentMaster(signal);
+				continue;
+			}
+			if (signal.getKind() != SignalKind.SLAYER_TASK_ASSIGNED || signal.getSlayerTaskName() == null)
+			{
+				continue;
+			}
+			boolean previousTaskCancelled = slayerTaskCancelledSinceLastAssignment;
+			slayerTaskCancelledSinceLastAssignment = false;
+			ActivityIdentity assignment = ActivitySignalClassifier.slayerIdentity(signal.getSlayerTaskName(), signal.getSlayerTaskLocation());
+			lastObservedAssignment = signal;
+			SessionLifecycleEngine.SlayerAssignmentUpdate update = engine.reassignSlayerTask(assignment, signal.getObservedAt());
+			Session target = update.getTarget();
+			if (target == null)
+			{
+				continue;
+			}
+
+			SessionAggregates aggregates = target.getAggregates();
+			// A pre-ledger session (mid-task start / older file) gets its
+			// instance #1 under the assignment it held BEFORE this update,
+			// seeded with all loot it already owns -- never the new task.
+			SessionAggregateUpdater.ensureSlayerAssignmentLedger(aggregates, update.getPreviousAssignment(),
+				target.getAccumulatedActiveDurationMillis());
+			Integer remaining = aggregates.getLatestSlayerCurrentRemaining();
+			boolean awaitingTask = (remaining != null && remaining == 0) || previousTaskCancelled;
+			if (!update.isIdentityChanged() && !awaitingTask)
+			{
+				// Duplicate observation of the assignment already installed
+				// and in progress: idempotent -- no bucket, no count reset.
+				continue;
+			}
+
+			// A genuinely new assignment INSTANCE (new task, direct
+			// replacement, or the same task name assigned again after
+			// completion): exactly one new ledger bucket, starting at 0 loot.
+			aggregates.setSlayerAssignmentBaselineProgressDelta(
+				aggregates.getSlayerProgressDelta() == null ? 0 : aggregates.getSlayerProgressDelta());
+			aggregates.setSlayerAssignmentBaselineSlayerXp(slayerXpOf(aggregates));
+			SessionAggregates.SlayerAssignmentRecord begun = SessionAggregateUpdater.beginSlayerAssignment(aggregates, assignment,
+				signal.getObservedAt(), signal.getSlayerInitialAmount(),
+				// A parked candidate's time is frozen while it is parked: never add live time for it.
+				update.isTargetCurrent() ? activeDurationAt(target, signal.getObservedAt()) : target.getAccumulatedActiveDurationMillis());
+			begun.setMasterId(signal.getSlayerMasterId());
+			if (signal.getSlayerInitialAmount() != null)
+			{
+				applyMetrics(target, Collections.singletonList(MetricUpdate.slayerProgress(0, signal.getSlayerInitialAmount())));
+			}
+
+			if (update.isTargetCurrent())
+			{
+				visibleMutations++;
+				persistence.persistCurrent(currentAccountHash, target);
+			}
+			else
+			{
+				syncInterruptedCandidatePersistence();
+			}
+		}
+	}
+
+	/**
+	 * The session's ACTIVE duration as of instant `t`, with exactly the
+	 * semantics the panel uses for the live session timer: the
+	 * accumulated active time, plus -- only while the session is ACTIVE --
+	 * the time since its last qualifying activity up to `t`, capped at the
+	 * idle-suspend timeout. Suspended time and time while the session is
+	 * parked/not current are never included (such a session is not
+	 * ACTIVE, or does not accumulate). `t` null = accumulated only.
+	 */
+	static long activeDurationAt(Session session, Instant t)
+	{
+		long accumulated = session.getAccumulatedActiveDurationMillis();
+		if (t == null || session.getState() != SessionState.ACTIVE || session.getLastActiveAt() == null)
+		{
+			return accumulated;
+		}
+		long live = java.time.Duration.between(session.lastActiveAtInstant(), t).toMillis();
+		live = Math.max(0L, Math.min(live, SessionLifecycleEngine.SUSPEND_TIMEOUT.toMillis()));
+		return accumulated + live;
+	}
+
+	/**
+	 * SMART SLAYER: the latest authoritative SLAYER_TASK_ASSIGNED observed
+	 * for the current account (whether or not a session was retained to
+	 * receive it). Lets a Slayer session that is only created later, by real
+	 * gameplay, record that FIRST assignment as fully observed (its real
+	 * amount and start) instead of "bootstrapped mid-task". Account-scoped:
+	 * cleared on every account change.
+	 */
+	private SessionSignal lastObservedAssignment;
+	/**
+	 * A Slayer task was CANCELLED (cleared without finishing; see
+	 * SessionSignal#isSlayerTaskCancelled) and no assignment has been seen
+	 * since. Its record keeps its real remaining (&gt; 0), so the next
+	 * assignment -- even the SAME task name again -- must still start a new
+	 * instance instead of being taken for a duplicate observation.
+	 * Transient: reset on account switch.
+	 */
+	private boolean slayerTaskCancelledSinceLastAssignment;
+
+	/**
+	 * A just-bootstrapped first ledger record whose assignment is exactly
+	 * the last authoritatively observed ASSIGNED (same task + location key)
+	 * becomes a fully observed record: its real initial amount and
+	 * assignment time. Otherwise it stays bootstrapped (Spyglass genuinely
+	 * joined mid-task, e.g. the task predates this login).
+	 */
+	/**
+	 * SMART SLAYER: the latest native original task size (SLAYER_COUNT_ORIGINAL
+	 * +/- modifier) observed on a SLAYER_TASK_PROGRESS, keyed by that task's
+	 * assignment key. Account-scoped; cleared on every account change. See
+	 * retainNativeInitialAmount().
+	 */
+	private String nativeInitialAssignmentKey;
+	private Integer nativeInitialAmount;
+
+	/**
+	 * A current assignment record with no known master (Spyglass joined
+	 * mid-task, or an older record) adopts the master varbit carried by a
+	 * progress observation of the SAME assignment key. Metadata only; set
+	 * at most once.
+	 */
+	private void noteAssignmentMaster(SessionSignal progress)
+	{
+		Integer masterId = progress.getSlayerMasterId();
+		if (masterId == null || progress.getSlayerTaskName() == null)
+		{
+			return;
+		}
+		String key = ActivitySignalClassifier.slayerIdentity(progress.getSlayerTaskName(), progress.getSlayerTaskLocation()).getActivityKey();
+		for (Session session : new Session[] {engine.getCurrentSession(), engine.getInterruptedCandidate()})
+		{
+			if (session == null)
+			{
+				continue;
+			}
+			SessionAggregates.SlayerAssignmentRecord record = SessionAggregateUpdater.currentSlayerAssignment(session.getAggregates());
+			if (record != null && record.getMasterId() == null && record.getEndReason() == null && key.equals(record.getAssignmentKey()))
+			{
+				record.setMasterId(masterId);
+			}
+		}
+	}
+
+	private void noteNativeInitialAmount(SessionSignal progress)
+	{
+		Integer amount = progress.getSlayerInitialAmount();
+		if (progress.getSlayerTaskName() == null || amount == null || amount <= 0)
+		{
+			return;
+		}
+		nativeInitialAssignmentKey = ActivitySignalClassifier.slayerIdentity(progress.getSlayerTaskName(), progress.getSlayerTaskLocation())
+			.getActivityKey();
+		nativeInitialAmount = amount;
+		Session current = engine.getCurrentSession();
+		if (retainNativeInitialAmount(current))
+		{
+			persistence.persistCurrent(currentAccountHash, current);
+		}
+		if (retainNativeInitialAmount(engine.getInterruptedCandidate()))
+		{
+			syncInterruptedCandidatePersistence();
+		}
+	}
+
+	/**
+	 * A BOOTSTRAPPED current assignment record (Spyglass joined mid-task)
+	 * whose key matches the latest native original size records it as
+	 * assignedInitialAmount -- authoritative assignment METADATA only. The
+	 * record stays bootstrapped and its initialAmount, unitsCompleted, XP and
+	 * active-duration fields are untouched, so nothing Spyglass did not
+	 * observe is ever credited. Set at most once. Rejected when inconsistent
+	 * with what this record already observed (original size smaller than the
+	 * remaining it had when Spyglass attached: latestRemaining + its own
+	 * observed units), which means the native value belongs to a different
+	 * instance of a same-named task.
+	 *
+	 * @return true when the record changed
+	 */
+	private boolean retainNativeInitialAmount(Session session)
+	{
+		if (session == null || nativeInitialAssignmentKey == null || nativeInitialAmount == null)
+		{
+			return false;
+		}
+		SessionAggregates.SlayerAssignmentRecord record = SessionAggregateUpdater.currentSlayerAssignment(session.getAggregates());
+		if (record == null || !record.isBootstrapped() || record.getAssignedInitialAmount() != null
+			|| !nativeInitialAssignmentKey.equals(record.getAssignmentKey()))
+		{
+			return false;
+		}
+		if (record.getLatestRemaining() == null)
+		{
+			// Nothing observed yet to check it against -- retried on the next progress.
+			return false;
+		}
+		int remainingWhenAttached = record.getLatestRemaining() + (record.getUnitsCompleted() == null ? 0 : record.getUnitsCompleted());
+		if (nativeInitialAmount < remainingWhenAttached)
+		{
+			return false;
+		}
+		record.setAssignedInitialAmount(nativeInitialAmount);
+		return true;
+	}
+
+	private void adoptObservedAssignment(Session target)
+	{
+		SessionSignal observed = lastObservedAssignment;
+		SessionAggregates.SlayerAssignmentRecord first = SessionAggregateUpdater.currentSlayerAssignment(target.getAggregates());
+		if (observed == null || first == null || !first.isBootstrapped())
+		{
+			return;
+		}
+		String key = ActivitySignalClassifier.slayerIdentity(observed.getSlayerTaskName(), observed.getSlayerTaskLocation()).getActivityKey();
+		if (!key.equals(first.getAssignmentKey()))
+		{
+			return;
+		}
+		first.setBootstrapped(false);
+		first.setInitialAmount(observed.getSlayerInitialAmount());
+		first.setAssignedAt(observed.getObservedAt().toString());
+		if (first.getMasterId() == null)
+		{
+			first.setMasterId(observed.getSlayerMasterId());
+		}
+	}
+
+	private static long slayerXpOf(SessionAggregates aggregates)
+	{
+		long total = 0L;
+		if (aggregates.getXpGainedBySkill() != null)
+		{
+			for (Map.Entry<String, Long> e : aggregates.getXpGainedBySkill().entrySet())
+			{
+				if ("SLAYER".equalsIgnoreCase(e.getKey()) && e.getValue() != null)
+				{
+					total += e.getValue();
+				}
+			}
+		}
+		return total;
 	}
 
 	private void applyMetrics(Session target, List<MetricUpdate> metrics)
@@ -786,14 +1139,36 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		{
 			return;
 		}
+		// SMART SLAYER: a Slayer session gets its first assignment record the
+		// moment it genuinely owns metrics (created, resumed, or established
+		// mid-task) -- before this batch's loot is applied, so it lands there.
+		if (!metrics.isEmpty() && target == engine.getCurrentSession())
+		{
+			visibleMutations++;
+		}
+		boolean ledgerCreated = SessionAggregateUpdater.ensureSlayerAssignmentLedger(target.getAggregates(), target.getActivityIdentity(),
+			target.getAccumulatedActiveDurationMillis());
+		if (ledgerCreated)
+		{
+			adoptObservedAssignment(target);
+		}
 		for (MetricUpdate metric : metrics)
 		{
+			if (metric.getActivityStatsKey() != null
+				&& (target.getActivityIdentity().getActivityType() != ActivityType.STRUCTURED_ACTIVITY
+					|| !metric.getActivityStatsKey().equals(target.getActivityIdentity().getActivityKey())))
+			{
+				// Activity stats belong to that activity's own session only --
+				// never ride a batch onto any other session.
+				continue;
+			}
 			SessionAggregateUpdater.apply(target.getAggregates(), metric);
 			// This durable application, the
-			// instant it happens, now fully represents every raw StatChanged
-			// gain for this (session, skill) pair up to this point -- so
-			// the live, not-yet-represented portion resets to zero here,
-			// in the SAME call that just made it durable. See
+			// instant it happens, now represents the raw StatChanged gains
+			// its window carried for this (session, skill) pair -- so that
+			// much of the live, not-yet-represented portion is removed here,
+			// in the SAME call that just made it durable (gains already
+			// pending from after the window closed stay visible). See
 			// LiveXpTracker.reconcile()'s own javadoc for why this is
 			// what guarantees an exact-once DISPLAY total (never double-
 			// counts once XP_CHANGE catches up). A no-op for any metric
@@ -804,8 +1179,21 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 			// never this tracker's live view of whatever is current now).
 			if (metric.getXpSkill() != null)
 			{
-				liveXpTracker.reconcile(target.getSessionId(), metric.getXpSkill());
+				liveXpTracker.reconcile(target.getSessionId(), metric.getXpSkill(), metric.getXpDelta());
 			}
+		}
+		// After this batch's metrics: a just-bootstrapped record must already
+		// hold the remaining it was attached at before retainNativeInitialAmount()
+		// can check the native original size against it.
+		retainNativeInitialAmount(target);
+		// SMART SLAYER: a just-ended assignment's task-local active time
+		// freezes at its own completion instant, so post-completion travel
+		// never dilutes its XP/hr.
+		SessionAggregates.SlayerAssignmentRecord justEnded = SessionAggregateUpdater.currentSlayerAssignment(target.getAggregates());
+		if (justEnded != null && justEnded.getEndReason() != null && justEnded.getActiveDurationEndMillis() == null)
+		{
+			justEnded.setActiveDurationEndMillis(
+				activeDurationAt(target, justEnded.getCompletedAt() == null ? null : Instant.parse(justEnded.getCompletedAt())));
 		}
 	}
 
@@ -1005,6 +1393,12 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		pendingSignals.add(signal);
 	}
 
+	/** Test hook: a live StatChanged gain as it arrives on client tick {@code tick} (null = off-thread). */
+	synchronized void testRecordLiveXp(String skillName, long delta, Long absoluteXpAfter, Long tick, Instant observedAt)
+	{
+		recordLiveXpDeltaAt(skillName, delta, absoluteXpAfter, tick, observedAt);
+	}
+
 	/** Drives the same closed-tick-flush-then-advance-time pipeline
 	 * onGameTick() does, without requiring a real GameTick event or
 	 * Client. `currentTick` plays the role of client.getTickCount() --
@@ -1079,9 +1473,153 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	 */
 	public synchronized void recordLiveXpDelta(String skillName, long delta)
 	{
+		recordLiveXpDelta(skillName, delta, null);
+	}
+
+	/**
+	 * As above, plus STRUCTURED ACTIVATION: when the gain is in a skill the
+	 * ARMED structured activity expects, inside its location, and that
+	 * activity is not already the ACTIVE current session, the gain is also
+	 * queued as classification-only evidence (SignalKind#STRUCTURED_LIVE_XP)
+	 * for this tick's batch, and is attached to the live display only after
+	 * that batch decides which session it belongs to (see
+	 * attachStructuredLiveXp()) -- so it never shows under the stale session
+	 * it is about to displace. Durable XP accounting is unchanged.
+	 * {@code absoluteXpAfter}: the skill's absolute XP with this gain (nullable).
+	 */
+	public synchronized void recordLiveXpDelta(String skillName, long delta, Long absoluteXpAfter)
+	{
+		recordLiveXpDeltaAt(skillName, delta, absoluteXpAfter, safeTickCount(), Instant.now());
+	}
+
+	/**
+	 * {@code tick}: the client tick the gain arrived on. Activation evidence
+	 * is only ever queued TICK-TAGGED (StatChanged is a client-thread event,
+	 * so in practice always): an untagged signal would wait for an
+	 * unconditional flush, which is exactly the delay this fixes -- so an
+	 * off-thread gain simply falls back to the display-only path.
+	 */
+	private void recordLiveXpDeltaAt(String skillName, long delta, Long absoluteXpAfter, Long tick, Instant observedAt)
+	{
+		if (delta > 0 && skillName != null && tick != null && isStructuredActivationEvidence(skillName))
+		{
+			pendingSignals.add(SessionSignal.structuredLiveXp(observedAt, skillName, delta, absoluteXpAfter).withGameTick(tick));
+			return;
+		}
 		Session current = engine.getCurrentSession();
 		String sessionId = current == null ? null : current.getSessionId();
 		liveXpTracker.recordDelta(sessionId, skillName, delta);
+		if (sessionId != null && skillName != null && delta > 0)
+		{
+			// Visible immediately: pending XP is part of the current snapshot.
+			notifyCurrentSessionChanged();
+		}
+	}
+
+	private boolean isStructuredActivationEvidence(String skill)
+	{
+		com.osrstelemetry.plugin.activity.StructuredActivityTracker tracker = classifierContext.getStructuredActivity();
+		com.osrstelemetry.plugin.activity.StructuredActivityDefinition armed = tracker.getDefinition();
+		if (armed == null || tracker.getPolicy() == com.osrstelemetry.plugin.activity.LocationPolicy.NON_EXCLUSIVE
+			|| !armed.isExpectedSkill(skill))
+		{
+			return false;
+		}
+		Session current = engine.getCurrentSession();
+		return current == null
+			|| current.getState() != SessionState.ACTIVE
+			|| !current.getActivityIdentity().equals(ActivitySignalClassifier.structuredActivityIdentity(armed));
+	}
+
+	/**
+	 * After a batch is resolved: every STRUCTURED_LIVE_XP gain in it joins
+	 * the live display of whatever session is now current. When that is a
+	 * structured session this very batch switched to, the session's exact
+	 * XP boundary is moved back to before the gain, so the durable window
+	 * credits it there (and the live pending is reconciled against it).
+	 */
+	private void attachStructuredLiveXp(List<SessionSignal> batch, Session preBatchCurrent)
+	{
+		Session current = engine.getCurrentSession();
+		if (current == null)
+		{
+			return;
+		}
+		boolean switchedThisBatch = preBatchCurrent == null || !preBatchCurrent.getSessionId().equals(current.getSessionId());
+		boolean structuredCurrent = current.getActivityIdentity().getActivityType() == ActivityType.STRUCTURED_ACTIVITY;
+		boolean attached = false;
+		for (SessionSignal signal : batch)
+		{
+			if (signal.getKind() != SignalKind.STRUCTURED_LIVE_XP || signal.getXpDelta() == null)
+			{
+				continue;
+			}
+			if (switchedThisBatch && structuredCurrent && signal.getXpNewValue() != null)
+			{
+				classifierContext.lowerXpAtSessionStart(current.getSessionId(), signal.getSkill(), signal.getXpNewValue() - signal.getXpDelta());
+			}
+			liveXpTracker.recordDelta(current.getSessionId(), signal.getSkill(), signal.getXpDelta());
+			attached = true;
+		}
+		if (attached)
+		{
+			visibleMutations++;
+		}
+	}
+
+	// =====================================================================
+	// PRESENTATION INVALIDATION (UI latency pass). Downstream, best effort:
+	// a listener only learns "the visible current session changed" and
+	// decides itself when to redraw. Nothing here depends on a listener
+	// existing or succeeding -- telemetry/session correctness never does.
+	// =====================================================================
+
+	private volatile Runnable currentSessionListener;
+
+	/**
+	 * Counts accepted mutations of the CURRENT session's visible aggregates
+	 * (metrics, Slayer assignment ledger); together with the session's
+	 * id/state/identity it forms {@link #visibleStamp()}, so a processed
+	 * batch that changed nothing a player can see (e.g. rejected off-task
+	 * loot) never notifies.
+	 */
+	private long visibleMutations;
+
+	/** Called (on whichever thread mutated state) when the visible current session changed. */
+	public void setCurrentSessionListener(Runnable listener)
+	{
+		this.currentSessionListener = listener;
+	}
+
+	/** Best-effort notification that a finalized session file reached disk (History). */
+	public void setFinalizedSessionListener(Runnable listener)
+	{
+		persistence.setFinalizedWriteListener(listener);
+	}
+
+	private String visibleStamp()
+	{
+		Session current = engine.getCurrentSession();
+		return current == null
+			? "none|" + currentAccountHash
+			: current.getSessionId() + '|' + current.getState() + '|' + current.getActivityIdentity() + '|' + visibleMutations;
+	}
+
+	private void notifyCurrentSessionChanged()
+	{
+		Runnable listener = currentSessionListener;
+		if (listener == null)
+		{
+			return;
+		}
+		try
+		{
+			listener.run();
+		}
+		catch (RuntimeException e)
+		{
+			log.debug("current-session listener failed; session state is unaffected", e);
+		}
 	}
 
 	/**
@@ -1168,6 +1706,16 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	 * duration, or an already-finalized record.
 	 */
 	public synchronized void reEvaluateCurrentSession(String currentNpcName, Integer currentNpcId, Instant now)
+	{
+		String before = visibleStamp();
+		reEvaluateCurrentSessionCore(currentNpcName, currentNpcId, beforePendingSignals(now));
+		if (!before.equals(visibleStamp()))
+		{
+			notifyCurrentSessionChanged();
+		}
+	}
+
+	private void reEvaluateCurrentSessionCore(String currentNpcName, Integer currentNpcId, Instant now)
 	{
 		if (currentAccountHash == NO_ACCOUNT)
 		{

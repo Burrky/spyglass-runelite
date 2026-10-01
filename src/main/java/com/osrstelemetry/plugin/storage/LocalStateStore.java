@@ -8,6 +8,7 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -71,13 +72,41 @@ public class LocalStateStore
 		{
 			return;
 		}
+		ExecutorService previous = writeExecutor;
 		writeExecutor = Executors.newSingleThreadExecutor(r ->
 		{
 			Thread t = new Thread(r, "osrs-telemetry-writer");
 			t.setDaemon(true);
 			return t;
 		});
+		if (previous != null && !previous.isTerminated())
+		{
+			// A re-enable right after a shutdown() whose drain outlived its
+			// window: the old writer may still hold queued writes. The new
+			// writer's first task waits for it (on the writer thread, never
+			// the caller's), so writes stay in submission order and two
+			// writers never share one .tmp file.
+			writeExecutor.submit(() -> awaitPreviousWriter(previous));
+		}
 	}
+
+	private static void awaitPreviousWriter(ExecutorService previous)
+	{
+		try
+		{
+			if (!previous.awaitTermination(PREVIOUS_WRITER_WAIT_SECONDS, TimeUnit.SECONDS))
+			{
+				log.warn("Previous LocalStateStore writer still draining after {}s; continuing", PREVIOUS_WRITER_WAIT_SECONDS);
+			}
+		}
+		catch (InterruptedException e)
+		{
+			// Same Plugin Hub rule as shutdown(): never re-assert interrupts.
+			log.warn("Interrupted while waiting for the previous LocalStateStore writer to drain");
+		}
+	}
+
+	private static final long PREVIOUS_WRITER_WAIT_SECONDS = 30;
 
 	public void write(Filepath target, Object document)
 	{
@@ -104,13 +133,64 @@ public class LocalStateStore
 		}
 
 		String json = gson.toJson(document);
-		executor.submit(() ->
+		try
 		{
-			if (writeNow(target, json))
+			executor.submit(() ->
 			{
-				onWritten.run();
-			}
-		});
+				if (writeNow(target, json))
+				{
+					onWritten.run();
+				}
+			});
+		}
+		catch (RejectedExecutionException e)
+		{
+			// shutdown() raced the check above: same outcome as a write after shutdown.
+			log.warn("write() raced LocalStateStore shutdown; dropping write to {}", target);
+		}
+	}
+
+	/**
+	 * Two dependent documents as ONE queued task: {@code first}, then --
+	 * only if it succeeded -- {@code second}, then {@code afterFirst}
+	 * (which runs once {@code first} is durable, even if {@code second}
+	 * fails). Both are serialized HERE, on the caller's thread, so a
+	 * document the caller keeps mutating is never read by the writer
+	 * thread, and nothing submitted later can land between the two.
+	 */
+	public void writeChained(Filepath first, Object firstDocument, Filepath second, Object secondDocument, Runnable afterFirst)
+	{
+		ExecutorService executor = this.writeExecutor;
+		if (executor == null || executor.isShutdown())
+		{
+			log.warn("writeChained() called while LocalStateStore is not started; dropping writes to {} and {}", first, second);
+			return;
+		}
+
+		String firstJson = gson.toJson(firstDocument);
+		String secondJson = gson.toJson(secondDocument);
+		try
+		{
+			executor.submit(() ->
+			{
+				if (!writeNow(first, firstJson))
+				{
+					return;
+				}
+				try
+				{
+					writeNow(second, secondJson);
+				}
+				finally
+				{
+					afterFirst.run();
+				}
+			});
+		}
+		catch (RejectedExecutionException e)
+		{
+			log.warn("writeChained() raced LocalStateStore shutdown; dropping writes to {} and {}", first, second);
+		}
 	}
 
 	/**
@@ -133,9 +213,9 @@ public class LocalStateStore
 		}
 
 		String json = gson.toJson(document);
-		java.util.concurrent.Future<Boolean> future = executor.submit(() -> writeNow(target, json));
 		try
 		{
+			java.util.concurrent.Future<Boolean> future = executor.submit(() -> writeNow(target, json));
 			return future.get(timeoutMs, TimeUnit.MILLISECONDS);
 		}
 		catch (Exception e)

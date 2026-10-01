@@ -100,6 +100,245 @@ public class SessionAggregates
 	 */
 	private Integer latestSlayerCurrentRemaining;
 
+	/**
+	 * SMART SLAYER. One Slayer session can span several assignments;
+	 * slayerProgressDelta and Slayer XP stay SESSION-wide totals. These
+	 * record both values when the CURRENT assignment was installed, so the
+	 * "~XP remaining" estimate uses this assignment's own units/XP only
+	 * (never blended across monsters). Both null = only one assignment so
+	 * far (including every older session file) -- the session totals are
+	 * then the assignment's own. Additive/nullable: old JSON loads unchanged.
+	 */
+	private Integer slayerAssignmentBaselineProgressDelta;
+	private Long slayerAssignmentBaselineSlayerXp;
+
+	/**
+	 * SMART SLAYER ASSIGNMENT LEDGER, oldest -&gt; newest; the LAST record is
+	 * the current assignment. Its loot items are a PARTITION of this
+	 * session's canonical {@link #lootDrops}, never an independent store:
+	 * every drop the session is credited with is also added to the last
+	 * record, so the records' items sum to the session-wide loot.
+	 *
+	 * Null/empty for non-Slayer sessions and every session file written
+	 * before this field existed. A Slayer session without one is
+	 * bootstrapped (SessionAggregateUpdater.ensureSlayerAssignmentLedger())
+	 * with one record seeded from ALL its existing loot -- exact, since
+	 * released sessions never spanned a task rollover. Item IDs/names/
+	 * quantities only; GP is priced at render time.
+	 */
+	private List<SlayerAssignmentRecord> slayerAssignments;
+
+	/**
+	 * STRUCTURED ACTIVITY: generic completion metric (games, chests, ...)
+	 * for a STRUCTURED_ACTIVITY session. Additive and nullable -- absent on
+	 * every other session and in every pre-existing JSON file. The label
+	 * ("Games") is not persisted; it comes from the activity registry.
+	 */
+	private ActivityCompletionCount activityCompletions;
+
+	/**
+	 * STRUCTURED ACTIVITY: session-summary stats an activity's own native
+	 * state supports (Tempoross: reward permits earned, final points of
+	 * fully observed games). Additive and nullable -- absent on every other
+	 * session and in every pre-existing JSON file. No transient game state
+	 * (energy / essence / storm / live points) is ever stored here.
+	 */
+	private ActivitySessionStats activityStats;
+
+	/**
+	 * Items this session's activity PRODUCED (confirmed production only --
+	 * e.g. GotR runes crafted at its altars), cumulative per item, first-
+	 * produced order. Never loot; never reduced by dropping or spending.
+	 * Additive/nullable: older sessions load with null.
+	 */
+	private List<ProducedItemAggregate> producedItems;
+
+	/**
+	 * One Slayer assignment INSTANCE within a session: its boundaries and
+	 * end reason, task-unit count, and the slices of the session's loot,
+	 * XP and active time it owns. {@code ordinal} is a 1-based sequence
+	 * unique within the session (never reused, never derived from the task
+	 * name) -- two consecutive assignments of the same task are two
+	 * instances. Fields from endReason on are additive/nullable: older
+	 * records load with them null and are treated conservatively.
+	 */
+	@Data
+	public static class SlayerAssignmentRecord
+	{
+		private int ordinal;
+		/** Player-facing task name (the assignment identity's display name). */
+		private String taskName;
+		/** The assignment's ActivityIdentity key (task@location, normalized). */
+		private String assignmentKey;
+		/** ISO-8601; when the authoritative ASSIGNED was observed. Null when bootstrapped mid-task. */
+		private String assignedAt;
+		/** Authoritative assigned amount when observed via ASSIGNED; null when bootstrapped mid-task. */
+		private Integer initialAmount;
+		/**
+		 * The game's own original size of this assignment (varp
+		 * SLAYER_COUNT_ORIGINAL adjusted by any quantity modifier, read
+		 * natively) -- ASSIGNMENT METADATA ONLY. Recorded for a bootstrapped
+		 * record, where Spyglass joined mid-task and initialAmount stays
+		 * null. Knowing the task was originally 180 does not mean Spyglass
+		 * observed the first 107 units: this is never used to derive
+		 * unitsCompleted, XP, active duration or any other session-owned
+		 * metric, never changes bootstrapped provenance, and never replaces
+		 * initialAmount (whose meaning, "amount when the ASSIGNED was
+		 * observed", is unchanged). Null when unknown and on older records.
+		 */
+		private Integer assignedInitialAmount;
+		/** Latest authoritative remaining for this assignment (0 = completed). */
+		private Integer latestRemaining;
+		/** ISO-8601; when a newer assignment superseded this one (completion or replacement). Null while current. */
+		private String endedAt;
+		/** True when created from existing session state rather than an observed ASSIGNED (mid-task start / legacy file). */
+		private boolean bootstrapped;
+		private List<LootItemAggregate> items = new ArrayList<>();
+
+		/**
+		 * How this assignment ended; null while current/in progress, and
+		 * for any assignment whose end Spyglass did not authoritatively
+		 * observe (session ended mid-task, legacy record). COMPLETED: the
+		 * authoritative completion path set remaining to 0. REPLACED_EARLY:
+		 * a genuinely new authoritative assignment replaced it while it
+		 * still had remaining &gt; 0 (shown to players as "Skipped").
+		 */
+		private SlayerAssignmentEndReason endReason;
+		/** ISO-8601; when the authoritative completion was observed. Null unless COMPLETED. */
+		private String completedAt;
+		/**
+		 * Authoritative Slayer task units Spyglass observed being consumed
+		 * while this was the session's current assignment (every
+		 * SLAYER_TASK_PROGRESS unit, plus the completion reconciliation of a
+		 * final unit RuneLite reports no trailing progress for). For a
+		 * fully observed assignment this equals initialAmount - remaining;
+		 * for one bootstrapped mid-task it counts only from Spyglass's own
+		 * observation onward -- never pre-observation progress. Null only on
+		 * legacy records.
+		 */
+		private Integer unitsCompleted;
+		/**
+		 * XP (per skill, same keys as SessionAggregates#xpGainedBySkill)
+		 * this session gained while this was the current, unfinished
+		 * assignment -- a non-destructive slice of the canonical session
+		 * XP, credited by each XP metric's own reference time (so a final
+		 * kill's XP whose window began before completion still counts, and
+		 * XP after completion/replacement never does). Null = not tracked
+		 * (legacy record; installed conservatively from 0 on load).
+		 */
+		private Map<String, Long> xpGainedBySkill;
+		/** Session accumulatedActiveDurationMillis when this assignment's XP/time tracking began. */
+		private Long activeDurationStartMillis;
+		/** Session accumulatedActiveDurationMillis when it ended (completion or replacement); null while current and unfinished. */
+		private Long activeDurationEndMillis;
+
+		/**
+		 * The Slayer master varbit value this assignment came from (1 Turael/Aya
+		 * ... 10 Mortimer), from the authoritative ASSIGNED, or -- for a record
+		 * Spyglass joined mid-task -- the first observed progress of the same
+		 * assignment. Null when unknown and on older records.
+		 */
+		private Integer masterId;
+		/**
+		 * Native Bracelet of slaughter / Expeditious bracelet activations
+		 * (the game's own chat confirmation) seen while this was the current
+		 * assignment. Null on older records = not tracked (never shown as 0).
+		 */
+		private Integer slaughterProcs;
+		private Integer expeditiousProcs;
+
+		/**
+		 * Kills Spyglass observed for this assignment: task units it saw
+		 * consumed, minus extra units an Expeditious bracelet consumed, plus
+		 * kills a Bracelet of slaughter kept from consuming a unit. Never
+		 * {@code initial - remaining}; subordinate NPCs that consume no unit
+		 * never count. Null when units are unknown (legacy) or when bracelet
+		 * tracking did not exist for this record (pre-tracking file: the
+		 * unit count alone cannot be called kills). Derived, not persisted.
+		 */
+		public Integer observedKills()
+		{
+			if (unitsCompleted == null || slaughterProcs == null || expeditiousProcs == null)
+			{
+				return null;
+			}
+			return Math.max(0, unitsCompleted - expeditiousProcs + slaughterProcs);
+		}
+
+		/**
+		 * The player-facing "xN": this record's own observed unit count; for a
+		 * legacy record without one, initialAmount - remaining when both are
+		 * authoritatively known (a fully observed assignment); otherwise null
+		 * (unknown -- no count is shown rather than a guess). Never negative.
+		 * Derived, not persisted (Gson serializes fields only).
+		 */
+		public Integer observedUnitsCompleted()
+		{
+			if (unitsCompleted != null)
+			{
+				return Math.max(0, unitsCompleted);
+			}
+			if (!bootstrapped && initialAmount != null && latestRemaining != null)
+			{
+				return Math.max(0, initialAmount - latestRemaining);
+			}
+			return null;
+		}
+	}
+
+	@Data
+	public static class ActivityCompletionCount
+	{
+		/** Structured activity key the count belongs to. */
+		private String activityKey;
+		/** Completions observed during this session (never fabricated). */
+		private int sessionCompletions;
+		/** The game's own latest running count, when the source carries one. */
+		private Integer latestAuthoritativeValue;
+	}
+
+	@Data
+	public static class ActivitySessionStats
+	{
+		/** Structured activity key the stats belong to. */
+		private String activityKey;
+		/** Native reward currency gained this session (sum of positive changes; spending never subtracts). */
+		private long currencyGained;
+		/**
+		 * Per-currency breakdown of currencyGained (e.g. GotR "elemental_points"
+		 * / "catalytic_points"), in first-earned order. Additive/nullable:
+		 * older sessions load with null and fall back to currencyGained.
+		 */
+		private java.util.Map<String, Long> currencyGainedByKey;
+		/** Completed games whose final score was trustworthy (observed from start); the Avg/Best population. */
+		private int scoredCompletions;
+		/** Sum of those games' final scores. */
+		private long scoreTotal;
+		/** Highest of those games' final scores, or null when none. */
+		private Integer bestScore;
+		/** The game's running count of the last scored completion (duplicate-evidence guard), or null. */
+		private Integer lastScoredCompletionCount;
+
+		/** Arithmetic mean over scoredCompletions, or null when there are none. */
+		public Long averageScore()
+		{
+			return scoredCompletions <= 0 ? null : Math.round(scoreTotal / (double) scoredCompletions);
+		}
+	}
+
+	/**
+	 * One item an activity PRODUCED this session (e.g. GotR runes crafted)
+	 * and its cumulative exact quantity. Output -- deliberately separate from
+	 * loot (LootDropGroup / LootItemAggregate), which is what was received.
+	 */
+	@Data
+	public static class ProducedItemAggregate
+	{
+		private Integer itemId;
+		private String itemName;
+		private long quantity;
+	}
+
 	@Data
 	public static class LootDropGroup
 	{

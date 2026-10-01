@@ -40,14 +40,29 @@ public final class SignalClassification
 	private final List<MetricUpdate> metricUpdates;
 	private final CompletionNature completionNature;
 	private final EvidenceStrength evidenceStrength;
+	/**
+	 * True only for loot the classifier explicitly REJECTED from the ACTIVE
+	 * session (Smart Slayer off-task KNOWN_MISMATCH). Still IGNORE_FOR_SESSION
+	 * for every other consumer; the flag exists so SessionSignalBatchResolver's
+	 * same-tick loot promotion -- meant for loot ignored because NO session
+	 * was ACTIVE -- never hands the drop back to that same session when
+	 * same-tick evidence (combat XP, task progress) makes it the batch winner.
+	 */
+	private final boolean ownershipRejected;
 
 	private SignalClassification(SignalDecisionKind decisionKind, ActivityIdentity identity, List<MetricUpdate> metricUpdates, CompletionNature completionNature, EvidenceStrength evidenceStrength)
+	{
+		this(decisionKind, identity, metricUpdates, completionNature, evidenceStrength, false);
+	}
+
+	private SignalClassification(SignalDecisionKind decisionKind, ActivityIdentity identity, List<MetricUpdate> metricUpdates, CompletionNature completionNature, EvidenceStrength evidenceStrength, boolean ownershipRejected)
 	{
 		this.decisionKind = decisionKind;
 		this.identity = identity;
 		this.metricUpdates = metricUpdates == null ? Collections.<MetricUpdate>emptyList() : metricUpdates;
 		this.completionNature = completionNature;
 		this.evidenceStrength = evidenceStrength;
+		this.ownershipRejected = ownershipRejected;
 	}
 
 	private static List<MetricUpdate> singleOrEmpty(MetricUpdate metricUpdate)
@@ -103,6 +118,12 @@ public final class SignalClassification
 		return new SignalClassification(SignalDecisionKind.IGNORE_FOR_SESSION, null, null, null, null);
 	}
 
+	/** IGNORE_FOR_SESSION that is an explicit ownership rejection -- see {@link #ownershipRejected}. */
+	static SignalClassification rejectOwnership()
+	{
+		return new SignalClassification(SignalDecisionKind.IGNORE_FOR_SESSION, null, null, null, null, true);
+	}
+
 	public SignalDecisionKind getDecisionKind()
 	{
 		return decisionKind;
@@ -119,6 +140,12 @@ public final class SignalClassification
 	}
 
 	/** Non-null exactly when getIdentity() is non-null -- see class/EvidenceStrength javadoc. */
+	/** See {@link #ownershipRejected}. */
+	public boolean isOwnershipRejected()
+	{
+		return ownershipRejected;
+	}
+
 	public EvidenceStrength getEvidenceStrength()
 	{
 		return evidenceStrength;

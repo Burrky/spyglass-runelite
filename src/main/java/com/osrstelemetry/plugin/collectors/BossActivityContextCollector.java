@@ -56,14 +56,8 @@ import net.runelite.client.eventbus.Subscribe;
  * ActivitySignalClassifier.decideCombatBranch()'s own exact-identity-
  * match fast path -- not merely for the very first encounter.
  *
- * NO PLAYER-FACING TOGGLE: unlike some other collectors in this
- * project (e.g. NpcDeathCollector/collectNpcDeaths(),
- * ServerNpcLootCollector/collectLoot()), this collector runs
- * unconditionally whenever the plugin/session runtime is enabled --
- * there is deliberately no collectBossActivityContext() config item.
- * This project's architecture does not expose a per-signal collection
- * toggle for this signal; the earlier config toggle and its check here
- * were removed (see PR history for the fix).
+ * Like every collector, runs unconditionally while the plugin is enabled
+ * (see OsrsTelemetryConfig).
  */
 public class BossActivityContextCollector
 {

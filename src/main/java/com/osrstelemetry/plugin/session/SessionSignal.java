@@ -114,6 +114,24 @@ public final class SessionSignal
 	private final Integer npcId;
 	private final String npcName;
 
+	/** Structured-activity key for the STRUCTURED_* kinds (null = outside, for a location signal). */
+	private final String structuredActivityKey;
+	/** Template region id of a STRUCTURED_ACTIVITY_LOCATION signal. */
+	private final Integer regionId;
+	/**
+	 * SLAYER_TASK_COMPLETED only: the task was cleared WITHOUT being
+	 * finished (cancelled/blocked for points) -- see
+	 * EventPayloads.SlayerTaskCompleted#cancelled. False otherwise.
+	 */
+	private final boolean slayerTaskCancelled;
+	/**
+	 * STRUCTURED_ACTIVITY_SCORE: the game's final score (null = unknown).
+	 * STRUCTURED_ACTIVITY_CURRENCY: the positive amount gained.
+	 */
+	private final Long activityAmount;
+	/** STRUCTURED_ACTIVITY_SCORE only: the game was observed from its start (see TemporossGameTracker). */
+	private final boolean activityAmountTrusted;
+
 	private SessionSignal(
 		SignalKind kind,
 		Instant observedAt,
@@ -131,7 +149,38 @@ public final class SessionSignal
 		Integer npcId,
 		String npcName,
 		Instant xpWindowStart,
-		Long xpNewValue)
+		Long xpNewValue,
+		String structuredActivityKey,
+		Integer regionId)
+	{
+		this(kind, observedAt, skill, xpDelta, slayerTaskName, slayerTaskLocation, slayerUnitsConsumed, slayerInitialAmount,
+			bossOrActivitySource, reliableCount, lootDrops, gameTick, slayerCurrentRemaining, npcId, npcName, xpWindowStart,
+			xpNewValue, structuredActivityKey, regionId, false, null, false);
+	}
+
+	private SessionSignal(
+		SignalKind kind,
+		Instant observedAt,
+		String skill,
+		Long xpDelta,
+		String slayerTaskName,
+		String slayerTaskLocation,
+		Integer slayerUnitsConsumed,
+		Integer slayerInitialAmount,
+		String bossOrActivitySource,
+		Integer reliableCount,
+		List<LootDrop> lootDrops,
+		Long gameTick,
+		Integer slayerCurrentRemaining,
+		Integer npcId,
+		String npcName,
+		Instant xpWindowStart,
+		Long xpNewValue,
+		String structuredActivityKey,
+		Integer regionId,
+		boolean slayerTaskCancelled,
+		Long activityAmount,
+		boolean activityAmountTrusted)
 	{
 		this.kind = Objects.requireNonNull(kind, "kind");
 		this.observedAt = Objects.requireNonNull(observedAt, "observedAt");
@@ -150,6 +199,11 @@ public final class SessionSignal
 		this.npcName = npcName;
 		this.xpWindowStart = xpWindowStart;
 		this.xpNewValue = xpNewValue;
+		this.structuredActivityKey = structuredActivityKey;
+		this.regionId = regionId;
+		this.slayerTaskCancelled = slayerTaskCancelled;
+		this.activityAmount = activityAmount;
+		this.activityAmountTrusted = activityAmountTrusted;
 	}
 
 	public static SessionSignal xpChange(Instant observedAt, String skill, long xpDelta)
@@ -182,12 +236,12 @@ public final class SessionSignal
 	 */
 	public static SessionSignal xpChange(Instant observedAt, String skill, long xpDelta, Instant windowStart, Long newXpValue)
 	{
-		return new SessionSignal(SignalKind.XP_CHANGE, observedAt, skill, xpDelta, null, null, null, null, null, null, null, null, null, null, null, windowStart, newXpValue);
+		return new SessionSignal(SignalKind.XP_CHANGE, observedAt, skill, xpDelta, null, null, null, null, null, null, null, null, null, null, null, windowStart, newXpValue, null, null);
 	}
 
 	public static SessionSignal slayerTaskAssigned(Instant observedAt, String taskName, String taskLocation, Integer initialAmount)
 	{
-		return new SessionSignal(SignalKind.SLAYER_TASK_ASSIGNED, observedAt, null, null, taskName, taskLocation, null, initialAmount, null, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.SLAYER_TASK_ASSIGNED, observedAt, null, null, taskName, taskLocation, null, initialAmount, null, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	/**
@@ -219,17 +273,71 @@ public final class SessionSignal
 	 */
 	public static SessionSignal slayerTaskProgress(Instant observedAt, String taskName, String taskLocation, int unitsConsumed, Integer currentRemaining)
 	{
-		return new SessionSignal(SignalKind.SLAYER_TASK_PROGRESS, observedAt, null, null, taskName, taskLocation, unitsConsumed, null, null, null, null, null, currentRemaining, null, null, null, null);
+		return slayerTaskProgress(observedAt, taskName, taskLocation, unitsConsumed, currentRemaining, null);
+	}
+
+	/**
+	 * ADDITIVE overload also carrying the task's native original size
+	 * (SLAYER_COUNT_ORIGINAL +/- modifier) as ASSIGNMENT METADATA only --
+	 * read solely to fill SlayerAssignmentRecord#assignedInitialAmount on a
+	 * bootstrapped record. Never used for units, XP, timing or lifecycle;
+	 * null when not yet known.
+	 */
+	public static SessionSignal slayerTaskProgress(Instant observedAt, String taskName, String taskLocation, int unitsConsumed,
+		Integer currentRemaining, Integer nativeInitialAmount)
+	{
+		return new SessionSignal(SignalKind.SLAYER_TASK_PROGRESS, observedAt, null, null, taskName, taskLocation, unitsConsumed, nativeInitialAmount, null, null, null, null, currentRemaining, null, null, null, null, null, null);
+	}
+
+	/**
+	 * Progress plus the master varbit at that observation (assignment
+	 * METADATA, never identity). Carried in the reliableCount slot, which
+	 * no Slayer signal otherwise uses -- read it only via getSlayerMasterId().
+	 */
+	public static SessionSignal slayerTaskProgress(Instant observedAt, String taskName, String taskLocation, int unitsConsumed,
+		Integer currentRemaining, Integer nativeInitialAmount, Integer masterId)
+	{
+		return new SessionSignal(SignalKind.SLAYER_TASK_PROGRESS, observedAt, null, null, taskName, taskLocation, unitsConsumed, nativeInitialAmount, null, masterId, null, null, currentRemaining, null, null, null, null, null, null);
+	}
+
+	/** Assignment plus its master varbit (metadata; see the masterId overload of slayerTaskProgress). */
+	public static SessionSignal slayerTaskAssigned(Instant observedAt, String taskName, String taskLocation, Integer initialAmount, Integer masterId)
+	{
+		return new SessionSignal(SignalKind.SLAYER_TASK_ASSIGNED, observedAt, null, null, taskName, taskLocation, null, initialAmount, null, masterId, null, null, null, null, null, null, null, null, null);
+	}
+
+	/** Native bracelet activation; `effect` is "SLAUGHTER" or "EXPEDITIOUS" (carried in the source slot). */
+	public static SessionSignal slayerBraceletEffect(Instant observedAt, String effect)
+	{
+		return new SessionSignal(SignalKind.SLAYER_BRACELET_EFFECT, observedAt, null, null, null, null, null, null, effect, null, null, null, null, null, null, null, null, null, null);
+	}
+
+	/** SLAYER_TASK_ASSIGNED / SLAYER_TASK_PROGRESS: the Slayer master varbit, or null. */
+	public Integer getSlayerMasterId()
+	{
+		return kind == SignalKind.SLAYER_TASK_ASSIGNED || kind == SignalKind.SLAYER_TASK_PROGRESS ? reliableCount : null;
+	}
+
+	/** SLAYER_BRACELET_EFFECT: "SLAUGHTER" / "EXPEDITIOUS", else null. */
+	public String getSlayerBraceletEffect()
+	{
+		return kind == SignalKind.SLAYER_BRACELET_EFFECT ? bossOrActivitySource : null;
 	}
 
 	public static SessionSignal slayerTaskCompleted(Instant observedAt, String taskName, String taskLocation)
 	{
-		return new SessionSignal(SignalKind.SLAYER_TASK_COMPLETED, observedAt, null, null, taskName, taskLocation, null, null, null, null, null, null, null, null, null, null, null);
+		return slayerTaskCompleted(observedAt, taskName, taskLocation, false);
+	}
+
+	/** {@code cancelled}: the task was cleared without being finished -- see {@link #isSlayerTaskCancelled()}. */
+	public static SessionSignal slayerTaskCompleted(Instant observedAt, String taskName, String taskLocation, boolean cancelled)
+	{
+		return new SessionSignal(SignalKind.SLAYER_TASK_COMPLETED, observedAt, null, null, taskName, taskLocation, null, null, null, null, null, null, null, null, null, null, null, null, null, cancelled, null, false);
 	}
 
 	public static SessionSignal bossKill(Instant observedAt, String bossName, int reliableCount)
 	{
-		return new SessionSignal(SignalKind.BOSS_KILL, observedAt, null, null, null, null, null, null, bossName, reliableCount, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.BOSS_KILL, observedAt, null, null, null, null, null, null, bossName, reliableCount, null, null, null, null, null, null, null, null, null);
 	}
 
 	/**
@@ -243,7 +351,7 @@ public final class SessionSignal
 	 */
 	public static SessionSignal bossActivityContext(Instant observedAt, String bossName)
 	{
-		return new SessionSignal(SignalKind.BOSS_ACTIVITY_CONTEXT, observedAt, null, null, null, null, null, null, bossName, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.BOSS_ACTIVITY_CONTEXT, observedAt, null, null, null, null, null, null, bossName, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	/**
@@ -258,7 +366,7 @@ public final class SessionSignal
 	 */
 	public static SessionSignal npcInteractionTarget(Instant observedAt, Integer npcId, String npcName)
 	{
-		return new SessionSignal(SignalKind.NPC_INTERACTION_TARGET, observedAt, null, null, null, null, null, null, null, null, null, null, null, npcId, npcName, null, null);
+		return new SessionSignal(SignalKind.NPC_INTERACTION_TARGET, observedAt, null, null, null, null, null, null, null, null, null, null, null, npcId, npcName, null, null, null, null);
 	}
 
 	/**
@@ -269,54 +377,89 @@ public final class SessionSignal
 	 * getXpDelta() always returns null for this kind, structurally
 	 * preventing this signal from ever carrying an XP value.
 	 */
+	/**
+	 * See SignalKind#STRUCTURED_LIVE_XP. {@code delta} and {@code xpAfter}
+	 * (absolute XP once this gain landed; nullable) are carried only so the
+	 * coordinator can attach the gain to the live display and place the
+	 * new session's exact XP boundary -- never applied as a metric.
+	 */
+	public static SessionSignal structuredLiveXp(Instant observedAt, String skill, long delta, Long xpAfter)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_LIVE_XP, observedAt, skill, delta, null, null, null, null, null, null, null, null, null, null, null, null, xpAfter, null, null);
+	}
+
 	public static SessionSignal rawCombatXpObserved(Instant observedAt, String skill)
 	{
-		return new SessionSignal(SignalKind.RAW_COMBAT_XP_OBSERVED, observedAt, skill, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.RAW_COMBAT_XP_OBSERVED, observedAt, skill, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal raidCompletion(Instant observedAt, String activityName)
 	{
-		return new SessionSignal(SignalKind.RAID_COMPLETION, observedAt, null, null, null, null, null, null, activityName, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.RAID_COMPLETION, observedAt, null, null, null, null, null, null, activityName, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal activityCompletion(Instant observedAt, String activityName)
 	{
-		return new SessionSignal(SignalKind.ACTIVITY_COMPLETION, observedAt, null, null, null, null, null, null, activityName, null, null, null, null, null, null, null, null);
+		return activityCompletion(observedAt, activityName, null);
+	}
+
+	/** completionCount: the game's own running count from the chat message, when known. */
+	public static SessionSignal activityCompletion(Instant observedAt, String activityName, Integer completionCount)
+	{
+		return new SessionSignal(SignalKind.ACTIVITY_COMPLETION, observedAt, null, null, null, null, null, null, activityName, completionCount, null, null, null, null, null, null, null, null, null);
+	}
+
+	/** Entered ({@code activityKey != null}) or left a structured-activity location. Context only. */
+	public static SessionSignal structuredActivityLocation(Instant observedAt, String activityKey, int regionId)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_LOCATION, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, activityKey, regionId);
+	}
+
+	/** One completion from an activity's own chat pattern; completionCount is the game's running count, or null. */
+	public static SessionSignal structuredActivityCompletion(Instant observedAt, String activityKey, Integer completionCount)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_COMPLETION, observedAt, null, null, null, null, null, null, null, completionCount, null, null, null, null, null, null, null, activityKey, null);
+	}
+
+	/** One claim of a structured reward source; rewardSourceKey is its canonical key (StructuredRewardSource#getKey). */
+	public static SessionSignal structuredReward(Instant observedAt, String activityKey, String rewardSourceKey, List<LootDrop> drops)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_REWARD, observedAt, null, null, null, null, null, null, rewardSourceKey, null, drops, null, null, null, null, null, null, activityKey, null);
 	}
 
 	public static SessionSignal questCompleted(Instant observedAt, String questName)
 	{
-		return new SessionSignal(SignalKind.QUEST_COMPLETED, observedAt, null, null, null, null, null, null, questName, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.QUEST_COMPLETED, observedAt, null, null, null, null, null, null, questName, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal npcDeath(Instant observedAt)
 	{
-		return new SessionSignal(SignalKind.NPC_DEATH, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.NPC_DEATH, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal npcLootAttributed(Instant observedAt)
 	{
-		return new SessionSignal(SignalKind.NPC_LOOT_ATTRIBUTED, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.NPC_LOOT_ATTRIBUTED, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal serverNpcLoot(Instant observedAt, String sourceName, List<LootDrop> drops)
 	{
-		return new SessionSignal(SignalKind.SERVER_NPC_LOOT, observedAt, null, null, null, null, null, null, sourceName, null, drops, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.SERVER_NPC_LOOT, observedAt, null, null, null, null, null, null, sourceName, null, drops, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal collectionLogNewItem(Instant observedAt, String itemName)
 	{
-		return new SessionSignal(SignalKind.COLLECTION_LOG_NEW_ITEM, observedAt, null, null, null, null, null, null, itemName, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.COLLECTION_LOG_NEW_ITEM, observedAt, null, null, null, null, null, null, itemName, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal combatAchievementCompleted(Instant observedAt, String achievementName)
 	{
-		return new SessionSignal(SignalKind.COMBAT_ACHIEVEMENT_COMPLETED, observedAt, null, null, null, null, null, null, achievementName, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.COMBAT_ACHIEVEMENT_COMPLETED, observedAt, null, null, null, null, null, null, achievementName, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	public static SessionSignal storageSnapshot(Instant observedAt)
 	{
-		return new SessionSignal(SignalKind.STORAGE_SNAPSHOT, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+		return new SessionSignal(SignalKind.STORAGE_SNAPSHOT, observedAt, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 	}
 
 	/**
@@ -331,7 +474,67 @@ public final class SessionSignal
 		return new SessionSignal(
 			kind, observedAt, skill, xpDelta, slayerTaskName, slayerTaskLocation, slayerUnitsConsumed,
 			slayerInitialAmount, bossOrActivitySource, reliableCount, lootDrops, gameTick, slayerCurrentRemaining,
-			npcId, npcName, xpWindowStart, xpNewValue);
+			npcId, npcName, xpWindowStart, xpNewValue, structuredActivityKey, regionId, slayerTaskCancelled,
+			activityAmount, activityAmountTrusted);
+	}
+
+	/** See SignalKind#STRUCTURED_ACTIVITY_SCORE. completionCount: the game's running count (dedupe), or null. */
+	public static SessionSignal structuredActivityScore(Instant observedAt, String activityKey, Integer completionCount,
+		Integer score, boolean observedFromStart)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_SCORE, observedAt, null, null, null, null, null, null, null,
+			completionCount, null, null, null, null, null, null, null, activityKey, null, false,
+			score == null ? null : (long) score, observedFromStart);
+	}
+
+	/** See SignalKind#STRUCTURED_ACTIVITY_CURRENCY. {@code gained} &gt; 0. */
+	public static SessionSignal structuredActivityCurrency(Instant observedAt, String activityKey, long gained)
+	{
+		return structuredActivityCurrency(observedAt, activityKey, null, gained);
+	}
+
+	/**
+	 * See SignalKind#STRUCTURED_ACTIVITY_CURRENCY. {@code currencyKey}
+	 * identifies which of the activity's currencies (null = its only one);
+	 * carried in the source-string slot, read via {@link #getActivityCurrencyKey()}.
+	 */
+	public static SessionSignal structuredActivityCurrency(Instant observedAt, String activityKey, String currencyKey, long gained)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_CURRENCY, observedAt, null, null, null, null, null, null, currencyKey,
+			null, null, null, null, null, null, null, null, activityKey, null, false, gained, false);
+	}
+
+	/**
+	 * See SignalKind#STRUCTURED_ACTIVITY_PRODUCTION. The produced items ride
+	 * in the item-list slot, read via {@link #getProducedItems()} -- they are
+	 * output, and no loot path ever reads this kind.
+	 */
+	public static SessionSignal structuredActivityProduction(Instant observedAt, String activityKey, List<LootDrop> producedItems)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_PRODUCTION, observedAt, null, null, null, null, null, null, null,
+			null, producedItems, null, null, null, null, null, null, activityKey, null, false, null, false);
+	}
+
+	/** STRUCTURED_ACTIVITY_CURRENCY only: which currency (null = the activity's single currency). */
+	public String getActivityCurrencyKey()
+	{
+		return kind == SignalKind.STRUCTURED_ACTIVITY_CURRENCY ? bossOrActivitySource : null;
+	}
+
+	/** STRUCTURED_ACTIVITY_PRODUCTION only: the produced items (id, name, exact quantity). */
+	public List<LootDrop> getProducedItems()
+	{
+		return kind == SignalKind.STRUCTURED_ACTIVITY_PRODUCTION ? lootDrops : null;
+	}
+
+	public Long getActivityAmount()
+	{
+		return activityAmount;
+	}
+
+	public boolean isActivityAmountTrusted()
+	{
+		return activityAmountTrusted;
 	}
 
 	public SignalKind getKind()
@@ -347,6 +550,21 @@ public final class SessionSignal
 	public Long getGameTick()
 	{
 		return gameTick;
+	}
+
+	public String getStructuredActivityKey()
+	{
+		return structuredActivityKey;
+	}
+
+	public Integer getRegionId()
+	{
+		return regionId;
+	}
+
+	public boolean isSlayerTaskCancelled()
+	{
+		return slayerTaskCancelled;
 	}
 
 	public String getSkill()

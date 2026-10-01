@@ -331,14 +331,12 @@ public class ServerNpcLootCollectorTest
 		assertFalse(ServerNpcLootCollector.isPickpocketMessage("You have a funny feeling like you're being followed."));
 	}
 
-	// --- 17. config gating enforced by construction (documented, see class javadoc) ---
+	// --- 17. no config gating (core telemetry is not user-configurable) ---
 	//
-	// onChatMessage()/onServerNpcLoot() both check config.collectLoot()
-	// as their very first statement (mirroring LootCollector's identical
-	// pattern) — not independently unit-testable without mocking
-	// RuneLite's Client/EventBus/OsrsTelemetryConfig, which this project
-	// deliberately avoids for tests (see LootCollectorTest's identical
-	// "architectural, not unit-testable in isolation" notes).
+	// onChatMessage()/onServerNpcLoot() run unconditionally while the
+	// plugin is enabled: this collector has no OsrsTelemetryConfig
+	// dependency at all -- enforced structurally by
+	// CoreTelemetryCollectionNotConfigurableTest.
 
 	// --- 18/19. no dependency on NPC_DEATH or NPC_LOOT_ATTRIBUTED ---
 	//

@@ -1421,6 +1421,123 @@ public final class SessionLifecycleEngine
 	}
 
 	/**
+	 * SMART SLAYER TASK STATE -- which retained Slayer session an
+	 * authoritative assignment change was applied to, if any. See
+	 * {@link #reassignSlayerTask}.
+	 */
+	public static final class SlayerAssignmentUpdate
+	{
+		private static final SlayerAssignmentUpdate NONE = new SlayerAssignmentUpdate(null, false, false, null);
+
+		private final Session target;
+		private final boolean targetIsCurrent;
+		private final boolean identityChanged;
+		private final ActivityIdentity previousAssignment;
+
+		private SlayerAssignmentUpdate(Session target, boolean targetIsCurrent, boolean identityChanged, ActivityIdentity previousAssignment)
+		{
+			this.target = target;
+			this.targetIsCurrent = targetIsCurrent;
+			this.identityChanged = identityChanged;
+			this.previousAssignment = previousAssignment;
+		}
+
+		/** The target's assignment identity BEFORE this update (e.g. to bootstrap a pre-ledger session's first instance). */
+		public ActivityIdentity getPreviousAssignment()
+		{
+			return previousAssignment;
+		}
+
+		/** The retained Slayer session now carrying the new assignment, or null (nothing eligible -- no-op). */
+		public Session getTarget()
+		{
+			return target;
+		}
+
+		/** True: target is `current`. False: target is the parked interrupted candidate. */
+		public boolean isTargetCurrent()
+		{
+			return targetIsCurrent;
+		}
+
+		/** False when the target already carried exactly this assignment (idempotent re-observation). */
+		public boolean isIdentityChanged()
+		{
+			return identityChanged;
+		}
+	}
+
+	/**
+	 * SMART SLAYER TASK STATE. A Slayer session's ActivityIdentity names
+	 * its CURRENT ASSIGNMENT (task + location -- what classification,
+	 * task-family and boss-affinity logic key on); the session's own
+	 * lifecycle identity is its sessionId. One broader Slayer session may
+	 * legitimately span several assignments (task complete -> new task
+	 * from a master, or a direct task replacement/skip), so an
+	 * authoritative assignment change RE-KEYS the retained session in
+	 * place -- the same in-place identity mutation refineIdentity()
+	 * already performs -- and is never a switch: no finalize, no new
+	 * sessionId, no startedAt/duration/aggregate reset.
+	 *
+	 * An assignment is TASK STATE, never activity evidence, so unlike
+	 * refineIdentity() this deliberately does NOT heartbeat: no
+	 * lastActiveAt/duration change, no SUSPENDED-&gt;ACTIVE resume, no
+	 * new session when none is retained, and it never touches a
+	 * non-Slayer session (a task refresh can never steal ownership from
+	 * Crafting etc.). Ownership still comes only from ordinary activity
+	 * evidence through onQualifyingActivity()/refineIdentity().
+	 *
+	 * Eligible target, in priority order:
+	 * 1. `current`, when it is a SLAYER session that is ACTIVE, or
+	 *    SUSPENDED still inside its own resume window as of observedAt;
+	 * 2. otherwise -- only when `current` is not a Slayer session at all
+	 *    -- the ONE parked interrupted candidate, when it is a SLAYER
+	 *    session still inside its own interrupted window. Re-keying it
+	 *    does not resume it; it only means a genuine return to Slayer on
+	 *    the new task (real activity evidence, inside the SAME unchanged
+	 *    window) is recognized as a return to that same broader Slayer
+	 *    session, exactly like any other A -&gt; brief B -&gt; A.
+	 * Anything else (no Slayer session retained, window already elapsed)
+	 * is a no-op.
+	 */
+	public SlayerAssignmentUpdate reassignSlayerTask(ActivityIdentity newAssignment, Instant observedAt)
+	{
+		if (newAssignment == null || newAssignment.getActivityType() != ActivityType.SLAYER)
+		{
+			return SlayerAssignmentUpdate.NONE;
+		}
+
+		if (current != null && current.getActivityIdentity().getActivityType() == ActivityType.SLAYER)
+		{
+			boolean retained = current.getState() == SessionState.ACTIVE
+				|| (current.getState() == SessionState.SUSPENDED
+					&& current.resumeWindowExpiresAtInstant() != null
+					&& !observedAt.isAfter(current.resumeWindowExpiresAtInstant()));
+			if (!retained)
+			{
+				return SlayerAssignmentUpdate.NONE;
+			}
+			ActivityIdentity previous = current.getActivityIdentity();
+			boolean changed = !newAssignment.equals(previous);
+			current.setActivityIdentity(newAssignment);
+			return new SlayerAssignmentUpdate(current, true, changed, previous);
+		}
+
+		if (interruptedCandidate != null
+			&& interruptedCandidate.getActivityIdentity().getActivityType() == ActivityType.SLAYER
+			&& interruptedCandidateExpiresAt != null
+			&& !observedAt.isAfter(interruptedCandidateExpiresAt))
+		{
+			ActivityIdentity previous = interruptedCandidate.getActivityIdentity();
+			boolean changed = !newAssignment.equals(previous);
+			interruptedCandidate.setActivityIdentity(newAssignment);
+			return new SlayerAssignmentUpdate(interruptedCandidate, false, changed, previous);
+		}
+
+		return SlayerAssignmentUpdate.NONE;
+	}
+
+	/**
 	 * Also carries this signal
 	 * batch's own MetricUpdates. Changes an ACTIVE or SUSPENDED
 	 * session's ActivityIdentity to a new, classifier-approved identity

@@ -13,6 +13,7 @@ import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -55,9 +56,15 @@ public class SessionLoadoutBackwardCompatibilityTest
 	private LocalStateStore store;
 	private SessionPersistence persistence;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
-	public void setUp()
+	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("session-loadout-compat-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir(TEST_ACCOUNT_HASH);
 		store = new LocalStateStore(GSON);
 		store.start();
@@ -65,10 +72,11 @@ public class SessionLoadoutBackwardCompatibilityTest
 	}
 
 	@After
-	public void tearDown()
+	public void tearDown() throws Exception
 	{
 		store.shutdown();
 		deleteAccountDir(TEST_ACCOUNT_HASH);
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private static void deleteAccountDir(long accountHash)

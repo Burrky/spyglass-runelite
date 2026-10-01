@@ -6,8 +6,6 @@ import com.osrstelemetry.plugin.events.EventType;
 import com.osrstelemetry.plugin.events.TelemetryEventListener;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,27 +51,21 @@ import lombok.extern.slf4j.Slf4j;
  * an EDT poll mid-rebuild simply sees a partially-populated, still
  * internally-consistent snapshot, never a torn/corrupted one.
  *
- * LIVE UPDATES: {@link #onEvent} applies every {@code SERVER_NPC_LOOT}
- * event directly to the CURRENT index (the same one
+ * LIVE UPDATES: {@link #onEvent} applies every canonical loot event --
+ * {@code SERVER_NPC_LOOT} and {@code STRUCTURED_REWARD} (see
+ * {@link LootTrackerEvents}) -- directly to the CURRENT index (the same one
  * {@code ensureAccountLoaded()} installed/is populating), with no file
  * IO of its own -- cheap enough to run synchronously on whatever thread
  * {@code EventLedger} calls listeners from (normally the RuneLite
  * client thread), matching every other lightweight listener in this
  * project.
  *
- * SYNTHETIC eventId FOR LIVE RECORDS: {@code TelemetryEventListener.onEvent()}
- * does not currently pass the durable envelope's own eventId through to
- * listeners (see that interface's javadoc) -- this class assigns a
- * fresh, process-local {@code UUID} per live record instead. This is
- * safe because {@code EventLedger} calls every listener exactly once
- * per real {@code append()} (never replayed, never retried in-process
- * -- see EventLedger's own javadoc), so a live record can never need
- * dedup against ANOTHER live record; the only place real eventId-based
- * dedup matters is the durable rebuild reading actual envelope eventIds
- * back off disk (see LootTrackerPersistence), which this class never
- * interferes with because rebuild-for-account-N always completes (or is
- * in early, exclusively-background-thread progress) before any live
- * event for account N could plausibly be produced by actual gameplay.
+ * CANONICAL eventId END TO END: EventLedger passes each listener the
+ * durable envelope's own eventId, and live records use it -- the same id
+ * the rebuild reads back off disk -- so an event delivered live while an
+ * account-load rebuild is also reading it from events.jsonl is applied
+ * once ({@link LootTrackerIndex}'s eventId dedup). A synthetic UUID is
+ * used only by a direct caller with no envelope id.
  */
 @Slf4j
 @Singleton
@@ -150,9 +142,11 @@ public final class LootTrackerCoordinator implements TelemetryEventListener
 			return;
 		}
 
-		currentAccountHash = accountHash;
+		// Index first, then the account: a live event for the new account
+		// that passes onEvent's account check can only see the new index.
 		LootTrackerIndex fresh = new LootTrackerIndex();
 		index = fresh;
+		currentAccountHash = accountHash;
 
 		ExecutorService executor = this.rebuildExecutor;
 		if (executor == null || executor.isShutdown())
@@ -165,30 +159,82 @@ public final class LootTrackerCoordinator implements TelemetryEventListener
 		{
 			int applied = persistence.rebuild(accountHash, fresh, cutoff);
 			log.debug("Loot Tracker rebuild for account {} applied {} record(s)", accountHash, applied);
+			notifyChanged();
 		});
+		notifyChanged();
 	}
 
 	@Override
 	public void onEvent(long accountHash, EventType type, Object payload, Instant observedAt)
 	{
-		if (type != EventType.SERVER_NPC_LOOT || !(payload instanceof EventPayloads.ServerNpcLoot))
+		onEvent(accountHash, type, payload, observedAt, null);
+	}
+
+	/**
+	 * Live path. Records carry the durable envelope's own eventId (EventLedger
+	 * passes it), so a live record and the same event read back by a
+	 * concurrent account-load rebuild dedupe to one; a synthetic id is used
+	 * only when a caller has no envelope id.
+	 *
+	 * Canonical inputs: SERVER_NPC_LOOT (NPC loot) and STRUCTURED_REWARD
+	 * (structured activity reward claims). Both are raw telemetry, consumed
+	 * independently of Current Session: a reward the session declines to own
+	 * is still recorded here, exactly once.
+	 */
+	@Override
+	public void onEvent(long accountHash, EventType type, Object payload, Instant observedAt, String eventId)
+	{
+		if (accountHash != currentAccountHash)
+		{
+			// Another account's event (an account switch in flight): it is in
+			// that account's events.jsonl and is picked up by its own rebuild;
+			// it must never land in this account's index.
+			return;
+		}
+		String id = eventId != null ? eventId : UUID.randomUUID().toString();
+		LootTrackerRecord record = null;
+		if (type == EventType.SERVER_NPC_LOOT && payload instanceof EventPayloads.ServerNpcLoot)
+		{
+			record = LootTrackerEvents.fromServerNpcLoot(id, (EventPayloads.ServerNpcLoot) payload, observedAt);
+		}
+		else if (type == EventType.STRUCTURED_REWARD && payload instanceof EventPayloads.StructuredReward)
+		{
+			record = LootTrackerEvents.fromStructuredReward(id, (EventPayloads.StructuredReward) payload, observedAt);
+		}
+		if (record != null && index.apply(record))
+		{
+			notifyChanged();
+		}
+	}
+
+	private volatile Runnable changeListener;
+
+	/**
+	 * Best-effort, downstream notification that the index changed (a live
+	 * record applied, an account switch, a rebuild finished). Called on
+	 * whichever thread made the change; must be cheap. The index never
+	 * depends on a listener existing or succeeding.
+	 */
+	public void setChangeListener(Runnable listener)
+	{
+		this.changeListener = listener;
+	}
+
+	private void notifyChanged()
+	{
+		Runnable listener = changeListener;
+		if (listener == null)
 		{
 			return;
 		}
-
-		EventPayloads.ServerNpcLoot loot = (EventPayloads.ServerNpcLoot) payload;
-		List<LootTrackerItem> items = new ArrayList<>();
-		if (loot.getItems() != null)
+		try
 		{
-			for (EventPayloads.ServerNpcLootItem item : loot.getItems())
-			{
-				items.add(new LootTrackerItem(item.getItemId(), item.getItemName(), item.getQuantity()));
-			}
+			listener.run();
 		}
-
-		LootTrackerRecord record = new LootTrackerRecord(
-			UUID.randomUUID().toString(), loot.getSourceName(), loot.getSourceId(), observedAt, items);
-		index.apply(record);
+		catch (RuntimeException e)
+		{
+			log.debug("Loot Tracker change listener failed; the index is unaffected", e);
+		}
 	}
 
 	/** The current account's live index -- see class javadoc for why this reference can change on an account switch. */

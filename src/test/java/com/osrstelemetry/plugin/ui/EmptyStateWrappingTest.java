@@ -137,7 +137,7 @@ public class EmptyStateWrappingTest
 	@Test
 	public void lootTabEmptyStates_stayInsideSidebar_atRepresentativeWidths()
 	{
-		for (String message : new String[] {"No loot recorded yet.", "No favorited sources yet.", "No items match your search."})
+		for (String message : new String[] {LootTrackerView.EMPTY_NO_LOOT, LootTrackerView.EMPTY_FAVORITES, LootTrackerView.EMPTY_NO_MATCH})
 		{
 			for (int width : WIDTHS)
 			{

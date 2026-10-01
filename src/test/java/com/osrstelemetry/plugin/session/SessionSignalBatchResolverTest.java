@@ -709,7 +709,7 @@ public class SessionSignalBatchResolverTest
 	// known-task progress alone must stay a heartbeat of the boss, never
 	// fabricate a bogus Slayer session.
 	@Test
-	public void bossSelfConsumption_progressAlone_noCorroborationInBatch_staysBossNoSwitch()
+	public void bossOwnTaskProgressAlone_resolvesToARefineIntoTheSlayerAssignment()
 	{
 		Session current = sessionOf(ActivitySignalClassifier.bossIdentity("Grotesque Guardians"), T0);
 		List<SessionSignal> batch = Arrays.asList(
@@ -719,9 +719,10 @@ public class SessionSignalBatchResolverTest
 		SessionSignalBatchResolver.BatchResolution r = SessionSignalBatchResolver.resolve(batch, current, classifier, new ClassifierContext());
 
 		assertEquals(BatchLifecycleOutcome.RESOLVED, r.getOutcome());
-		assertEquals("no bogus Gargoyles session -- the batch resolves to a heartbeat of the SAME boss identity",
-			ActivitySignalClassifier.bossIdentity("Grotesque Guardians"), r.getLifecycleClassification().getIdentity());
+		assertEquals(SignalDecisionKind.REFINE, r.getLifecycleClassification().getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend"), r.getLifecycleClassification().getIdentity());
 	}
+
 
 	// Test 33: same-tick corroborating loot for a genuinely different NPC
 	// (not the boss, not one of its aliases) -- progress classified
@@ -773,7 +774,7 @@ public class SessionSignalBatchResolverTest
 	// a known Grotesque Guardians alias) -- this is NOT corroboration; it
 	// must stay suppressed (self-consumption remains the honest default).
 	@Test
-	public void bossSelfConsumption_sameTickBossOwnAliasLoot_doesNotCorroborate_staysBoss()
+	public void bossOwnTaskProgress_withSameTickBossAliasLoot_stillRefinesNeverSwitches()
 	{
 		Session current = sessionOf(ActivitySignalClassifier.bossIdentity("Grotesque Guardians"), T0);
 		List<SessionSignal.LootDrop> drops = Arrays.asList(new SessionSignal.LootDrop(1, "Granite dust", 90));
@@ -785,9 +786,10 @@ public class SessionSignalBatchResolverTest
 		SessionSignalBatchResolver.BatchResolution r = SessionSignalBatchResolver.resolve(batch, current, classifier, new ClassifierContext());
 
 		assertEquals(BatchLifecycleOutcome.RESOLVED, r.getOutcome());
-		assertEquals("the boss's own NPC loot (Dusk) is not proof of a different NPC -- stays suppressed",
-			ActivitySignalClassifier.bossIdentity("Grotesque Guardians"), r.getLifecycleClassification().getIdentity());
+		assertEquals(SignalDecisionKind.REFINE, r.getLifecycleClassification().getDecisionKind());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend"), r.getLifecycleClassification().getIdentity());
 	}
+
 
 	// =====================================================================
 	// POST-FINALIZATION METRIC handling (surfaced by the
@@ -833,5 +835,40 @@ public class SessionSignalBatchResolverTest
 		}
 		assertTrue("the late-observed loot must still be credited, just to the new session's own metrics",
 			sawLootMetric);
+	}
+
+	@Test
+	public void bossSession_sameTickOwnTaskProgressAndBossKill_eitherOrder_resolvesToTheSlayerRefine()
+	{
+		ActivityIdentity caveKraken = ActivitySignalClassifier.slayerIdentity("Cave kraken", "Kraken Cove");
+		SessionSignal progress = SessionSignal.slayerTaskProgress(T0.plusSeconds(5), "Cave kraken", "Kraken Cove", 1, 40).withGameTick(2);
+		SessionSignal kill = SessionSignal.bossKill(T0.plusSeconds(5), "Kraken", 300).withGameTick(2);
+		for (List<SessionSignal> batch : Arrays.asList(Arrays.asList(progress, kill), Arrays.asList(kill, progress)))
+		{
+			Session current = sessionOf(ActivitySignalClassifier.bossIdentity("Kraken"), T0);
+			SessionSignalBatchResolver.BatchResolution r = SessionSignalBatchResolver.resolve(batch, current, classifier, new ClassifierContext());
+			assertEquals(BatchLifecycleOutcome.RESOLVED, r.getOutcome());
+			assertEquals("rank must not let the same-tick boss heartbeat drop the refine",
+				SignalDecisionKind.REFINE, r.getLifecycleClassification().getDecisionKind());
+			assertEquals(caveKraken, r.getLifecycleClassification().getIdentity());
+			assertEquals("progress metric + kill metric both carried", 2, r.getMetricUpdates().size());
+		}
+	}
+
+	@Test
+	public void slayerSession_sameTickTaskProgressAndFamilyBossKill_isOneSlayerHeartbeat()
+	{
+		ActivityIdentity caveKraken = ActivitySignalClassifier.slayerIdentity("Cave kraken", "Kraken Cove");
+		Session current = sessionOf(caveKraken, T0);
+		List<SessionSignal> batch = Arrays.asList(
+			SessionSignal.bossKill(T0.plusSeconds(5), "Kraken", 300).withGameTick(2),
+			SessionSignal.slayerTaskProgress(T0.plusSeconds(5), "Cave kraken", "Kraken Cove", 1, 40).withGameTick(2),
+			SessionSignal.bossActivityContext(T0.plusSeconds(5), "Kraken").withGameTick(2));
+
+		SessionSignalBatchResolver.BatchResolution r = SessionSignalBatchResolver.resolve(batch, current, classifier, new ClassifierContext());
+
+		assertEquals(BatchLifecycleOutcome.RESOLVED, r.getOutcome());
+		assertEquals(SignalDecisionKind.START_OR_HEARTBEAT, r.getLifecycleClassification().getDecisionKind());
+		assertEquals(caveKraken, r.getLifecycleClassification().getIdentity());
 	}
 }

@@ -74,4 +74,21 @@ final class SpyglassTheme
 	static final Color STATUS_SUCCESS = new Color(0x70, 0xB9, 0x6E);
 	/** Suspended/paused/warm-warning state -- deliberately not red; "paused," not "broken." */
 	static final Color STATUS_SUSPENDED = new Color(0xC9, 0x96, 0x52);
+
+	// -- Activity meters (thin in-card bars mirroring a game's own HUD) --
+
+	/** Unfilled track of an activity meter. */
+	static final Color METER_TRACK = BACKGROUND_PANEL;
+	/** A resource the player wants high (Tempoross energy). */
+	static final Color METER_PRIMARY = ACCENT_GOLD;
+	/** A resource the player spends / refills (Tempoross essence). */
+	static final Color METER_SECONDARY = STATUS_SUCCESS;
+	/** A pressure the player wants low (Tempoross storm intensity): a muted ember, not an alarm red. */
+	static final Color METER_DANGER = new Color(0xB8, 0x5C, 0x48);
+
+	// Smart Slayer semantic accents -- deliberately muted, never card fills.
+	/** Preservation (a kill that did not use up a task unit: Bracelet of slaughter). */
+	static final Color ACCENT_SAGE = new Color(0x93, 0xAE, 0x7C);
+	/** Acceleration / upcoming milestone (Expeditious bracelet, streak bonus context). */
+	static final Color ACCENT_AMBER = new Color(0xC7, 0x9A, 0x5B);
 }

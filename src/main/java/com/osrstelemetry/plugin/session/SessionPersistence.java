@@ -3,6 +3,7 @@ package com.osrstelemetry.plugin.session;
 import com.osrstelemetry.plugin.collectors.LoadoutArchive;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * I/O
@@ -17,17 +18,19 @@ import com.osrstelemetry.plugin.storage.TelemetryPaths;
  * Bank snapshot persistence — see LocalStateStore's own javadoc and
  * ContainerCollector's bank-snapshot-then-pointer-update chaining):
  * persistFinalized() writes the immutable sessions/{sessionId}.json
- * record FIRST, and only in that write's onWritten success callback
- * does it go on to overwrite session_state.json. If the immutable
- * write fails, onWritten never runs, so session_state.json is left
- * completely untouched — still holding whatever was last durably
+ * record FIRST and session_state.json SECOND, as one queued writer task
+ * (LocalStateStore.writeChained(); both documents serialized on the
+ * caller's thread). If the immutable write fails, session_state.json is
+ * not touched by that task, so it still holds whatever was last durably
  * written for this account (typically the same session in its
- * pre-finalization SUSPENDED shape). That is never "the only copy of
- * the session" silently destroyed: the finalized attempt simply didn't
- * happen, and a later rehydrate() of the still-intact session_state.json
- * will naturally re-evaluate (and, if warranted, re-attempt
- * finalization of) the same session against a fresh `now`.
+ * pre-finalization shape) -- a restart BEFORE the next ordinary
+ * persistCurrent() re-evaluates that session from it. The in-memory
+ * lifecycle has already moved on, though, so the next persistCurrent()
+ * overwrites it: a failed finalized write is logged by LocalStateStore,
+ * and that one session is then missing from History (never duplicated,
+ * never double-finalized).
  */
+@Slf4j
 public final class SessionPersistence
 {
 	private final LocalStateStore store;
@@ -52,6 +55,36 @@ public final class SessionPersistence
 	 * `loadoutArchive` may be null (see the single-arg constructor
 	 * above) -- LoadoutResolver is null-safe by construction.
 	 */
+	/**
+	 * Optional, best-effort notification that a FINALIZED session file has
+	 * actually reached disk (called on the store's writer thread). Lets the
+	 * History index refresh exactly when a new file exists instead of
+	 * polling the sessions directory. Never part of persistence correctness.
+	 */
+	private volatile Runnable finalizedWriteListener;
+
+	public void setFinalizedWriteListener(Runnable listener)
+	{
+		this.finalizedWriteListener = listener;
+	}
+
+	private void notifyFinalizedWritten()
+	{
+		Runnable listener = finalizedWriteListener;
+		if (listener == null)
+		{
+			return;
+		}
+		try
+		{
+			listener.run();
+		}
+		catch (RuntimeException e)
+		{
+			log.debug("finalized-session write listener failed; persistence is unaffected", e);
+		}
+	}
+
 	public SessionPersistence(LocalStateStore store, LoadoutArchive loadoutArchive)
 	{
 		this.store = store;
@@ -164,11 +197,16 @@ public final class SessionPersistence
 		// that only ever makes sense exactly here, at finalization time.
 		attachStartingLoadoutIfNeeded(finalized);
 		attachEndingLoadoutIfNeeded(finalized);
-		store.write(
-			TelemetryPaths.sessionFile(accountHash, finalized.getSessionId()),
-			finalized,
-			() -> persistCurrent(accountHash, newCurrent)
-		);
+		attachStartingLoadoutIfNeeded(newCurrent);
+		// One queued task, both documents serialized now on the caller's
+		// thread: the writer never reads a live Session the client thread is
+		// still mutating, no later persistCurrent() can be overtaken by this
+		// one, and History hears about the finalized file as soon as it is
+		// durable (even if the session_state write then fails).
+		store.writeChained(
+			TelemetryPaths.sessionFile(accountHash, finalized.getSessionId()), finalized,
+			TelemetryPaths.sessionStateFile(accountHash), newCurrent,
+			this::notifyFinalizedWritten);
 	}
 
 	/**
@@ -214,7 +252,8 @@ public final class SessionPersistence
 		}
 		attachStartingLoadoutIfNeeded(additionalFinalized);
 		attachEndingLoadoutIfNeeded(additionalFinalized);
-		store.write(TelemetryPaths.sessionFile(accountHash, additionalFinalized.getSessionId()), additionalFinalized);
+		store.write(TelemetryPaths.sessionFile(accountHash, additionalFinalized.getSessionId()), additionalFinalized,
+			this::notifyFinalizedWritten);
 	}
 
 	/**

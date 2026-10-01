@@ -129,6 +129,14 @@ public enum EventType
 	SLAYER_TASK_PROGRESS,
 
 	/**
+	 * The game's own chat confirmation that a Bracelet of slaughter (task
+	 * count NOT decreased for a kill) or an Expeditious bracelet (an extra
+	 * task unit consumed) activated. Explicit native evidence only -- see
+	 * SlayerCollector's BRACELET EFFECTS note.
+	 */
+	SLAYER_BRACELET_EFFECT,
+
+	/**
 	 * Renamed from NPC_KILL. net.runelite.api.events.ActorDeath does not
 	 * prove as much as the old name claimed:
 	 * ActorDeath, filtered to actor instanceof NPC, proves only "RuneLite
@@ -312,5 +320,61 @@ public enum EventType
 	 * delta/value -- so it can never be mistaken for, or double-count
 	 * against, XP_CHANGE's own accumulated XP metric.
 	 */
-	RAW_COMBAT_XP_OBSERVED
+	RAW_COMBAT_XP_OBSERVED,
+
+	/**
+	 * The player entered or left a registered structured-activity location
+	 * (see activity.StructuredActivityRegistry). Emitted only when the
+	 * resolved activity/policy CHANGES -- never per tick -- and always on
+	 * the first tick after login so the location re-arms. Pure context: it
+	 * never starts, resumes or confirms a session by itself.
+	 */
+	STRUCTURED_ACTIVITY_STATE,
+
+	/**
+	 * One completion of a structured activity observed through that
+	 * activity's own isolated chat pattern (e.g. Guardians of the Rift's
+	 * "Amount of Rifts you have closed"). Completions already carried by
+	 * BOSS_KILL / ACTIVITY_COMPLETION are not re-emitted here.
+	 */
+	STRUCTURED_ACTIVITY_COMPLETION,
+
+	/**
+	 * One claim of a structured activity's declared reward source (Barrows
+	 * chest, GotR rewards guardian, Tempoross reward pool, Wintertodt reward
+	 * cart), observed by Spyglass itself from the game (see
+	 * StructuredActivityCollector) -- never from another plugin, never NPC
+	 * loot, never an open-ended inventory delta. Consumed independently by
+	 * the session runtime (ownership only when the activity matches) and by
+	 * the Loot Tracker (always, under its canonical source).
+	 */
+	STRUCTURED_REWARD,
+
+	/**
+	 * One successfully completed structured-activity game's final score,
+	 * read by Spyglass from the game's own state at the completion (e.g.
+	 * the Tempoross points varbit at "Your Tempoross kill count is"),
+	 * with whether that game was observed from its start. Failed games
+	 * never produce one. Session-summary evidence only.
+	 */
+	STRUCTURED_ACTIVITY_SCORE,
+
+	/**
+	 * A positive change of a structured activity's native reward currency
+	 * (Tempoross reward permits, varbit TEMPOROSS_REWARDPERMITS), observed
+	 * by Spyglass inside the activity after a post-login settle. Spending
+	 * (a decrease) is never emitted. Guardians of the Rift emits one per
+	 * reward-point currency (elemental / catalytic), observed from the
+	 * game's own end-of-game balance message.
+	 */
+	STRUCTURED_ACTIVITY_CURRENCY,
+
+	/**
+	 * Items PRODUCED by a confirmed production action inside a structured
+	 * activity (Guardians of the Rift runes crafted at its altars: guardian
+	 * essence consumed + runes gained + Runecraft XP). Activity output --
+	 * deliberately NOT loot and never a reward. Session-summary metric only,
+	 * never lifecycle evidence.
+	 */
+	STRUCTURED_ACTIVITY_PRODUCTION
 }

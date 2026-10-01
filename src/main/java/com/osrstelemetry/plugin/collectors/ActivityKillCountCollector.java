@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -59,7 +58,6 @@ public class ActivityKillCountCollector
 	private final Client client;
 	private final LocalStateStore store;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 	private final KnownBossRegistry knownBossRegistry;
 
 	/**
@@ -75,12 +73,11 @@ public class ActivityKillCountCollector
 	private final Map<String, Integer> lastObservedCount = new ConcurrentHashMap<>();
 
 	@Inject
-	public ActivityKillCountCollector(Client client, LocalStateStore store, EventLedger eventLedger, OsrsTelemetryConfig config, KnownBossRegistry knownBossRegistry)
+	public ActivityKillCountCollector(Client client, LocalStateStore store, EventLedger eventLedger, KnownBossRegistry knownBossRegistry)
 	{
 		this.client = client;
 		this.store = store;
 		this.eventLedger = eventLedger;
-		this.config = config;
 		this.knownBossRegistry = knownBossRegistry;
 	}
 
@@ -92,10 +89,6 @@ public class ActivityKillCountCollector
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
-		if (!config.collectBossKc())
-		{
-			return;
-		}
 		if (event.getType() != ChatMessageType.GAMEMESSAGE)
 		{
 			return;

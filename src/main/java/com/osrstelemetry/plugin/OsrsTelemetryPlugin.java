@@ -17,6 +17,8 @@ import com.osrstelemetry.plugin.collectors.QuestCollector;
 import com.osrstelemetry.plugin.collectors.ServerNpcLootCollector;
 import com.osrstelemetry.plugin.collectors.SkillsCollector;
 import com.osrstelemetry.plugin.collectors.SlayerCollector;
+import com.osrstelemetry.plugin.collectors.SlayerCommittedTask;
+import com.osrstelemetry.plugin.collectors.StructuredActivityCollector;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.history.HistoryCoordinator;
 import com.osrstelemetry.plugin.loottracker.LootTrackerCoordinator;
@@ -38,11 +40,8 @@ import net.runelite.client.game.SkillIconManager;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
-import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
-import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
-import net.runelite.client.plugins.slayer.SlayerPlugin;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.Filepath;
@@ -81,7 +80,6 @@ import net.runelite.client.util.ImageUtil;
 	internalName = "spyglass",
 	legacyDataDirectory = "osrs-telemetry"
 )
-@PluginDependency(SlayerPlugin.class)
 public class OsrsTelemetryPlugin extends Plugin
 {
 	// Quest state changes rarely; polling it every tick would be
@@ -100,9 +98,9 @@ public class OsrsTelemetryPlugin extends Plugin
 	private EventBus eventBus;
 
 	// ADDED (client-thread lifecycle audit): needed to marshal
-	// Client-only work performed by startUp()/onConfigChanged() (both
-	// of which RuneLite can invoke on the AWT/Swing thread) onto the
-	// client thread -- see startUp()/onConfigChanged() below.
+	// Client-only work performed by startUp() (which RuneLite can invoke
+	// on the AWT/Swing thread) onto the client thread -- see startUp()
+	// below.
 	@Inject
 	private ClientThread clientThread;
 
@@ -142,6 +140,14 @@ public class OsrsTelemetryPlugin extends Plugin
 	@Inject
 	private SlayerCollector slayerCollector;
 
+	// Live native Slayer status for the Current Session dashboard (read-only).
+	@Inject
+	private SlayerCommittedTask slayerCommittedTask;
+
+	// Persists the in-session Slayer XP scope choice to its Settings item.
+	@Inject
+	private ConfigManager configManager;
+
 	@Inject
 	private CollectionLogCollector collectionLogCollector;
 
@@ -155,10 +161,8 @@ public class OsrsTelemetryPlugin extends Plugin
 	private LootCollector lootCollector;
 
 	// ADDED (server-side loot data-foundation pass) — see class javadoc.
-	// Independent of lootCollector/NPC_LOOT_ATTRIBUTED; both are
-	// registered/unregistered together only because they share the
-	// same collectLoot() config gate, not because either depends on
-	// the other.
+	// Independent of lootCollector/NPC_LOOT_ATTRIBUTED; neither depends
+	// on the other.
 	@Inject
 	private ServerNpcLootCollector serverNpcLootCollector;
 
@@ -183,6 +187,11 @@ public class OsrsTelemetryPlugin extends Plugin
 	// non-conflicting purposes (see that constant's own javadoc).
 	@Inject
 	private NpcInteractionTargetCollector npcInteractionTargetCollector;
+
+	// Structured activities (minigames/activity bosses): location, completion
+	// and declared-reward evidence -- see its own class javadoc.
+	@Inject
+	private StructuredActivityCollector structuredActivityCollector;
 
 	// ADDED (Task 5 — generic first-boss encounter context pass).
 	// Injected here (not just into the two collectors that use it)
@@ -333,6 +342,10 @@ public class OsrsTelemetryPlugin extends Plugin
 		// HistoryCoordinator's own start()/shutdown() javadoc -- same
 		// restartability contract as lootTrackerCoordinator above.
 		historyCoordinator.start();
+		// History learns about a newly finalized session the moment its
+		// file reaches disk (backend-to-backend, UI-independent) instead of
+		// polling the sessions directory.
+		sessionRuntimeCoordinator.setFinalizedSessionListener(historyCoordinator::requestRefresh);
 
 		eventBus.register(skillsCollector);
 		eventBus.register(containerCollector);
@@ -347,6 +360,12 @@ public class OsrsTelemetryPlugin extends Plugin
 		eventBus.register(npcDeathCollector);
 		eventBus.register(bossActivityContextCollector);
 		eventBus.register(npcInteractionTargetCollector);
+		// The collector survives a disable/enable: a reward claim armed
+		// before the disable must never be correlated with inventory changes
+		// made while the plugin was off. (Its remembered region is kept, so
+		// leaving an activity while disabled still produces the exit event.)
+		structuredActivityCollector.disarmPendingClaim();
+		eventBus.register(structuredActivityCollector);
 		eventBus.register(sessionRuntimeCoordinator);
 
 		// ADDED (live session-runtime wiring pass). Paired with
@@ -402,6 +421,20 @@ public class OsrsTelemetryPlugin extends Plugin
 		// OsrsTelemetryPanel's own updated constructor and class javadoc.
 		panel = new OsrsTelemetryPanel(sessionRuntimeCoordinator, lootTrackerCoordinator, lootTrackerPreferences,
 			historyCoordinator, skillIconManager, itemManager, clientThread, npcInteractionTargetCollector, config);
+		// Barrows current run (game varbits, presentation only).
+		panel.attachBarrowsProgress(structuredActivityCollector::getBarrowsProgress);
+		// Tempoross current game (HUD widgets + points varbit, presentation only).
+		panel.attachTemporossGame(structuredActivityCollector::getTemporossGame);
+		panel.attachGotrGame(structuredActivityCollector::getGotrGame);
+		panel.attachGotrWallet(structuredActivityCollector::getGotrWallet);
+		// Smart Slayer: native status (master/points/streak/location/modifier) and
+		// the in-session Current Task / All Tasks XP selector's persistence.
+		panel.attachSlayerStatus(slayerCommittedTask::getStatus);
+		panel.attachSlayerXpScopeWriter(scope -> configManager.setConfiguration("osrstelemetry", "slayerXpScope", scope));
+		// GotR Points · XP: an in-panel choice remembered under its own key (never a Settings item).
+		panel.attachGotrStrategy(() -> configManager.getConfiguration("osrstelemetry", "gotrStrategy", com.osrstelemetry.plugin.GotrStrategy.class),
+			strategy -> configManager.setConfiguration("osrstelemetry", "gotrStrategy", strategy));
+		structuredActivityCollector.setProgressListener(panel::onActivityProgressChanged);
 
 		// REPLACED (approved spyglass sidebar icon pass). The approved
 		// gold/blue spyglass artwork the user supplied, cropped to its own
@@ -428,6 +461,10 @@ public class OsrsTelemetryPlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		// A deferred startup login that has not run yet must not run against
+		// the coordinators this method is about to stop (it would record the
+		// account as loaded while leaving it empty until an account switch).
+		startupHydrationGate.supersede();
 		eventBus.unregister(skillsCollector);
 		eventBus.unregister(containerCollector);
 		eventBus.unregister(loadoutArchiveCollector);
@@ -441,6 +478,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		eventBus.unregister(npcDeathCollector);
 		eventBus.unregister(bossActivityContextCollector);
 		eventBus.unregister(npcInteractionTargetCollector);
+		eventBus.unregister(structuredActivityCollector);
 		// sessionRuntimeCoordinator is deliberately NOT unregistered here
 		// -- see the comment at its actual unregistration point below,
 		// right before store.shutdown()/eventLedger.shutdown(), for why.
@@ -522,6 +560,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		// historyCoordinator is not an EventLedger listener (it reads
 		// finalized session files directly, never events.jsonl -- see
 		// its own class javadoc), so only its executor needs draining.
+		sessionRuntimeCoordinator.setFinalizedSessionListener(null);
 		historyCoordinator.shutdown();
 
 		// ADDED (player-facing Current Session UI pass). Mirror image of
@@ -530,6 +569,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		// disabling), then remove the sidebar icon. Both are plain
 		// Swing/RuneLite-UI calls -- no ClientThread marshalling needed,
 		// unlike the Client-touching work above.
+		structuredActivityCollector.setProgressListener(null);
 		if (panel != null)
 		{
 			panel.shutdown();
@@ -587,8 +627,11 @@ public class OsrsTelemetryPlugin extends Plugin
 		// call (a world hop/relog), so this never re-runs the durable
 		// rebuild or re-reads the preferences file for continuity within
 		// the same account. See each method's own javadoc.
-		lootTrackerCoordinator.ensureAccountLoaded(newAccountHash);
+		// Preferences first: the coordinator's account load notifies the UI,
+		// and that render must already see this account's favorites,
+		// collapse state, hidden items and resets.
 		lootTrackerPreferences.loadForAccount(newAccountHash);
+		lootTrackerCoordinator.ensureAccountLoaded(newAccountHash);
 		// ADDED (Spyglass History implementation pass, Checkpoint 3 --
 		// spec Part S). Same unconditional-on-every-LOGGED_IN-transition
 		// call as lootTrackerCoordinator/sessionRuntimeCoordinator above;
@@ -621,6 +664,7 @@ public class OsrsTelemetryPlugin extends Plugin
 			knownBossRegistry.resetForAccountSwitch(previousAccountHash);
 			bossActivityContextCollector.resetForAccountSwitch(previousAccountHash);
 			npcInteractionTargetCollector.resetForAccountSwitch(previousAccountHash);
+			structuredActivityCollector.resetForAccountSwitch();
 			eventLedger.startNewSession();
 		}
 
@@ -633,8 +677,8 @@ public class OsrsTelemetryPlugin extends Plugin
 		// (accountContext.isRealSwitch() is keyed on accountHash, which
 		// does not change on a hop). If slayerCollector's hydration were
 		// left untouched across a hop, the OLD trusted baseline would
-		// carry straight through a period where RuneLite's Slayer state
-		// (SlayerPluginService/varps) can transiently blank out mid-hop,
+		// carry straight through a period where the Slayer varps can
+		// transiently blank out mid-hop,
 		// producing a fabricated SLAYER_TASK_COMPLETED/SLAYER_TASK_ASSIGNED
 		// pair for what was actually continuity. Calling
 		// slayerCollector.resetForAccountSwitch() here unconditionally
@@ -689,14 +733,9 @@ public class OsrsTelemetryPlugin extends Plugin
 		// unchanged.
 		//
 		// slayerCollector likewise uses
-		// captureInitialStateWithoutBaseline() instead of
-		// seedSilently() here, to avoid a false SLAYER_TASK_ASSIGNED on
-		// plain login into an account with an already-assigned task.
-		// See that method's javadoc on SlayerCollector for the full
-		// root-cause trace. seedSilently() itself is unchanged and
-		// still used by onConfigChanged()'s collectSlayer re-enable
-		// path, where the immediate-seed behavior remains correct (see
-		// its own javadoc).
+		// captureInitialStateWithoutBaseline(), to avoid a false
+		// SLAYER_TASK_ASSIGNED on plain login into an account with an
+		// already-assigned task -- see that method's javadoc.
 		skillsCollector.captureInitialState();
 		containerCollector.captureInitialContinuousState();
 		// ADDED (Spyglass History implementation pass, Checkpoint 2). See
@@ -729,110 +768,6 @@ public class OsrsTelemetryPlugin extends Plugin
 		}
 		identityCollector.captureOnLogin();
 		identityCapturePending = false;
-	}
-
-	/**
-	 * FIX for Step 6C review item 6. Every category's collector was
-	 * already gated to stop collecting/emitting the instant its toggle
-	 * goes false (see each collector's config.xxx() check) — that part
-	 * needed no new code. What was missing: RE-enabling a category
-	 * must silently reseed its baseline from current authoritative
-	 * state, never diff against whatever was last seen before it was
-	 * disabled — otherwise everything that changed while disabled
-	 * (a quest finished, a Slayer task completed, XP gained) would
-	 * fire as a single fabricated "transition" the moment collection
-	 * resumes. Reuses the exact same reset/reseed methods built for
-	 * account switching, since the correctness requirement is
-	 * identical: don't diff across a gap, reseed clean instead.
-	 */
-	@Subscribe
-	public void onConfigChanged(ConfigChanged event)
-	{
-		if (!"osrstelemetry".equals(event.getGroup()))
-		{
-			return;
-		}
-
-		boolean nowEnabled = Boolean.parseBoolean(event.getNewValue());
-		if (!nowEnabled)
-		{
-			// Disabling needs no extra work: every collector already
-			// checks its own config.xxx() live, so it simply stops
-			// producing state/events from this point on. Baselines
-			// are left as-is (stale) rather than cleared, because the
-			// re-enable path below always overwrites them with a
-			// fresh reseed rather than reading them.
-			return;
-		}
-
-		// ConfigChanged is delivered on the Swing/AWT thread, not the
-		// client thread. Every active case below eventually touches
-		// Client (skills: client.getSkillExperience()/etc via
-		// captureInitialState(); inventory/equipment:
-		// client.getItemContainer() via captureInitialContinuousState();
-		// quests/slayer: their own Client reads), so the whole switch is
-		// marshalled onto ClientThread here rather than just the
-		// branches that touch Client most directly. Each collector
-		// method invoked below already re-checks its own config.xxx()
-		// gate internally (see each one's javadoc), so if a category is
-		// toggled off again before this deferred callback actually
-		// runs, it silently no-ops instead of applying a stale queued
-		// "enable" action.
-		clientThread.invokeLater(() ->
-		{
-			switch (event.getKey())
-			{
-				case "collectSkills":
-					// captureInitialState() alone is not sufficient here --
-					// it deliberately does not touch the XP/level transition
-					// baselines (see its own javadoc), so
-					// reseedTransitionBaselinesSilently() must also run for
-					// re-enabling Skills to reseed those correctly. See
-					// SkillsCollector.reseedTransitionBaselinesSilently()'s
-					// javadoc for the full reasoning.
-					skillsCollector.captureInitialState();
-					skillsCollector.reseedTransitionBaselinesSilently();
-					break;
-				case "collectInventoryEquipment":
-					containerCollector.captureInitialContinuousState();
-					break;
-				case "collectQuests":
-					// Deliberately calls captureInitialStateWithoutBaseline(),
-					// not checkAndFlush(): checkAndFlush() immediately sets
-					// lastKnown = current as a side effect, establishing a
-					// live diff baseline straight from one unverified read --
-					// exactly the class of risk
-					// captureInitialStateWithoutBaseline() exists to avoid
-					// (see its "Mirrors SlayerCollector.seedSilently()"
-					// javadoc note): it persists state but deliberately
-					// leaves lastKnown null, deferring real baseline
-					// establishment to the plugin's existing periodic
-					// checkAndFlush() cadence. This gives quest re-enable the
-					// same silent-hydration contract already trusted at
-					// login.
-					questCollector.resetForAccountSwitch();
-					questCollector.captureInitialStateWithoutBaseline();
-					break;
-				case "collectSlayer":
-					slayerCollector.resetForAccountSwitch();
-					slayerCollector.seedSilently();
-					break;
-				default:
-					// collectBank / collectSeedVault / collectGroupStorage /
-					// collectCollectionLog / collectCombatAchievements /
-					// collectBossKc / collectLoot / collectNpcDeaths: none
-					// of these maintain a cross-event baseline that could
-					// produce a retroactive transition on re-enable (see
-					// class javadoc reasoning in the corresponding
-					// collectors) — nothing to reseed.
-					// (BossActivityContextCollector has no config toggle at
-					// all — see its class javadoc — so this switch never
-					// dispatches for it; its own per-account dedup map is a
-					// cheap, self-correcting heartbeat baseline that is
-					// unaffected by the plugin's collectX toggles entirely.)
-					break;
-			}
-		});
 	}
 
 	@Subscribe

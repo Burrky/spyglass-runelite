@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.model.PotionStorageState;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
@@ -48,25 +47,18 @@ public class PotionStorageCollector
 	private final Client client;
 	private final ItemManager itemManager;
 	private final LocalStateStore store;
-	private final OsrsTelemetryConfig config;
 
 	@Inject
-	public PotionStorageCollector(Client client, ItemManager itemManager, LocalStateStore store, OsrsTelemetryConfig config)
+	public PotionStorageCollector(Client client, ItemManager itemManager, LocalStateStore store)
 	{
 		this.client = client;
 		this.itemManager = itemManager;
 		this.store = store;
-		this.config = config;
 	}
 
 	@Subscribe
 	public void onScriptPostFired(ScriptPostFired event)
 	{
-		if (!config.collectPotionStorage())
-		{
-			return;
-		}
-
 		int scriptId = event.getScriptId();
 		if (scriptId == ScriptID.POTIONSTORE_BUILD || scriptId == ScriptID.POTIONSTORE_DOSE_CHANGE)
 		{

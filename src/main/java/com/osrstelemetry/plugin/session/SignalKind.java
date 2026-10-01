@@ -25,6 +25,8 @@ public enum SignalKind
 	SLAYER_TASK_ASSIGNED,
 	SLAYER_TASK_PROGRESS,
 	SLAYER_TASK_COMPLETED,
+	/** Native bracelet activation (see EventType.SLAYER_BRACELET_EFFECT). Metric-only, never lifecycle evidence. */
+	SLAYER_BRACELET_EFFECT,
 	BOSS_KILL,
 	BOSS_ACTIVITY_CONTEXT,
 	RAID_COMPLETION,
@@ -113,5 +115,42 @@ public enum SignalKind
 	 * artificially kept alive merely because a slow, late XP_CHANGE
 	 * happens to arrive and re-read it.
 	 */
-	RAW_COMBAT_XP_OBSERVED
+	RAW_COMBAT_XP_OBSERVED,
+	/** Entered/left a structured-activity location: arms/disarms recognition, never a session by itself. */
+	STRUCTURED_ACTIVITY_LOCATION,
+	/**
+	 * A live (raw StatChanged) XP gain in a skill the ARMED structured
+	 * activity expects, inside its location. CLASSIFICATION EVIDENCE ONLY:
+	 * it carries no XP metric (durable XP_CHANGE still does all XP
+	 * accounting) and is never written to the event log. It lets the
+	 * activity become current at once instead of waiting for the next
+	 * ~30 s durable XP window. Never produced outside an armed location,
+	 * so location alone and out-of-location XP still start nothing.
+	 */
+	STRUCTURED_LIVE_XP,
+	/** One completion from a structured activity's own chat pattern. */
+	STRUCTURED_ACTIVITY_COMPLETION,
+	/** A structured activity's declared reward (never NPC loot). */
+	STRUCTURED_REWARD,
+	/**
+	 * One completed game's final score as the game itself reported it
+	 * (e.g. Tempoross points), with whether Spyglass observed that game
+	 * from its start. Metric-only for the activity's OWN session; never
+	 * lifecycle evidence (the completion itself is).
+	 */
+	STRUCTURED_ACTIVITY_SCORE,
+	/**
+	 * A positive change of an activity's native reward currency (e.g.
+	 * Tempoross reward permits). Metric-only for the activity's OWN
+	 * session; spending never produces one. Carries the currency key
+	 * (e.g. GotR's separate elemental / catalytic reward points).
+	 */
+	STRUCTURED_ACTIVITY_CURRENCY,
+	/**
+	 * Items PRODUCED by a confirmed production action in a structured
+	 * activity (GotR runes crafted). Activity output -- never loot, never a
+	 * reward, never lifecycle evidence. Metric-only for the activity's OWN
+	 * session.
+	 */
+	STRUCTURED_ACTIVITY_PRODUCTION
 }

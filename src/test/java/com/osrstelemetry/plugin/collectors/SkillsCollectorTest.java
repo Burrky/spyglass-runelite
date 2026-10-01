@@ -187,7 +187,7 @@ public class SkillsCollectorTest
 	public void firstRawObservationForASkillAlwaysSeedsNeverEmitsAPulse()
 	{
 		// A session begins with no raw-pulse baseline for this skill
-		// (fresh session, account switch, or a Skills re-enable) -- the
+		// (fresh session or account switch) -- the
 		// null baseline must always mean "seed silently," never "compare
 		// against zero," no matter how large currentXp is (an existing
 		// account's real XP total must never be misread as an
@@ -234,8 +234,7 @@ public class SkillsCollectorTest
 	@Test
 	public void resetProducesANewSilentRawSeed()
 	{
-		// resetForAccountSwitch()/reseedTransitionBaselinesSilently()
-		// both clear lastKnownXpForRawPulse, which is exactly the
+		// resetForAccountSwitch() clears lastKnownXpForRawPulse, which is exactly the
 		// null-baseline input this pure function receives afterward --
 		// a new silent seed, never a diff against a stale account's XP.
 		SkillsCollector.RawCombatXpPulseResult result = SkillsCollector.evaluateRawCombatXpPulse(null, 42);

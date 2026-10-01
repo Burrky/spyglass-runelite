@@ -11,6 +11,7 @@ import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -38,9 +39,15 @@ public class LootTrackerPersistenceTest
 	private EventLedger ledger;
 	private final LootTrackerPersistence persistence = new LootTrackerPersistence(TEST_GSON);
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUp() throws Exception
 	{
+		testRoot = Files.createTempDirectory("loot-tracker-persistence-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir();
 		ledger = new EventLedger(TEST_GSON);
 		ledger.start();
@@ -51,6 +58,7 @@ public class LootTrackerPersistenceTest
 	{
 		ledger.shutdown();
 		deleteAccountDir();
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private void deleteAccountDir() throws Exception

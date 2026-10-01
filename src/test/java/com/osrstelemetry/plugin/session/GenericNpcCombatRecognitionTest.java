@@ -13,6 +13,7 @@ import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.storage.TestFilepaths;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Collections;
 import org.junit.After;
@@ -707,9 +708,15 @@ public class GenericNpcCombatRecognitionTest
 	private LocalStateStore store;
 	private SessionRuntimeCoordinator coordinator;
 
+	// TEST ISOLATION: this class owns its own storage root -- never whatever
+	// TelemetryPaths root another test class happened to leave behind.
+	private Path testRoot;
+
 	@Before
 	public void setUpCoordinator() throws Exception
 	{
+		testRoot = Files.createTempDirectory("generic-npc-combat-test");
+		TelemetryPaths.init(TestFilepaths.rooted(testRoot));
 		deleteAccountDir(ACCOUNT_NPC_TEST);
 		store = new LocalStateStore(GSON);
 		store.start();
@@ -721,6 +728,7 @@ public class GenericNpcCombatRecognitionTest
 	{
 		store.shutdown();
 		deleteAccountDir(ACCOUNT_NPC_TEST);
+		TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	private void deleteAccountDir(long accountHash) throws Exception

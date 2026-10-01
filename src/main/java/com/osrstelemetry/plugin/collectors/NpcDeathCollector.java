@@ -1,6 +1,5 @@
 package com.osrstelemetry.plugin.collectors;
 
-import com.osrstelemetry.plugin.OsrsTelemetryConfig;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
@@ -11,7 +10,6 @@ import net.runelite.api.NPC;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.client.eventbus.Subscribe;
-import net.runelite.client.plugins.slayer.SlayerPluginService;
 
 /**
  * Renamed from NpcKillCollector as part of an NPC kill telemetry
@@ -19,8 +17,8 @@ import net.runelite.client.plugins.slayer.SlayerPluginService;
  * proves. Summarized here for anyone reading only this file.
  *
  * RENAME: NpcKillCollector -> NpcDeathCollector, EventType.NPC_KILL ->
- * EventType.NPC_DEATH, EventPayloads.NpcKill -> EventPayloads.NpcDeath,
- * collectNpcKills -> collectNpcDeaths. Nothing about the signal, the
+ * EventType.NPC_DEATH, EventPayloads.NpcKill -> EventPayloads.NpcDeath.
+ * Nothing about the signal, the
  * filtering logic, or the payload fields changed — only the name.
  * "Kill" implied a player-attribution claim (the local player caused
  * this death / received credit for it) that ActorDeath cannot prove —
@@ -89,10 +87,14 @@ import net.runelite.client.plugins.slayer.SlayerPluginService;
  * verified — not built by inference on top of this event.
  *
  * SLAYER CORRELATION: activeSlayerTaskName/activeSlayerTaskLocation
- * are a LIVE read of SlayerPluginService's current task at the exact
- * moment of this death (never a timing-window correlation against a
- * separately-timestamped SLAYER_TASK_PROGRESS event — see
- * buildPayload()) — contextual metadata only. There is deliberately
+ * are the Slayer task Spyglass had COMMITTED at the moment of this
+ * death (SlayerCommittedTask: the exact baseline SlayerCollector's
+ * SLAYER_TASK_* events were built from) — contextual metadata only,
+ * and Spyglass-owned state: no other RuneLite plugin is read. Not a
+ * live varp read on purpose: on the final kill the SLAYER_COUNT varp
+ * can already be 0 when ActorDeath fires, which would drop the task
+ * from that very kill; the committed baseline still carries it until
+ * the completion is committed on the next tick. There is deliberately
  * no onSlayerTask=true/false claim anywhere on this payload: no
  * defensible RuneLite/Jagex mechanism was found for mapping a
  * specific dead NPC to a specific active Slayer assignment (e.g. a
@@ -112,27 +114,20 @@ import net.runelite.client.plugins.slayer.SlayerPluginService;
 public class NpcDeathCollector
 {
 	private final Client client;
-	private final SlayerPluginService slayerPluginService;
+	private final SlayerCommittedTask committedTask;
 	private final EventLedger eventLedger;
-	private final OsrsTelemetryConfig config;
 
 	@Inject
-	public NpcDeathCollector(Client client, SlayerPluginService slayerPluginService, EventLedger eventLedger, OsrsTelemetryConfig config)
+	public NpcDeathCollector(Client client, SlayerCommittedTask committedTask, EventLedger eventLedger)
 	{
 		this.client = client;
-		this.slayerPluginService = slayerPluginService;
+		this.committedTask = committedTask;
 		this.eventLedger = eventLedger;
-		this.config = config;
 	}
 
 	@Subscribe
 	public void onActorDeath(ActorDeath event)
 	{
-		if (!config.collectNpcDeaths())
-		{
-			return;
-		}
-
 		Actor actor = event.getActor();
 		if (!(actor instanceof NPC))
 		{
@@ -153,9 +148,9 @@ public class NpcDeathCollector
 			npc.getId(),
 			npc.getCombatLevel(),
 			worldLocation,
-			slayerPluginService.getRemainingAmount(),
-			slayerPluginService.getTask(),
-			slayerPluginService.getTaskLocation());
+			committedTask.getRemaining(),
+			committedTask.getTaskName(),
+			committedTask.getTaskLocation());
 
 		eventLedger.append(client.getAccountHash(), EventType.NPC_DEATH, payload);
 	}
@@ -164,7 +159,7 @@ public class NpcDeathCollector
 	 * Pure, Client/EventLedger-independent core of the payload-building
 	 * decision — factored out for the same reason as
 	 * SlayerCollector.evaluateSlayerTransition(): unit-testable without
-	 * mocking RuneLite's NPC/Client/SlayerPluginService (this project
+	 * mocking RuneLite's NPC/Client (this project
 	 * has no Mockito dependency and wasn't asked to add one — see
 	 * BankSnapshotBaselineTest's javadoc for the same constraint applied
 	 * before). Callers pass already-read primitive values; this method

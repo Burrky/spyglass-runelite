@@ -274,58 +274,31 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 	//  - new SLAYER/Gargoyles session is a brand-new sessionId, ACTIVE,
 	//    with normal Gargoyle XP/loot and NO boss reliableCount at all.
 	@Test
-	public void liveBugFix_sameTick_ggToGargoyles_oldSessionRetainsBossCount_newSessionGetsNormalGargoyleProgressAndLoot_noBossCount() throws Exception
+	public void slayerGargoylesSession_sameTickProgressAndGrotesqueGuardiansKill_staysTheOneSlayerSession() throws Exception
 	{
 		coordinator.ensureAccountLoaded(ACCOUNT_A);
 
-		// Establish ACTIVE BOSSING/Grotesque Guardians with a credited kill
-		// (Dusk loot), exactly as in the live report.
-		coordinator.testEnqueueSignal(SessionSignal.bossKill(T0, "Grotesque Guardians", 87).withGameTick(1L));
-		coordinator.testEnqueueSignal(SessionSignal.npcDeath(T0).withGameTick(1L));
-		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(T0, "Dusk",
-			Collections.singletonList(new SessionSignal.LootDrop(1, "Dusk's remains", 1))).withGameTick(1L));
+		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(T0, "Gargoyles", "Catacombs of Kourend", 1, 99).withGameTick(1L));
 		coordinator.testProcessTick(2L, T0);
+		String slayerId = coordinator.testCurrentSession().getSessionId();
+		ActivityIdentity gargoyles = coordinator.testCurrentSession().getActivityIdentity();
 
-		String ggSessionId = coordinator.testCurrentSession().getSessionId();
-		assertEquals(SessionState.ACTIVE, coordinator.testCurrentSession().getState());
-		assertEquals(ActivityType.BOSSING, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
-		assertEquals(1, coordinator.testCurrentSession().getAggregates().getReliableCount().getSessionOccurrences());
-		assertEquals(1, coordinator.testCurrentSession().getAggregates().getLootDrops().size());
-
-		// Same tick: the first normal Gargoyle kill's authoritative
-		// SLAYER_TASK_PROGRESS plus its matching Gargoyle loot.
+		// Same tick: GG's own kill decrements the task AND reports its KC.
 		Instant t1 = T0.plusSeconds(30);
 		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(t1, "Gargoyles", "Catacombs of Kourend", 1, 98).withGameTick(2L));
-		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(t1, "Gargoyle",
-			Collections.singletonList(new SessionSignal.LootDrop(1, "Big bones", 1))).withGameTick(2L));
+		coordinator.testEnqueueSignal(SessionSignal.bossKill(t1, "Grotesque Guardians", 87).withGameTick(2L));
+		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(t1, "Dusk",
+			Collections.singletonList(new SessionSignal.LootDrop(1, "Dusk's remains", 1))).withGameTick(2L));
 		coordinator.testProcessTick(3L, t1);
 
-		Session newCurrent = coordinator.testCurrentSession();
-		assertFalse("a real activity switch must have occurred", ggSessionId.equals(newCurrent.getSessionId()));
-		assertEquals(SessionState.ACTIVE, newCurrent.getState());
-		assertEquals(ActivityType.SLAYER, newCurrent.getActivityIdentity().getActivityType());
-		assertEquals("normal Gargoyle loot must land on the NEW session", 1, newCurrent.getAggregates().getLootDrops().size());
-		assertNull("the new Gargoyles session must carry no boss reliableCount at all",
-			newCurrent.getAggregates().getReliableCount());
-
-		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): the outgoing GG
-		// session is now PARKED as the ONE resumable interrupted candidate
-		// at the moment of the switch, not finalized immediately -- so its
-		// DURABLE FILE only appears once its interrupted-resume window
-		// elapses. Advance past that window (with no further activity) to
-		// let it finalize, exactly as this test originally observed
-		// synchronously.
-		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
-
-		Thread.sleep(300);
-		Session finalizedGg = readFinalizedFile(ggSessionId);
-		assertEquals(SessionState.FINALIZED, finalizedGg.getState());
-		assertEquals("the old GG session's DURABLE FILE must retain its own boss reliableCount unchanged",
-			1, finalizedGg.getAggregates().getReliableCount().getSessionOccurrences());
-		assertEquals("the old GG session's DURABLE FILE must retain the Dusk loot, never the Gargoyle loot",
-			1, finalizedGg.getAggregates().getLootDrops().size());
-		assertEquals("Dusk", finalizedGg.getAggregates().getLootDrops().get(0).getSourceName());
+		Session current = coordinator.testCurrentSession();
+		assertEquals(slayerId, current.getSessionId());
+		assertEquals(gargoyles, current.getActivityIdentity());
+		assertEquals(Integer.valueOf(2), current.getAggregates().getSlayerProgressDelta());
+		assertEquals(1, current.getAggregates().getLootDrops().size());
+		assertNull(coordinator.testInterruptedCandidate());
 	}
+
 
 	// Boss self-consumption of its own
 	// Slayer task; this exact scenario is the regression this
@@ -341,7 +314,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 	// the Gargoyle loot arriving one tick later, which proves a real,
 	// different NPC (not the boss) actually produced the progress.
 	@Test
-	public void liveBugFix_adjacentTick_ggToGargoyles_progressAloneStaysBossing_confirmingLootNextTickThenSwitches() throws Exception
+	public void ggSession_ownTaskProgress_appliesImmediatelyToTheRefinedSession_nextTickGargoyleLootStaysThere() throws Exception
 	{
 		coordinator.ensureAccountLoaded(ACCOUNT_A);
 
@@ -352,85 +325,28 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 		coordinator.testProcessTick(2L, T0);
 		String ggSessionId = coordinator.testCurrentSession().getSessionId();
 
-		// Tick N: SLAYER_TASK_PROGRESS alone, with no corroborating
-		// evidence in this same tick -- this is exactly as consistent
-		// with GG's own self-consumption as it is with a real Gargoyle,
-		// so it must NOT switch by itself; it stays BOSSING/Grotesque
-		// Guardians, with the progress accumulating internally and the
-		// latest currentRemaining updated for display.
 		Instant t1 = T0.plusSeconds(30);
 		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(t1, "Gargoyles", "Catacombs of Kourend", 1, 98).withGameTick(2L));
 		coordinator.testProcessTick(3L, t1);
 
-		Session stillBossing = coordinator.testCurrentSession();
-		assertEquals("no premature switch: a boss's own known-task progress alone must never fabricate "
-			+ "a bogus Slayer session", ggSessionId, stillBossing.getSessionId());
-		assertEquals(ActivityType.BOSSING, stillBossing.getActivityIdentity().getActivityType());
-		// CANDIDATE-METRIC BUFFERING follow-up fix: the ambiguous kill's
-		// own progress metric is now BUFFERED (see ClassifierContext),
-		// never applied to the boss session while the candidate is still
-		// pending -- so the still-BOSSING session's own aggregates must
-		// show NOTHING from it yet. This replaces the old
-		// apply-then-possibly-retroactively-move behavior this test used
-		// to assert.
-		assertNull("the ambiguous kill's progress must NOT be applied to the boss session while "
-			+ "still pending -- it is buffered, not applied",
-			stillBossing.getAggregates().getSlayerProgressDelta());
-		assertNull("the ambiguous kill's currentRemaining must NOT update the boss session's own "
-			+ "display value while still pending",
-			stillBossing.getAggregates().getLatestSlayerCurrentRemaining());
+		Session refined = coordinator.testCurrentSession();
+		assertEquals(ggSessionId, refined.getSessionId());
+		assertEquals(ActivityType.SLAYER, refined.getActivityIdentity().getActivityType());
+		assertEquals("nothing is buffered any more -- the progress applies with the refine",
+			Integer.valueOf(1), refined.getAggregates().getSlayerProgressDelta());
+		assertEquals(Integer.valueOf(98), refined.getAggregates().getLatestSlayerCurrentRemaining());
 
-		// Tick N+1 (a separate batch entirely): Gargoyle loot -- a
-		// genuinely different NPC, not the boss itself or one of its
-		// known aliases (Dawn/Dusk) -- is the disambiguating evidence
-		// that this WAS a real, different kill. The switch happens now,
-		// confirmed by this loot.
 		Instant t2 = t1.plusMillis(600);
 		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(t2, "Gargoyle",
 			Collections.singletonList(new SessionSignal.LootDrop(1, "Big bones", 1))).withGameTick(3L));
 		coordinator.testProcessTick(4L, t2);
 
-		// CANDIDATE-METRIC BUFFERING follow-up fix: the ambiguous kill's
-		// own progress metric was BUFFERED, never applied to GG -- now
-		// that this loot confirms a real switch, it is applied to the
-		// BRAND-NEW Gargoyles session instead, immediately (not waiting
-		// for a second real Gargoyle kill). This is the exact defect
-		// this fix closes.
-		Session finalCurrent = coordinator.testCurrentSession();
-		assertFalse("confirming loot must now cause the real switch", ggSessionId.equals(finalCurrent.getSessionId()));
-		assertEquals(ActivityType.SLAYER, finalCurrent.getActivityIdentity().getActivityType());
-		assertEquals(1, finalCurrent.getAggregates().getLootDrops().size());
-		assertEquals("Gargoyle", finalCurrent.getAggregates().getLootDrops().get(0).getSourceName());
-		assertNull("the new Gargoyles session must carry no boss reliableCount at all",
-			finalCurrent.getAggregates().getReliableCount());
-		assertEquals("the ambiguous kill's own progress delta must land on the NEW Gargoyles "
-			+ "session, immediately upon confirmation", Integer.valueOf(1),
-			finalCurrent.getAggregates().getSlayerProgressDelta());
-		assertEquals("the new Gargoyles session must immediately show the correct currentRemaining "
-			+ "from the ambiguous kill -- not wait for a second kill",
-			Integer.valueOf(98), finalCurrent.getAggregates().getLatestSlayerCurrentRemaining());
-
-		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): see the earlier
-		// test's own comment -- the outgoing GG session is PARKED, not
-		// finalized, at the switch; advance past its interrupted-resume
-		// window to let it finalize before reading its DURABLE FILE.
-		coordinator.testProcessTick(5L, t2.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
-
-		Thread.sleep(300);
-		Session finalizedGg = readFinalizedFile(ggSessionId);
-		assertEquals(SessionState.FINALIZED, finalizedGg.getState());
-		assertEquals("the old GG session's DURABLE FILE must retain the Dusk loot and its own boss "
-			+ "reliableCount, and NOTHING from the ambiguous kill that turned out to be a real, "
-			+ "different Gargoyle -- the former known limitation is now fixed",
-			1, finalizedGg.getAggregates().getLootDrops().size());
-		assertEquals("Dusk", finalizedGg.getAggregates().getLootDrops().get(0).getSourceName());
-		assertEquals(1, finalizedGg.getAggregates().getReliableCount().getSessionOccurrences());
-		assertNull("the ambiguous kill's own progress metric must NOT remain on the finalized GG "
-			+ "file -- it was buffered, never applied there, and moved to the confirmed Gargoyles "
-			+ "session instead", finalizedGg.getAggregates().getSlayerProgressDelta());
-		assertEquals("the adjacent-tick Gargoyle loot must never retroactively land on the "
-			+ "already-finalized GG file", 1, finalizedGg.getAggregates().getLootDrops().size());
+		Session after = coordinator.testCurrentSession();
+		assertEquals(ggSessionId, after.getSessionId());
+		assertEquals(2, after.getAggregates().getLootDrops().size());
+		assertEquals(Integer.valueOf(1), after.getAggregates().getSlayerProgressDelta());
 	}
+
 
 	// NEW REGRESSION (live bug-fix pass -- boss self-consumption of its
 	// own Slayer task): the EXACT live-reported failure sequence --
@@ -459,7 +375,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 
 		assertEquals("no bogus Gargoyles session must ever be created for GG's own kill",
 			ggSessionId, coordinator.testCurrentSession().getSessionId());
-		assertEquals(ActivityType.BOSSING, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
+		assertEquals(ActivityType.SLAYER, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
 
 		// ~3.6 seconds later (matching the live report), the delayed
 		// same-boss BOSS_KILL message arrives, on its own separate tick --
@@ -471,7 +387,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 		Session afterBossKill = coordinator.testCurrentSession();
 		assertEquals("the same-boss BOSS_KILL must remain a heartbeat of the SAME session -- never a "
 			+ "fresh, third session", ggSessionId, afterBossKill.getSessionId());
-		assertEquals(ActivityType.BOSSING, afterBossKill.getActivityIdentity().getActivityType());
+		assertEquals(ActivityType.SLAYER, afterBossKill.getActivityIdentity().getActivityType());
 		assertEquals("reliableCount must increment exactly once more on the SAME session",
 			2, afterBossKill.getAggregates().getReliableCount().getSessionOccurrences());
 		// CANDIDATE-METRIC BUFFERING follow-up fix / REGRESSION 1+5: the
@@ -540,7 +456,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 			shellbaneSessionId, coordinator.testCurrentSession().getSessionId());
 		assertEquals("the established boss identity must remain canonical PRIMARY, never replaced "
 			+ "by the matching Slayer task's own identity",
-			ActivityType.BOSSING, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
+			ActivityType.SLAYER, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
 	}
 
 	// The exact live repro's second half: the delayed, same-boss BOSS_KILL
@@ -571,7 +487,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 		assertEquals("the confirming same-boss BOSS_KILL must remain a heartbeat of the SAME "
 			+ "session -- never a fresh session, and never the zero-duration bridge",
 			shellbaneSessionId, afterBossKill.getSessionId());
-		assertEquals(ActivityType.BOSSING, afterBossKill.getActivityIdentity().getActivityType());
+		assertEquals(ActivityType.SLAYER, afterBossKill.getActivityIdentity().getActivityType());
 		assertEquals("reliableCount must increment exactly once more on the SAME session",
 			2, afterBossKill.getAggregates().getReliableCount().getSessionOccurrences());
 		assertEquals("the buffered Slayer progress delta must be applied exactly once, to the SAME "
@@ -623,7 +539,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 			+ "own loot must all remain on the ONE session throughout -- the same sessionId that "
 			+ "started at the very first BOSS_KILL",
 			shellbaneSessionId, finalCurrent.getSessionId());
-		assertEquals(ActivityType.BOSSING, finalCurrent.getActivityIdentity().getActivityType());
+		assertEquals(ActivityType.SLAYER, finalCurrent.getActivityIdentity().getActivityType());
 		assertEquals("no metric lost or duplicated -- reliableCount reflects exactly the two "
 			+ "authoritative boss kills", 2, finalCurrent.getAggregates().getReliableCount().getSessionOccurrences());
 		assertEquals(Integer.valueOf(1), finalCurrent.getAggregates().getSlayerProgressDelta());
@@ -676,7 +592,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 		assertEquals("startedAt must never change on a resume -- this is the SAME session, not a "
 			+ "new one", startedAt, reactivated.startedAtInstant());
 		assertEquals(SessionState.ACTIVE, reactivated.getState());
-		assertEquals(ActivityType.BOSSING, reactivated.getActivityIdentity().getActivityType());
+		assertEquals(ActivityType.SLAYER, reactivated.getActivityIdentity().getActivityType());
 	}
 
 	@Test
@@ -733,7 +649,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 			+ "current session id must be completely unchanged",
 			sessionId, coordinator.testCurrentSession().getSessionId());
 		assertEquals("no transient bridge session -- the BOSSING identity must be completely "
-			+ "unchanged too", ActivityType.BOSSING, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
+			+ "unchanged too", ActivityType.SLAYER, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
 	}
 
 	// METRIC OWNERSHIP, full chain: prior activity (before suspension),
@@ -784,7 +700,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 		assertEquals("the SAME sessionId must reactivate, never a new bridge session",
 			sessionId, reactivated.getSessionId());
 		assertEquals(SessionState.ACTIVE, reactivated.getState());
-		assertEquals(ActivityType.BOSSING, reactivated.getActivityIdentity().getActivityType());
+		assertEquals(ActivityType.SLAYER, reactivated.getActivityIdentity().getActivityType());
 		assertEquals("prior reliableCount from before suspension must survive",
 			2, reactivated.getAggregates().getReliableCount().getSessionOccurrences());
 		assertEquals("prior loot from before suspension must survive",
@@ -835,7 +751,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 	// session shows the correct progressDelta/currentRemaining and loot
 	// immediately, with no bogus reliableCount at all.
 	@Test
-	public void candidateMetricBuffering_sameTickConfirmingLoot_newSessionGetsProgressAndLootImmediately_ggUnaffected() throws Exception
+	public void ggSession_sameTickGargoylesProgressAndGargoyleLoot_refinesTheSameSessionIntoTheAssignment() throws Exception
 	{
 		coordinator.ensureAccountLoaded(ACCOUNT_A);
 
@@ -844,49 +760,25 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 			Collections.singletonList(new SessionSignal.LootDrop(1, "Dusk's remains", 1))).withGameTick(1L));
 		coordinator.testProcessTick(2L, T0);
 		String ggSessionId = coordinator.testCurrentSession().getSessionId();
-		assertEquals(1, coordinator.testCurrentSession().getAggregates().getReliableCount().getSessionOccurrences());
 
-		// Same tick: the first REAL regular Gargoyle's own
-		// SLAYER_TASK_PROGRESS/Gargoyles (identical in shape to GG's own
-		// self-consumption event) plus its own confirming loot, a
-		// genuinely different NPC.
 		Instant t1 = T0.plusSeconds(30);
 		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(t1, "Gargoyles", "Catacombs of Kourend", 1, 89).withGameTick(2L));
 		coordinator.testEnqueueSignal(SessionSignal.serverNpcLoot(t1, "Gargoyle",
 			Collections.singletonList(new SessionSignal.LootDrop(1, "Big bones", 1))).withGameTick(2L));
 		coordinator.testProcessTick(3L, t1);
 
-		Session newCurrent = coordinator.testCurrentSession();
-		assertFalse("the same-tick confirming loot must cause a real switch", ggSessionId.equals(newCurrent.getSessionId()));
-		assertEquals(ActivityType.SLAYER, newCurrent.getActivityIdentity().getActivityType());
-		assertNull("REGRESSION 2: the new Gargoyles session must carry no boss reliableCount at all",
-			newCurrent.getAggregates().getReliableCount());
-		assertEquals("REGRESSION 3: the first real Gargoyle must give the new session progressDelta=1",
-			Integer.valueOf(1), newCurrent.getAggregates().getSlayerProgressDelta());
-		assertEquals("REGRESSION 4: the new session must show the correct currentRemaining immediately "
-			+ "upon confirmation -- not wait for a second kill",
-			Integer.valueOf(89), newCurrent.getAggregates().getLatestSlayerCurrentRemaining());
-		assertEquals("REGRESSION 5: the confirming Gargoyle loot must be in the new session",
-			1, newCurrent.getAggregates().getLootDrops().size());
-		assertEquals("Gargoyle", newCurrent.getAggregates().getLootDrops().get(0).getSourceName());
-
-		// INTERRUPTED-ACTIVITY RESUME (A -> brief B -> A): see the earlier
-		// test's own comment -- the outgoing GG session is PARKED, not
-		// finalized, at the switch; advance past its interrupted-resume
-		// window to let it finalize before reading its DURABLE FILE.
-		coordinator.testProcessTick(4L, t1.plus(SessionLifecycleEngine.INTERRUPTED_RESUME_WINDOW).plusSeconds(1));
-
-		Thread.sleep(300);
-		Session finalizedGg = readFinalizedFile(ggSessionId);
-		assertEquals(SessionState.FINALIZED, finalizedGg.getState());
-		assertEquals("REGRESSION 2: GG's own finalized reliableCount must be unaffected by the first "
-			+ "real Gargoyle", 1, finalizedGg.getAggregates().getReliableCount().getSessionOccurrences());
-		assertNull("REGRESSION 2/6: the first real Gargoyle's own progress must NOT add a second unit "
-			+ "to GG, same-tick timing included", finalizedGg.getAggregates().getSlayerProgressDelta());
-		assertEquals("GG's own Dusk loot must be retained, untouched by the Gargoyle loot",
-			1, finalizedGg.getAggregates().getLootDrops().size());
-		assertEquals("Dusk", finalizedGg.getAggregates().getLootDrops().get(0).getSourceName());
+		Session current = coordinator.testCurrentSession();
+		assertEquals("boss-on-task ownership: refined in place, never a new session",
+			ggSessionId, current.getSessionId());
+		assertEquals(ActivitySignalClassifier.slayerIdentity("Gargoyles", "Catacombs of Kourend"), current.getActivityIdentity());
+		assertEquals(Integer.valueOf(1), current.getAggregates().getSlayerProgressDelta());
+		assertEquals(Integer.valueOf(89), current.getAggregates().getLatestSlayerCurrentRemaining());
+		assertEquals("GG's Dusk loot and the Gargoyle loot are both owned by the one session",
+			2, current.getAggregates().getLootDrops().size());
+		assertEquals(1, current.getAggregates().getReliableCount().getSessionOccurrences());
+		assertNull("nothing was parked or displaced", coordinator.testInterruptedCandidate());
 	}
+
 
 	// NEW REGRESSION (CANDIDATE-METRIC BUFFERING follow-up fix, DESIRED
 	// RESOLUTION C) -- a self-consumption candidate that never resolves
@@ -896,7 +788,7 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 	// as a normal contextual metric, to the SAME session -- now merely
 	// SUSPENDED, still legitimately current.
 	@Test
-	public void candidateMetricBuffering_neverResolved_idleTimeoutFlushesBufferedMetricToSameSuspendedSession() throws Exception
+	public void ggSession_ownTaskProgress_thenIdle_sameRefinedSessionSuspendsWithItsProgress() throws Exception
 	{
 		coordinator.ensureAccountLoaded(ACCOUNT_A);
 
@@ -907,25 +799,19 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 		Instant progressAt = T0.plusSeconds(5);
 		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(progressAt, "Gargoyles", "Catacombs of Kourend", 1, 86).withGameTick(2L));
 		coordinator.testProcessTick(3L, progressAt);
-		assertNull("still pending -- buffered, not applied",
-			coordinator.testCurrentSession().getAggregates().getSlayerProgressDelta());
+		assertEquals(Integer.valueOf(1), coordinator.testCurrentSession().getAggregates().getSlayerProgressDelta());
 
-		// No BOSS_KILL, no loot, ever -- just idle time past the 5-minute
-		// suspend threshold, with nothing else pending for the still-open
-		// tick (so processTick()'s own watermark lets advanceTime() run).
 		Instant idleAt = progressAt.plus(SessionLifecycleEngine.SUSPEND_TIMEOUT).plusSeconds(1);
 		coordinator.testProcessTick(3L, idleAt);
 
 		Session suspended = coordinator.testCurrentSession();
-		assertEquals("the candidate's own session must still be current, merely SUSPENDED -- never "
-			+ "silently replaced or lost", ggSessionId, suspended.getSessionId());
+		assertEquals(ggSessionId, suspended.getSessionId());
 		assertEquals(SessionState.SUSPENDED, suspended.getState());
-		assertEquals("the never-resolved candidate's buffered progress metric must be committed to "
-			+ "this SAME session once it stops being current for an unrelated reason (DESIRED "
-			+ "RESOLUTION C) -- never silently dropped",
-			Integer.valueOf(1), suspended.getAggregates().getSlayerProgressDelta());
+		assertEquals(ActivityType.SLAYER, suspended.getActivityIdentity().getActivityType());
+		assertEquals(Integer.valueOf(1), suspended.getAggregates().getSlayerProgressDelta());
 		assertEquals(Integer.valueOf(86), suspended.getAggregates().getLatestSlayerCurrentRemaining());
 	}
+
 
 	// LOOT OWNERSHIP regression, generalized:
 	// the same preBatchCurrentMetricUpdates misattribution the live
@@ -2165,48 +2051,41 @@ TestFilepaths.rooted(testRoot).deleteRecursively();
 	}
 
 	@Test
-	public void grotesqueGuardians_dawnThenDuskResolveToOneCanonicalBossingSession_bossKillLandsOnSameSession()
+	public void grotesqueGuardians_onGargoylesAssignment_dawnDuskAndKillAllStayInTheSlayerSession()
 	{
 		coordinator.ensureAccountLoaded(ACCOUNT_A);
 
 		coordinator.testEnqueueSignal(SessionSignal.slayerTaskProgress(T0, "Gargoyles", "Catacombs", 1).withGameTick(1L));
 		coordinator.testProcessTick(2L, T0);
-		assertEquals(ActivityType.SLAYER, coordinator.testCurrentSession().getActivityIdentity().getActivityType());
+		Session slayer = coordinator.testCurrentSession();
+		assertEquals(ActivityType.SLAYER, slayer.getActivityIdentity().getActivityType());
+		String sessionId = slayer.getSessionId();
+		String slayerKey = slayer.getActivityIdentity().getActivityKey();
 
-		// Interacting with "Dawn" -- KnownBossRegistry already resolved
-		// this to the canonical "Grotesque Guardians" display name via its
-		// static seed, with no prior confirmation needed (see
-		// KnownBossRegistryTest.freshRegistry_dawnAndDusk_resolveViaStaticSeed_withNoPriorConfirmation())
-		// by the time BossActivityContextCollector builds this signal.
+		// Dawn, then Dusk -- both resolve (KnownBossRegistry) to the canonical
+		// "Grotesque Guardians" boss context. GG belongs to the Gargoyles
+		// assignment, so the Slayer session owns the whole encounter.
 		Instant t1 = T0.plusSeconds(5);
 		coordinator.testEnqueueSignal(SessionSignal.bossActivityContext(t1, "Grotesque Guardians").withGameTick(2L));
 		coordinator.testProcessTick(3L, t1);
-		Session afterDawn = coordinator.testCurrentSession();
-		assertEquals(ActivityType.BOSSING, afterDawn.getActivityIdentity().getActivityType());
-		assertEquals("grotesque guardians", afterDawn.getActivityIdentity().getActivityKey());
-		String sessionId = afterDawn.getSessionId();
-
-		// The fight swaps to interacting with "Dusk" -- resolves to the
-		// SAME canonical name, so this must remain the exact same session
-		// (an identity-equal heartbeat), never a second switch.
 		Instant t2 = t1.plusSeconds(5);
 		coordinator.testEnqueueSignal(SessionSignal.bossActivityContext(t2, "Grotesque Guardians").withGameTick(3L));
 		coordinator.testProcessTick(4L, t2);
 		Session afterDusk = coordinator.testCurrentSession();
 		assertEquals(sessionId, afterDusk.getSessionId());
-		assertEquals("grotesque guardians", afterDusk.getActivityIdentity().getActivityKey());
+		assertEquals(slayerKey, afterDusk.getActivityIdentity().getActivityKey());
 		assertNull(afterDusk.getAggregates().getReliableCount());
 
-		// Authoritative BOSS_KILL (also reported under the same canonical
-		// name) lands on the exact same session throughout.
 		Instant t3 = t2.plusSeconds(5);
 		coordinator.testEnqueueSignal(SessionSignal.bossKill(t3, "Grotesque Guardians", 1).withGameTick(4L));
 		coordinator.testProcessTick(5L, t3);
 		Session afterKill = coordinator.testCurrentSession();
 		assertEquals(sessionId, afterKill.getSessionId());
+		assertEquals(slayerKey, afterKill.getActivityIdentity().getActivityKey());
 		assertEquals(Integer.valueOf(1), afterKill.getAggregates().getReliableCount().getAuthoritativeCurrentValue());
 		assertEquals(1, afterKill.getAggregates().getReliableCount().getSessionOccurrences());
 	}
+
 
 	// =====================================================================
 	// Current Session UI thread-safety hardening pass, recovery pass:
