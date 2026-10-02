@@ -50,6 +50,18 @@ import net.runelite.client.util.Filepath;
  * "no bound, load everything") -- the bound lives entirely at the call
  * site, not hardcoded here.
  *
+ * PRE-FILTER (post-release storage pass): only SERVER_NPC_LOOT and
+ * STRUCTURED_REWARD lines can ever produce a record, and EventLedger
+ * writes the event type as its plain enum name ({@code "eventType":
+ * "SERVER_NPC_LOOT"} -- Gson, no renaming), so a line containing neither
+ * name is skipped before any JSON parsing. The one other spelling the
+ * (lenient) parser would still accept is a JSON unicode escape, so any
+ * line containing a backslash-u escape also stays a candidate -- the filter can
+ * therefore never drop a line the full parse would have accepted; it only
+ * avoids parsing lines that could not contribute (about 93% of a real
+ * log). Candidates go through exactly the same parse, retention and
+ * dedup as before. See {@link #isLootCandidate(String)}.
+ *
  * DEDUP: relies entirely on {@link LootTrackerIndex#apply}'s own
  * eventId-based dedup (see that method's javadoc) -- this class does no
  * deduplication of its own, so re-running a rebuild against the same
@@ -67,6 +79,12 @@ import net.runelite.client.util.Filepath;
 public final class LootTrackerPersistence
 {
 	private final Gson gson;
+	/** False only in tests that measure / compare against the unfiltered path. */
+	private final boolean prefilter;
+	private volatile RebuildStats lastRebuildStats = new RebuildStats(0, 0, 0);
+
+	private static final String SERVER_NPC_LOOT_TOKEN = EventType.SERVER_NPC_LOOT.name();
+	private static final String STRUCTURED_REWARD_TOKEN = EventType.STRUCTURED_REWARD.name();
 
 	/**
 	 * @param gson RuneLite's injected Gson (passed down from
@@ -75,7 +93,46 @@ public final class LootTrackerPersistence
 	 */
 	public LootTrackerPersistence(Gson gson)
 	{
+		this(gson, true);
+	}
+
+	/** Test seam: {@code prefilter=false} parses every line, exactly as before the pre-filter existed. */
+	LootTrackerPersistence(Gson gson, boolean prefilter)
+	{
 		this.gson = gson;
+		this.prefilter = prefilter;
+	}
+
+	/**
+	 * Cheap textual test run before any JSON parsing: true when the line
+	 * could possibly be a SERVER_NPC_LOOT or STRUCTURED_REWARD event --
+	 * it names one of them, or contains a JSON unicode escape (the only
+	 * way the event type could be spelled without its literal name).
+	 * Never false for a line the full parse would turn into a record.
+	 */
+	static boolean isLootCandidate(String line)
+	{
+		return line.contains(SERVER_NPC_LOOT_TOKEN) || line.contains(STRUCTURED_REWARD_TOKEN) || line.contains("\\u");
+	}
+
+	/** Counters of the most recent rebuild (diagnostics / tests only; never logged per line). */
+	RebuildStats getLastRebuildStats()
+	{
+		return lastRebuildStats;
+	}
+
+	static final class RebuildStats
+	{
+		final int lines;
+		final int candidates;
+		final int parsed;
+
+		RebuildStats(int lines, int candidates, int parsed)
+		{
+			this.lines = lines;
+			this.candidates = candidates;
+			this.parsed = parsed;
+		}
 	}
 
 	/**
@@ -101,6 +158,8 @@ public final class LootTrackerPersistence
 
 		int applied = 0;
 		int lineNumber = 0;
+		int candidates = 0;
+		int parsed = 0;
 		try (BufferedReader reader = new BufferedReader(
 			new InputStreamReader(eventsFile.openInputStream(), StandardCharsets.UTF_8)))
 		{
@@ -112,6 +171,13 @@ public final class LootTrackerPersistence
 				{
 					continue;
 				}
+				if (prefilter && !isLootCandidate(line))
+				{
+					// Cannot be loot: never parsed (see PRE-FILTER).
+					continue;
+				}
+				candidates++;
+				parsed++;
 				LootTrackerRecord record = parseIfLoot(line, lineNumber, minObservedAt);
 				if (record != null && index.apply(record))
 				{
@@ -123,6 +189,7 @@ public final class LootTrackerPersistence
 		{
 			log.warn("Failed reading events.jsonl for account {} during Loot Tracker rebuild; proceeding with whatever was applied so far", accountHash, e);
 		}
+		lastRebuildStats = new RebuildStats(lineNumber, candidates, parsed);
 
 		return applied;
 	}
