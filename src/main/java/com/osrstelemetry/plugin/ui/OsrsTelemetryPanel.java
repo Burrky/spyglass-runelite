@@ -372,6 +372,24 @@ public final class OsrsTelemetryPanel extends PluginPanel
 		currentSessionView.setTemporossGameSupplier(source);
 	}
 
+	/** Wintertodt companion: live round, tools, Firemaking / Agility XP, playstyle and goal (planning state). */
+	public void attachWintertodt(com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource source)
+	{
+		currentSessionView.setWintertodtSource(source);
+	}
+
+	/** Skill companion (first: Mining): live method / production / trip, the target (planning state) and the bank view. */
+	public void attachSkillCompanion(com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source)
+	{
+		currentSessionView.setSkillCompanionSource(source);
+	}
+
+	/** Pest Control dashboard: current game, balance, Void ownership, reward-skill XP and the goal (planning state). */
+	public void attachPestControl(com.osrstelemetry.plugin.pestcontrol.PestControlPanelSource source)
+	{
+		currentSessionView.setPestControlSource(source);
+	}
+
 	/** Live Guardians of the Rift game for Current Session (HUD script power + energy varbits); same refresh path. */
 	public void attachGotrGame(java.util.function.Supplier<com.osrstelemetry.plugin.activity.GotrGameState> source)
 	{

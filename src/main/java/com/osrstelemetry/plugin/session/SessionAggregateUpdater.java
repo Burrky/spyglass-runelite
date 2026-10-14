@@ -16,6 +16,9 @@ import java.util.Objects;
  */
 final class SessionAggregateUpdater
 {
+	/** WintertodtPlaystyle.label(...) for an unresolved Auto. */
+	static final String WINTERTODT_AUTO_LABEL = "Auto";
+
 	private SessionAggregateUpdater()
 	{
 	}
@@ -84,6 +87,45 @@ final class SessionAggregateUpdater
 		if (update.getActivityStatsKey() != null)
 		{
 			applyActivityStats(aggregates, update);
+		}
+
+		if (update.getSkillProduction() != null)
+		{
+			applySkillProduction(aggregates, update.getSkillProduction());
+		}
+
+		if (update.getEncounterKillNpc() != null)
+		{
+			// Same attribution rule as a bracelet proc: the record current at the death's own time (the
+			// completing kill may share the completion instant). Never touches task units.
+			SessionAggregates.SlayerAssignmentRecord record = xpRecordFor(aggregates, update.getReferenceTime());
+			SessionAggregates.SlayerAssignmentRecord latest = currentSlayerAssignment(aggregates);
+			if (record == null && latest != null && update.getReferenceTime() != null
+				&& latest.getEndReason() == SlayerAssignmentEndReason.COMPLETED
+				&& update.getReferenceTime().toString().equals(latest.getCompletedAt()))
+			{
+				record = latest;
+			}
+			if (record != null && record.getKillsByNpc() != null)
+			{
+				record.getKillsByNpc().merge(update.getEncounterKillNpc(), 1L, Long::sum);
+				if ("SUPERIOR".equals(update.getEncounterKillRole()))
+				{
+					if (record.getSuperiorsByNpc() == null)
+					{
+						record.setSuperiorsByNpc(new java.util.LinkedHashMap<>());
+					}
+					record.getSuperiorsByNpc().merge(update.getEncounterKillNpc(), 1L, Long::sum);
+				}
+				else if ("SUBORDINATE".equals(update.getEncounterKillRole()))
+				{
+					if (record.getSubordinatesByNpc() == null)
+					{
+						record.setSubordinatesByNpc(new java.util.LinkedHashMap<>());
+					}
+					record.getSubordinatesByNpc().merge(update.getEncounterKillNpc(), 1L, Long::sum);
+				}
+			}
 		}
 
 		if (update.getSlayerBraceletEffect() != null)
@@ -343,6 +385,10 @@ final class SessionAggregateUpdater
 	{
 		record.setSlaughterProcs(0);
 		record.setExpeditiousProcs(0);
+		// Actual kills (owned encounter deaths) are counted from the same point.
+		record.setKillsByNpc(new java.util.LinkedHashMap<>());
+		record.setSuperiorsByNpc(new java.util.LinkedHashMap<>());
+		record.setSubordinatesByNpc(new java.util.LinkedHashMap<>());
 	}
 
 	private static SessionAggregates.SlayerAssignmentRecord newAssignment(int ordinal, ActivityIdentity assignment)
@@ -443,6 +489,30 @@ final class SessionAggregateUpdater
 				stats.getCurrencyGainedByKey().merge(update.getCurrencyKey(), update.getCurrencyGained(), Long::sum);
 			}
 		}
+		if (update.getRoundMillis() != null && update.getRoundMillis() > 0)
+		{
+			stats.setRoundMillis(stats.getRoundMillis() + update.getRoundMillis());
+			stats.setRoundsTimed(stats.getRoundsTimed() + 1);
+			if (update.isCompleteRound())
+			{
+				stats.setCompleteRoundMillis(stats.getCompleteRoundMillis() + update.getRoundMillis());
+				stats.setCompleteRounds(stats.getCompleteRounds() + 1);
+			}
+			// The latest resolved playstyle wins; "Auto" only while nothing resolved.
+			String style = update.getRoundPlaystyle();
+			if (style != null && (stats.getPlaystyle() == null || !WINTERTODT_AUTO_LABEL.equals(style)))
+			{
+				stats.setPlaystyle(style);
+			}
+		}
+		if (update.getActionKey() != null && update.getActionCount() != null && update.getActionCount() > 0)
+		{
+			if (stats.getActionCounts() == null)
+			{
+				stats.setActionCounts(new java.util.LinkedHashMap<>());
+			}
+			stats.getActionCounts().merge(update.getActionKey(), update.getActionCount(), Long::sum);
+		}
 		if (update.getProducedItems() != null)
 		{
 			applyProducedItems(aggregates, update.getProducedItems());
@@ -468,6 +538,121 @@ final class SessionAggregateUpdater
 			stats.setScoreTotal(stats.getScoreTotal() + score);
 			stats.setBestScore(stats.getBestScore() == null ? score : Math.max(stats.getBestScore(), score));
 		}
+	}
+
+	/**
+	 * SKILL COMPANION: produced quantities join the session's one produced-items
+	 * list (TOTAL -- the same list History already renders), banked
+	 * quantities and per-method time join SkillSessionStats. Every part only
+	 * ever adds; nothing here can make TOTAL or BANKED go down.
+	 */
+	private static void applySkillProduction(SessionAggregates aggregates, SkillProductionUpdate update)
+	{
+		applyProducedItems(aggregates, update.getProduced());
+		SessionAggregates.SkillSessionStats stats = aggregates.getSkillStats();
+		if (stats == null || !update.getSkillKey().equals(stats.getSkillKey()))
+		{
+			stats = new SessionAggregates.SkillSessionStats();
+			stats.setSkillKey(update.getSkillKey());
+			aggregates.setSkillStats(stats);
+		}
+		for (SessionSignal.LootDrop item : update.getBanked())
+		{
+			if (item != null && item.getQuantity() > 0)
+			{
+				if (stats.getBanked() == null)
+				{
+					stats.setBanked(new ArrayList<>());
+				}
+				mergeProduced(stats.getBanked(), item);
+			}
+		}
+		for (java.util.Map.Entry<String, Long> e : update.getMethodMillis().entrySet())
+		{
+			if (e.getKey() != null && e.getValue() != null && e.getValue() > 0)
+			{
+				if (stats.getMethodMillis() == null)
+				{
+					stats.setMethodMillis(new java.util.LinkedHashMap<>());
+				}
+				stats.getMethodMillis().merge(e.getKey(), e.getValue(), Long::sum);
+			}
+		}
+		if (update.getMethod() != null)
+		{
+			stats.setLastMethod(update.getMethod());
+		}
+		for (java.util.Map.Entry<String, SessionAggregates.CycleAggregate> e : update.getCycles().entrySet())
+		{
+			SessionAggregates.CycleAggregate add = e.getValue();
+			if (e.getKey() == null || add == null || (add.getCount() <= 0 && add.getFailures() <= 0))
+			{
+				continue;
+			}
+			if (stats.getCycles() == null)
+			{
+				stats.setCycles(new java.util.LinkedHashMap<>());
+			}
+			SessionAggregates.CycleAggregate c = stats.getCycles().computeIfAbsent(e.getKey(), k -> new SessionAggregates.CycleAggregate());
+			c.setCount(c.getCount() + Math.max(0L, add.getCount()));
+			c.setTotalMillis(c.getTotalMillis() + Math.max(0L, add.getTotalMillis()));
+			if (add.getBestMillis() > 0 && (c.getBestMillis() <= 0 || add.getBestMillis() < c.getBestMillis()))
+			{
+				c.setBestMillis(add.getBestMillis());
+			}
+			c.setFailures(c.getFailures() + Math.max(0L, add.getFailures()));
+		}
+		for (SessionSignal.LootDrop item : update.getAutoTransformed())
+		{
+			if (item != null && item.getQuantity() > 0)
+			{
+				if (stats.getAutoTransformed() == null)
+				{
+					stats.setAutoTransformed(new ArrayList<>());
+				}
+				mergeProduced(stats.getAutoTransformed(), item);
+			}
+		}
+		for (SessionSignal.LootDrop item : update.getConsumed())
+		{
+			if (item != null && item.getQuantity() > 0)
+			{
+				if (stats.getConsumed() == null)
+				{
+					stats.setConsumed(new ArrayList<>());
+				}
+				mergeProduced(stats.getConsumed(), item);
+			}
+		}
+		for (java.util.Map.Entry<String, Long> e : update.getOccurrences().entrySet())
+		{
+			if (e.getKey() != null && e.getValue() != null && e.getValue() > 0)
+			{
+				if (stats.getOccurrences() == null)
+				{
+					stats.setOccurrences(new java.util.LinkedHashMap<>());
+				}
+				stats.getOccurrences().merge(e.getKey(), e.getValue(), Long::sum);
+			}
+		}
+	}
+
+	private static void mergeProduced(List<SessionAggregates.ProducedItemAggregate> list, SessionSignal.LootDrop item)
+	{
+		for (SessionAggregates.ProducedItemAggregate p : list)
+		{
+			if (item.getItemId() != null ? item.getItemId().equals(p.getItemId())
+				: p.getItemId() == null && Objects.equals(item.getItemName(), p.getItemName()))
+			{
+				p.setQuantity(p.getQuantity() + item.getQuantity());
+				return;
+			}
+		}
+		SessionAggregates.ProducedItemAggregate added = new SessionAggregates.ProducedItemAggregate();
+		added.setItemId(item.getItemId());
+		added.setItemName(item.getItemName());
+		added.setQuantity(item.getQuantity());
+		list.add(added);
 	}
 
 	/** Cumulative per item (id when known, else name); non-positive quantities ignored. Never subtracts. */

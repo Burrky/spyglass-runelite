@@ -246,6 +246,74 @@ public class SessionAggregates
 		 */
 		private Integer slaughterProcs;
 		private Integer expeditiousProcs;
+		/**
+		 * ACTUAL KILLS of this assignment's encounter (exact NPC name -> owned
+		 * deaths): the task's own targets, subordinates it summons, its
+		 * superiors -- see SlayerEncounterKills. Not task units. Null on older
+		 * records and before tracking began = unknown (never shown as 0).
+		 */
+		private Map<String, Long> killsByNpc;
+		/** Of those, superior creatures (exact name -> kills); null = not tracked. */
+		private Map<String, Long> superiorsByNpc;
+		/** Of those, subordinates the task's monsters summoned (exact name -> kills); null = not tracked. */
+		private Map<String, Long> subordinatesByNpc;
+
+		/** Every tracked owned death of this assignment's encounter; null when not tracked (older record). Derived. */
+		public Long trackedKills()
+		{
+			return sum(killsByNpc);
+		}
+
+		/**
+		 * ACTUAL KILLS: every owned NPC death of this assignment's encounter --
+		 * its own targets and superiors, plus the subordinates they summoned.
+		 * Never task units, and never derived from them: the unit-derived
+		 * {@link #observedKills()} only FLOORS the target-and-superior part (a
+		 * target death the encounter tracking could not see is never lost),
+		 * and subordinates are always added on top (they use no task unit), so
+		 * nothing is counted twice. Null when neither is known. Derived, not
+		 * persisted.
+		 */
+		public Long actualKills()
+		{
+			Long tracked = trackedKills();
+			Integer observed = observedKills();
+			if (tracked == null)
+			{
+				return observed == null ? null : observed.longValue();
+			}
+			Long sub = sum(subordinatesByNpc);
+			long subordinates = sub == null ? 0L : sub;
+			long targets = tracked - subordinates;
+			return (observed == null ? targets : Math.max(targets, observed)) + subordinates;
+		}
+
+		/** Whether the per-NPC breakdown accounts for every actual kill (else only the total is shown). */
+		public boolean breakdownComplete()
+		{
+			Long tracked = trackedKills();
+			return tracked != null && tracked.equals(actualKills());
+		}
+
+		/** Superior creatures killed on this assignment; null when not tracked. Derived. */
+		public Long superiorKills()
+		{
+			return sum(superiorsByNpc);
+		}
+
+		private static Long sum(Map<String, Long> m)
+		{
+			if (m == null)
+			{
+				return null;
+			}
+			long n = 0L;
+			for (Long v : m.values())
+			{
+				n += v == null ? 0L : v;
+			}
+			return n;
+		}
 
 		/**
 		 * Kills Spyglass observed for this assignment: task units it saw
@@ -316,6 +384,21 @@ public class SessionAggregates
 		private long scoreTotal;
 		/** Highest of those games' final scores, or null when none. */
 		private Integer bestScore;
+		/**
+		 * Total time spent inside the activity's play area across rounds (win
+		 * or loss), from game ticks; 0 when the activity does not track it.
+		 * The denominator of per-hour rates that must exclude lobby waiting.
+		 */
+		private long roundMillis;
+		/** Rounds whose in-area time is included in roundMillis. */
+		private int roundsTimed;
+		/** Of those, rounds seen from start to end (their time): the Avg Round population. */
+		private long completeRoundMillis;
+		private int completeRounds;
+		/** Counted actions this session (action key -> total), e.g. Wintertodt roots fed; null when none. */
+		private java.util.Map<String, Long> actionCounts;
+		/** Wintertodt: the session's effective playstyle label for History ("Mass • Points", or "Auto" if never resolved); null when none. */
+		private String playstyle;
 		/** The game's running count of the last scored completion (duplicate-evidence guard), or null. */
 		private Integer lastScoredCompletionCount;
 
@@ -324,6 +407,62 @@ public class SessionAggregates
 		{
 			return scoredCompletions <= 0 ? null : Math.round(scoreTotal / (double) scoredCompletions);
 		}
+	}
+
+	/**
+	 * SKILL COMPANION session stats (see skills.SkillCompanions), alongside producedItems
+	 * (which holds the TOTAL production per resource): what of this session's
+	 * production was positively observed entering the bank, and how long each
+	 * method was trained. Null for every session without a skill companion
+	 * (and for every session written before it existed).
+	 */
+	private SkillSessionStats skillStats;
+
+	@Data
+	public static class SkillSessionStats
+	{
+		/** The SKILLING session key ("mining"). */
+		private String skillKey;
+		/** BANKED per resource (this session's own production only), first-banked order; null when none. */
+		private List<ProducedItemAggregate> banked;
+		/** Training time per method key ("amethyst" -> ms); null when none. */
+		private Map<String, Long> methodMillis;
+		/** The method current at the latest update (History label fallback). */
+		private String lastMethod;
+		/**
+		 * ADDED (Skills Phase 3: Agility). Completed cycles per method key
+		 * (Agility: laps per course); null for skills without cycles and in
+		 * every session written before this existed.
+		 */
+		private Map<String, CycleAggregate> cycles;
+		/**
+		 * ADDED (Skills Phase 4). The part of producedItems a tool transformed
+		 * the moment it was produced, per resource; a subset of production,
+		 * never banked.
+		 * Null when none and in every session written before this existed.
+		 */
+		private List<ProducedItemAggregate> autoTransformed;
+		/**
+		 * ADDED (Skills Phase 4). Contextual occurrences per kind key (events
+		 * the player took part in); null when none and in every older session.
+		 */
+		private Map<String, Long> occurrences;
+		/**
+		 * ADDED (Skills Phase 5). Session-owned inputs a transformation used up,
+		 * per item (e.g. essence crafted into runes); never production. Null
+		 * when none and in every older session.
+		 */
+		private List<ProducedItemAggregate> consumed;
+	}
+
+	/** Valid completed cycles of one method (Agility: one course's laps). Durations in ms; bestMillis 0 = none. */
+	@Data
+	public static class CycleAggregate
+	{
+		private long count;
+		private long totalMillis;
+		private long bestMillis;
+		private long failures;
 	}
 
 	/**

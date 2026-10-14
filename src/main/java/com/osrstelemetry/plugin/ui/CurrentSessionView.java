@@ -15,7 +15,24 @@ import com.osrstelemetry.plugin.activity.GotrAltar;
 import com.osrstelemetry.plugin.activity.GotrCandidate;
 import com.osrstelemetry.plugin.activity.GotrGameState;
 import com.osrstelemetry.plugin.activity.GotrRewardWallet;
+import com.osrstelemetry.plugin.activity.PestControlGameState;
 import com.osrstelemetry.plugin.activity.TemporossGameState;
+import com.osrstelemetry.plugin.activity.WintertodtRoundTracker;
+import com.osrstelemetry.plugin.activity.WintertodtState;
+import com.osrstelemetry.plugin.wintertodt.WintertodtGoal;
+import com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource;
+import com.osrstelemetry.plugin.wintertodt.WintertodtPlaystyle;
+import com.osrstelemetry.plugin.wintertodt.WintertodtRewardHunt;
+import com.osrstelemetry.plugin.wintertodt.WintertodtRewards;
+import com.osrstelemetry.plugin.wintertodt.WintertodtTools;
+import com.osrstelemetry.plugin.wintertodt.WintertodtUnique;
+import com.osrstelemetry.plugin.pestcontrol.PestControlGoal;
+import com.osrstelemetry.plugin.pestcontrol.PestControlGoalPlanner;
+import com.osrstelemetry.plugin.pestcontrol.PestControlPanelSource;
+import com.osrstelemetry.plugin.pestcontrol.PestControlXp;
+import com.osrstelemetry.plugin.pestcontrol.SupplyPack;
+import com.osrstelemetry.plugin.pestcontrol.VoidPiece;
+import com.osrstelemetry.plugin.pestcontrol.VoidStyle;
 import com.osrstelemetry.plugin.session.ActivityType;
 import com.osrstelemetry.plugin.session.SessionAggregates;
 import com.osrstelemetry.plugin.session.SessionState;
@@ -387,6 +404,12 @@ final class CurrentSessionView extends JPanel
 	void render(CurrentSessionSnapshot snapshot)
 	{
 		lastSnapshot = snapshot;
+		if (pestPopupOpen)
+		{
+			// A Pest Control goal dropdown is open: rebuilding now would close it
+			// under the cursor. The selection (or cancel) renders right after.
+			return;
+		}
 		content.removeAll();
 
 		if (!snapshot.isPresent())
@@ -407,6 +430,18 @@ final class CurrentSessionView extends JPanel
 			else if (isGotr(snapshot))
 			{
 				renderGotrBlock(snapshot);
+			}
+			else if (isPestControl(snapshot))
+			{
+				renderPestControlBlock(snapshot);
+			}
+			else if (isWintertodt(snapshot))
+			{
+				renderWintertodtBlock(snapshot);
+			}
+			else if (isSkillCompanion(snapshot))
+			{
+				renderSkillCompanionBlock(snapshot);
 			}
 			renderSlayerSection(snapshot);
 			// XP / Loot order is a live, player-facing config choice. The
@@ -665,7 +700,8 @@ final class CurrentSessionView extends JPanel
 			// Structured activity: generic completion metric on its own line
 			// so the elapsed line never overflows the sidebar.
 			FactLine completionLabel = CompletionMetricText.factLine(snapshot.getCompletionLabel(),
-				snapshot.getCompletionCount(), snapshot.getActiveDurationMillis());
+				snapshot.getCompletionCount(), snapshot.getActiveDurationMillis(),
+				CompletionMetricText.currencyLabelFor(snapshot.getActivityKey()), snapshot.getActivityCurrencyGained());
 			completionLabel.setName(COMPLETION_METRIC_NAME);
 			content.add(Box.createVerticalStrut(2));
 			content.add(completionLabel);
@@ -817,11 +853,11 @@ final class CurrentSessionView extends JPanel
 			perKill = taskLootValue > 0 ? SlayerDashboard.perKill(taskLootValue, kills) : null;
 		}
 		grid.addCell(KILLS_CELL, kills == null ? null : formatNumber(kills), SpyglassTheme.TEXT_PRIMARY,
-			"Kills on this task (bracelet effects accounted for)");
+			"Actual kills on this task: every NPC you killed, summoned NPCs and superiors included (not the task count)");
 		grid.addCell(KILLS_PER_HOUR_CELL, perHour == null ? null : formatNumber(perHour), SpyglassTheme.TEXT_PRIMARY,
 			perHour == null ? "Kills per hour of active time on this task. " + RATE_WARMUP_TOOLTIP : "Kills per hour of active time on this task");
 		grid.addCell(LOOT_PER_KILL_CELL, perKill == null ? null : QuantityFormatter.quantityToStackSize(perKill), SpyglassTheme.ACCENT_GOLD,
-			perKill == null ? null : formatNumber(perKill) + " gp per kill on this task");
+			perKill == null ? null : formatNumber(perKill) + " gp per actual kill on this task");
 		String streakTip = status == null ? null
 			: "WILDERNESS".equals(status.getStreakLabel()) ? "Krystilia's Wilderness task streak"
 			: "MORTIMER".equals(status.getStreakLabel()) ? "Mortimer's task streak" : "Slayer task streak";
@@ -833,6 +869,20 @@ final class CurrentSessionView extends JPanel
 				? "Mortimer's points come from his task modifier, not streak bonuses"
 				: "Bonus points on every 10th task (larger on every 50th, 100th, 250th and 1,000th)");
 		block.add(grid);
+
+		// Superior creatures: one compact line, only once one was killed (no seventh stat).
+		String superiors = task == null ? null : superiorLine(task.getSuperiorsThisTask(), task.getSuperiorsThisSession());
+		if (superiors != null)
+		{
+			JLabel line = new WrappingHtmlLabel(superiors, false);
+			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setForeground(SpyglassTheme.ACCENT_SAGE);
+			line.setName(SLAYER_SUPERIORS_NAME);
+			line.setAlignmentX(Component.LEFT_ALIGNMENT);
+			line.setToolTipText("Superior Slayer creatures killed on this task, and in this whole Slayer session");
+			block.add(Box.createVerticalStrut(4));
+			block.add(line);
+		}
 
 		// Conditional bracelet effects: outside the grid, only when they happened.
 		String slaughter = task == null ? null : positive(task.getSlaughterProcs());
@@ -876,6 +926,19 @@ final class CurrentSessionView extends JPanel
 		content.add(Box.createVerticalStrut(6));
 		content.add(separator());
 		content.add(Box.createVerticalStrut(6));
+	}
+
+	static final String SLAYER_SUPERIORS_NAME = "slayerSuperiors";
+
+	/** "Superiors: 1 this task • 3 session"; null when none was killed this session. */
+	static String superiorLine(Long thisTask, Long session)
+	{
+		if (session == null || session <= 0)
+		{
+			return null;
+		}
+		long task = thisTask == null ? 0L : thisTask;
+		return "Superiors: " + task + " this task \u2022 " + session + " session";
 	}
 
 	private static String positive(Integer value)
@@ -1332,11 +1395,15 @@ final class CurrentSessionView extends JPanel
 			List<LootPricing.ValuedLootRow> rows = LootPricing.valueAndSort(assignment.getLootEntries(), itemId -> unitValue(itemId, mode));
 			boolean expanded = ledgerCollapseState.isExpanded(assignment.getOrdinal());
 			int ordinal = assignment.getOrdinal();
+			long value = LootPricing.sumTotalValue(rows);
 			JPanel card = SlayerTaskCards.card(SLAYER_TASK_CARD_NAME_PREFIX + ordinal, expanded,
 				slayerTaskCardTitle(assignment), slayerTaskCardTooltip(assignment),
 				assignment.isCurrent() ? SpyglassTheme.TEXT_PRIMARY : SpyglassTheme.TEXT_SECONDARY,
-				LootPricing.sumTotalValue(rows), () -> toggleSlayerTaskCard(ordinal),
-				expanded && !rows.isEmpty() ? lootGrid(rows, modeLabel) : null);
+				value, () -> toggleSlayerTaskCard(ordinal),
+				expanded ? SlayerTaskCards.details(assignment.getUnitsCompleted(), assignment.getKills(), value,
+					assignment.getSuperiorsByNpc(), assignment.getKillsByNpc(), assignment.isBreakdownComplete()) : null,
+				expanded && !rows.isEmpty() ? lootGrid(rows, modeLabel) : null,
+				SlayerTaskCards.subLines(assignment.getKills(), assignment.getSuperiorsByNpc()));
 			section.add(card);
 		}
 	}
@@ -1642,7 +1709,7 @@ final class CurrentSessionView extends JPanel
 	/** Activities whose own block carries the completion line (so the header must not repeat it). */
 	private static boolean hasActivityBlock(CurrentSessionSnapshot snapshot)
 	{
-		return isBarrows(snapshot) || isTempoross(snapshot) || isGotr(snapshot);
+		return isBarrows(snapshot) || isTempoross(snapshot) || isGotr(snapshot) || isPestControl(snapshot) || isWintertodt(snapshot);
 	}
 
 	/**
@@ -1752,6 +1819,1864 @@ final class CurrentSessionView extends JPanel
 			row.setToolTipText("Final points per completed game (" + basis + ")");
 			row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
 			block.add(row);
+		}
+	}
+
+	// ---- WINTERTODT ---------------------------------------------------------------
+
+	static final String WT_BLOCK_NAME = "wintertodtBlock";
+	static final String WT_ROUND_GRID_NAME = "wtRoundGrid";
+	static final String WT_WARMTH_CELL = "WARMTH";
+	static final String WT_ENERGY_CELL = "ENERGY";
+	static final String WT_POINTS_CELL = "POINTS";
+	static final String WT_REWARDS_CELL = "REWARDS";
+	static final String WT_ACTION_NAME = "wtAction";
+	static final String WT_THRESHOLD_NAME = "wtThreshold";
+	static final String WT_INVENTORY_NAME = "wtInventory";
+	static final String WT_BREAK_GRID_NAME = "wtBreakGrid";
+	static final String WT_NEXT_GAME_CELL = "NEXT GAME";
+	static final String WT_READINESS_CELL = "READINESS";
+	static final String WT_OPPORTUNITY_NAME = "wtOpportunity";
+	/** The playstyle row: one full-width Method dropdown while Auto, else Method | Focus side by side. */
+	static final String WT_PLAYSTYLE_NAME = "wtPlaystyle";
+	static final String WT_METHOD_NAME = "wtMethod";
+	static final String WT_FOCUS_NAME = "wtFocus";
+	static final String WT_ROUND_TIME_CELL = "ROUND TIME";
+	static final String WT_ROUND_ACTIONS_NAME = "wtRoundActions";
+	/** CAMP: the Reward Cart section (cart balance vs what this session earned). */
+	static final String WT_CART_NAME = "wtRewardCart";
+	static final String WT_CART_GRID_NAME = "wtCartGrid";
+	static final String WT_CART_REWARDS_CELL = "CART REWARDS";
+	static final String WT_SESSION_EARNED_CELL = "SESSION EARNED";
+	/** CAMP: the Reward Hunt section (target dropdown, chance grid, rate line). */
+	static final String WT_HUNT_NAME = "wtRewardHunt";
+	static final String WT_HUNT_TARGET_NAME = "wtHuntTarget";
+	static final String WT_HUNT_GRID_NAME = "wtHuntGrid";
+	static final String WT_CHANCE_IN_CART_CELL = "CHANCE IN CART";
+	static final String WT_SESSION_CHANCE_CELL = "SESSION CHANCE";
+	static final String WT_HUNT_RATE_NAME = "wtHuntRate";
+	static final String WT_SESSION_GRID_NAME = "wtSessionGrid";
+	static final String WT_SUBDUES_CELL = "SUBDUES";
+	static final String WT_TOTAL_POINTS_CELL = "POINTS";
+	static final String WT_AVG_POINTS_CELL = "AVG POINTS";
+	static final String WT_SESSION_REWARDS_CELL = "REWARDS";
+	static final String WT_AVG_ROUND_CELL = "AVG ROUND";
+	static final String WT_REWARDS_RATE_CELL = "REWARDS / HR";
+	/** The Gap in the arena (OSRS Wiki, Gap (Wintertodt)): 60 Agility, 18 XP per crossing. */
+	static final int WT_GAP_AGILITY = 60;
+
+	/** Wintertodt companion data; null = none (tests / before wiring). */
+	private volatile WintertodtPanelSource wintertodtSource;
+
+	void setWintertodtSource(WintertodtPanelSource source)
+	{
+		this.wintertodtSource = source;
+	}
+
+	private static boolean isWintertodt(CurrentSessionSnapshot snapshot)
+	{
+		return snapshot.getActivityType() == ActivityType.STRUCTURED_ACTIVITY
+			&& StructuredActivityCatalog.WINTERTODT.equals(snapshot.getActivityKey());
+	}
+
+	/** Which Wintertodt companion to show: where the player is and what the arena shows. Presentation only. */
+	enum WintertodtContext
+	{
+		/** In the arena, a round in progress: help me play. */
+		ROUND,
+		/** In the arena between rounds: help me prepare. */
+		INTERMISSION,
+		/** The session is alive and the player is in the camp (bank / Reward Cart): help me manage what I earned. */
+		CAMP,
+		/** Anywhere else (or the arena HUD not showing): playstyle + session only. */
+		NONE
+	}
+
+	/**
+	 * The context, from native state only. The camp never STARTS anything:
+	 * this only runs for a live (not finalized) Wintertodt session, so camp
+	 * presentation exists only while the session the lifecycle engine keeps
+	 * (ACTIVE, or SUSPENDED within its resume window) is Wintertodt.
+	 */
+	static WintertodtContext wintertodtContext(SessionState sessionState, WintertodtPanelSource.Location location,
+		WintertodtState state)
+	{
+		if (sessionState == null || sessionState == SessionState.FINALIZED)
+		{
+			return WintertodtContext.NONE;
+		}
+		if (location == WintertodtPanelSource.Location.CAMP)
+		{
+			return WintertodtContext.CAMP;
+		}
+		if (sessionState == SessionState.ACTIVE && state != null && location != WintertodtPanelSource.Location.ELSEWHERE)
+		{
+			return state.getPhase() == WintertodtState.Phase.ROUND ? WintertodtContext.ROUND : WintertodtContext.INTERMISSION;
+		}
+		return WintertodtContext.NONE;
+	}
+
+	/**
+	 * WINTERTODT companion, between the header and XP -- contextual:
+	 * <ul>
+	 * <li>ROUND (arena, round live): CURRENT ROUND (2 x 2): WARMTH | ENERGY over
+	 * POINTS | REWARDS (Points focus, or Auto not yet resolved) or POINTS |
+	 * ROUND TIME (XP focus), then the current action, the next decision, what
+	 * the carried roots / kindling are worth when it helps, and -- Solo only
+	 * -- one line of this round's actions. Then PLAYSTYLE and SESSION.</li>
+	 * <li>INTERMISSION (arena, between rounds): BETWEEN ROUNDS: NEXT GAME |
+	 * READINESS and at most one opportunity line. Then PLAYSTYLE and SESSION.</li>
+	 * <li>CAMP (live Wintertodt session, player in the camp): REWARD CART (CART
+	 * REWARDS | SESSION EARNED), REWARD HUNT (target, CHANCE IN CART | SESSION
+	 * CHANCE, the per-reward rate), then SESSION. No playstyle: nothing to
+	 * decide there.</li>
+	 * <li>NONE: PLAYSTYLE and SESSION.</li>
+	 * </ul>
+	 * No Reward Hunt outside the camp; no long-term goal block anywhere (the XP
+	 * cards carry Firemaking progress). Live values come from the game each
+	 * time; nothing live is persisted.
+	 */
+	private void renderWintertodtBlock(CurrentSessionSnapshot snapshot)
+	{
+		JPanel block = new JPanel();
+		block.setName(WT_BLOCK_NAME);
+		block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
+		block.setBackground(SpyglassTheme.BACKGROUND_MAIN);
+		block.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+		WintertodtPanelSource source = wintertodtSource;
+		WintertodtPlaystyle.Method method = source == null || source.method() == null ? WintertodtPlaystyle.Method.AUTO : source.method();
+		if (source != null && method == WintertodtPlaystyle.Method.AUTO)
+		{
+			// Auto resolves only when the evidence supports BOTH dimensions; once
+			// resolved it is an explicit pair (never re-inferred, never flipped).
+			WintertodtPlaystyle.Method m = WintertodtPlaystyle.inferMethod(snapshot.getCompletionCount(),
+				snapshot.getCompleteRounds(), snapshot.getCompleteRoundMillis());
+			WintertodtPlaystyle.Focus f = WintertodtPlaystyle.inferFocus(snapshot.getCompletionCount(),
+				snapshot.getCompleteRounds(), snapshot.getActionCounts());
+			if (m != null && f != null)
+			{
+				source.resolveAuto(m, f);
+				method = source.method() == null ? WintertodtPlaystyle.Method.AUTO : source.method();
+			}
+		}
+		// null focus = Auto still unresolved: the neutral presentation.
+		WintertodtPlaystyle.Focus focus = method == WintertodtPlaystyle.Method.AUTO || source == null ? null
+			: (source.focus() == null ? WintertodtPlaystyle.Focus.XP : source.focus());
+
+		WintertodtState state = source == null ? null : source.state();
+		WintertodtContext context = source == null ? WintertodtContext.NONE
+			: wintertodtContext(snapshot.getState(), source.location(), state);
+		switch (context)
+		{
+			case ROUND:
+				addWintertodtRound(block, state, method, focus);
+				break;
+			case INTERMISSION:
+				addWintertodtBreak(block, state, source, method, focus);
+				break;
+			case CAMP:
+				addWintertodtRewardCart(block, source, snapshot);
+				addWintertodtRewardHunt(block, source, snapshot);
+				break;
+			default:
+				break;
+		}
+
+		if (source != null && context != WintertodtContext.CAMP)
+		{
+			addWintertodtPlaystyle(block, method, focus);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (snapshot.getCompletionLabel() != null)
+		{
+			block.add(caption("Session"));
+			block.add(Box.createVerticalStrut(3));
+			block.add(wintertodtSessionGrid(snapshot));
+			block.add(Box.createVerticalStrut(6));
+		}
+		if (block.getComponentCount() == 0)
+		{
+			return;
+		}
+		content.add(block);
+		content.add(separator());
+		content.add(Box.createVerticalStrut(6));
+	}
+
+	/**
+	 * CURRENT ROUND. Row 1 is always WARMTH | ENERGY. Row 2 follows the Focus:
+	 * XP = POINTS | ROUND TIME (rewards matter only up to qualifying), Points
+	 * (or Auto not yet resolved) = POINTS | REWARDS with the next-reward line.
+	 */
+	private void addWintertodtRound(JPanel block, WintertodtState state, WintertodtPlaystyle.Method method,
+		WintertodtPlaystyle.Focus focus)
+	{
+		boolean xp = focus == WintertodtPlaystyle.Focus.XP;
+		block.add(caption("Current round"));
+		block.add(Box.createVerticalStrut(3));
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(WT_ROUND_GRID_NAME);
+		grid.setMaxColumns(2);
+		Integer warmth = state.getWarmthPercent();
+		grid.addCell(WT_WARMTH_CELL, warmth == null ? null : warmth + "%",
+			warmth != null && warmth <= 30 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+			"Your Warmth (from the game's HUD); at 0% you die. Food and rejuvenation potions restore it");
+		Integer energy = state.getEnergyPercent();
+		grid.addCell(WT_ENERGY_CELL, energy == null ? null : energy + "%", SpyglassTheme.TEXT_PRIMARY,
+			"The Wintertodt's remaining energy (from the game's HUD); the round ends at 0%");
+		Integer points = state.getPoints();
+		grid.addCell(WT_POINTS_CELL, points == null ? null : formatNumber(points), SpyglassTheme.ACCENT_GOLD,
+			"Your points this round (from the game's HUD)");
+		if (xp)
+		{
+			// The round's own live timing (the tracker's round start) -- no extra timer.
+			java.time.Instant started = state.getRoundStartedAt();
+			grid.addCell(WT_ROUND_TIME_CELL, started == null ? null
+					: CompletionMetricText.gameTime(Math.max(0L, java.time.Duration.between(started, nowSupplier.get()).getSeconds())),
+				SpyglassTheme.TEXT_PRIMARY, started == null
+					? "Round time unknown: Spyglass joined this round part-way"
+					: "Time since this round started");
+		}
+		else
+		{
+			Integer rewards = points == null ? null : WintertodtRewards.rewardsFor(points);
+			grid.addCell(WT_REWARDS_CELL, rewards == null ? null : formatNumber(rewards), SpyglassTheme.ACCENT_GOLD,
+				"Guaranteed Reward Cart rewards at this round's current points if the Wintertodt is subdued: 2 at 500, +1 per further 500 "
+					+ "(the game may award one more by chance)");
+		}
+		block.add(grid);
+
+		if (state.getAction() != null)
+		{
+			block.add(Box.createVerticalStrut(3));
+			JLabel action = wtLine(state.getAction().getLabel(), WT_ACTION_NAME, SpyglassTheme.TEXT_PRIMARY);
+			block.add(action);
+		}
+		if (points != null)
+		{
+			int inventory = WintertodtRewards.inventoryPoints(state.getRoots(), state.getKindling());
+			boolean qualified = points >= WintertodtRewards.QUALIFY_POINTS;
+			String threshold;
+			int needed;
+			if (!qualified)
+			{
+				needed = WintertodtRewards.pointsToQualify(points);
+				threshold = formatNumber(needed) + " pts to qualify";
+			}
+			else if (xp)
+			{
+				// XP play: qualified is all that matters for rewards -- no next-reward nag.
+				needed = 0;
+				threshold = "Qualified";
+			}
+			else
+			{
+				needed = WintertodtRewards.pointsToNextReward(points);
+				threshold = "Next reward in " + formatNumber(needed) + " pts";
+			}
+			block.add(Box.createVerticalStrut(2));
+			JLabel line = wtLine(threshold, WT_THRESHOLD_NAME,
+				needed > 0 && inventory >= needed ? SpyglassTheme.TEXT_PRIMARY : SpyglassTheme.TEXT_SECONDARY);
+			block.add(line);
+			// XP: the carried points matter only while they help reach qualifying.
+			if (inventory > 0 && !(xp && qualified))
+			{
+				String text = "Inventory +" + formatNumber(inventory) + " pts" + (needed > 0 && inventory >= needed ? " • covers it" : "");
+				JLabel inv = wtLine(text, WT_INVENTORY_NAME, SpyglassTheme.TEXT_SECONDARY);
+				int fletched = WintertodtRewards.inventoryPointsIfFletched(state.getRoots(), state.getKindling());
+				inv.setToolTipText("Feeding what you carry: " + state.getRoots() + " roots x 10, " + state.getKindling() + " kindling x 25"
+					+ (state.hasKnife() && fletched > inventory ? " (" + formatNumber(fletched) + " pts if every root is fletched first)" : ""));
+				block.add(inv);
+			}
+		}
+		if (method == WintertodtPlaystyle.Method.SOLO)
+		{
+			String actions = wintertodtRoundActions(state.getRoundActions());
+			if (actions != null)
+			{
+				block.add(Box.createVerticalStrut(2));
+				JLabel line = wtLine(actions, WT_ROUND_ACTIONS_NAME, SpyglassTheme.TEXT_SECONDARY);
+				line.setToolTipText("This round's tracked actions so far (only what Spyglass saw confirmed by your points)");
+				block.add(line);
+			}
+		}
+		block.add(Box.createVerticalStrut(6));
+	}
+
+	/** "Round actions: 42 kindling • 3 repairs • 2 heals" from tracked counts only; null when nothing non-zero. */
+	static String wintertodtRoundActions(java.util.Map<String, Integer> counts)
+	{
+		if (counts == null || counts.isEmpty())
+		{
+			return null;
+		}
+		String[][] parts = {
+			{WintertodtRoundTracker.KINDLING_FED, "kindling", "kindling"},
+			{WintertodtRoundTracker.ROOTS_FED, "root", "roots"},
+			{WintertodtRoundTracker.LIT, "light", "lights"},
+			{WintertodtRoundTracker.REPAIRED, "repair", "repairs"},
+			{WintertodtRoundTracker.HEALED, "heal", "heals"},
+		};
+		StringBuilder sb = new StringBuilder();
+		for (String[] part : parts)
+		{
+			Integer n = counts.get(part[0]);
+			if (n != null && n > 0)
+			{
+				sb.append(sb.length() == 0 ? "" : " • ").append(formatNumber(n)).append(' ').append(n == 1 ? part[1] : part[2]);
+			}
+		}
+		return sb.length() == 0 ? null : "Round actions: " + sb;
+	}
+
+	private void addWintertodtBreak(JPanel block, WintertodtState state, WintertodtPanelSource source,
+		WintertodtPlaystyle.Method method, WintertodtPlaystyle.Focus focus)
+	{
+		block.add(caption("Between rounds"));
+		block.add(Box.createVerticalStrut(3));
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(WT_BREAK_GRID_NAME);
+		grid.setMaxColumns(2);
+		Integer countdown = state.getCountdownSeconds();
+		grid.addCell(WT_NEXT_GAME_CELL, countdown == null ? null : CompletionMetricText.gameTime(countdown), SpyglassTheme.TEXT_PRIMARY,
+			"Time until the next round (the game's own respawn timer)");
+		java.util.Set<WintertodtTools> tools = source.tools();
+		java.util.List<WintertodtTools> required = requiredTools(method, focus);
+		java.util.List<WintertodtTools> missing = new java.util.ArrayList<>();
+		for (WintertodtTools t : required)
+		{
+			if (tools == null || !tools.contains(t))
+			{
+				missing.add(t);
+			}
+		}
+		// Warm clothing is not checked, so never claim full readiness -- only the tools.
+		grid.addCell(WT_READINESS_CELL, missing.isEmpty() ? "Tools ready" : "Need " + missing.get(0).getLabel(),
+			missing.isEmpty() ? SpyglassTheme.TEXT_PRIMARY : SpyglassTheme.ACCENT_AMBER,
+			(missing.isEmpty() ? "Carried or worn: " + toolList(required)
+				: "Missing: " + toolList(missing) + ". The crates inside the Doors of Dinh hand out most tools")
+				+ " (warm clothing is not checked)");
+		block.add(grid);
+
+		String opportunity = null;
+		if (method != WintertodtPlaystyle.Method.SOLO)
+		{
+			Integer agilityXp = source.skillXp(Skill.AGILITY);
+			int agility = agilityXp == null ? 0 : net.runelite.api.Experience.getLevelForXp(agilityXp);
+			if (agility >= WT_GAP_AGILITY && (countdown == null || countdown >= 10))
+			{
+				opportunity = "Gap shortcut: 18 Agility XP per crossing";
+			}
+		}
+		if (opportunity != null)
+		{
+			block.add(Box.createVerticalStrut(2));
+			JLabel line = wtLine(opportunity, WT_OPPORTUNITY_NAME, SpyglassTheme.TEXT_SECONDARY);
+			block.add(line);
+		}
+		block.add(Box.createVerticalStrut(6));
+	}
+
+	/** One context line that wraps at the real sidebar width (never truncated). */
+	private static JLabel wtLine(String text, String name, Color color)
+	{
+		WrappingHtmlLabel line = new WrappingHtmlLabel(text, false);
+		line.setName(name);
+		line.setFont(FontManager.getRunescapeSmallFont());
+		line.setForeground(color);
+		line.setAlignmentX(Component.LEFT_ALIGNMENT);
+		return line;
+	}
+
+	/** Tools the playstyle uses: an axe and a light always; a knife for Points (fletching); a hammer for Solo (repairs). */
+	static java.util.List<WintertodtTools> requiredTools(WintertodtPlaystyle.Method method, WintertodtPlaystyle.Focus focus)
+	{
+		java.util.List<WintertodtTools> out = new java.util.ArrayList<>();
+		out.add(WintertodtTools.AXE);
+		out.add(WintertodtTools.TINDERBOX);
+		if (focus == WintertodtPlaystyle.Focus.POINTS)
+		{
+			out.add(WintertodtTools.KNIFE);
+		}
+		if (method == WintertodtPlaystyle.Method.SOLO)
+		{
+			out.add(WintertodtTools.HAMMER);
+		}
+		return out;
+	}
+
+	private static String toolList(java.util.List<WintertodtTools> tools)
+	{
+		StringBuilder sb = new StringBuilder();
+		for (WintertodtTools t : tools)
+		{
+			sb.append(sb.length() == 0 ? "" : ", ").append(t.getLabel());
+		}
+		return sb.toString();
+	}
+
+	/**
+	 * PLAYSTYLE: while Auto, ONE full-width Method dropdown (no Focus, no
+	 * helper text); otherwise Method | Focus side by side, sharing the width.
+	 */
+	private void addWintertodtPlaystyle(JPanel block, WintertodtPlaystyle.Method method, WintertodtPlaystyle.Focus focus)
+	{
+		block.add(caption("Playstyle"));
+		block.add(Box.createVerticalStrut(3));
+		List<PestChoice<WintertodtPlaystyle.Method>> methods = new java.util.ArrayList<>();
+		for (WintertodtPlaystyle.Method m : WintertodtPlaystyle.Method.values())
+		{
+			methods.add(new PestChoice<>(m, m.getLabel()));
+		}
+		javax.swing.JComboBox<PestChoice<WintertodtPlaystyle.Method>> methodCombo =
+			planCombo(WT_METHOD_NAME, methods, method, m -> selectWintertodtMethod(m));
+		methodCombo.setToolTipText("Auto works the method and focus out from this session's rounds once the evidence is clear");
+		JPanel row;
+		if (method == WintertodtPlaystyle.Method.AUTO || focus == null)
+		{
+			row = pestRow(methodCombo, null);
+		}
+		else
+		{
+			List<PestChoice<WintertodtPlaystyle.Focus>> focuses = new java.util.ArrayList<>();
+			for (WintertodtPlaystyle.Focus f : WintertodtPlaystyle.Focus.values())
+			{
+				focuses.add(new PestChoice<>(f, f.getLabel()));
+			}
+			javax.swing.JComboBox<PestChoice<WintertodtPlaystyle.Focus>> focusCombo =
+				planCombo(WT_FOCUS_NAME, focuses, focus, f -> selectWintertodtFocus(f));
+			focusCombo.setToolTipText("XP: qualify, then just keep the XP coming. Points: every further reward threshold");
+			row = new JPanel(new java.awt.GridLayout(1, 2, 4, 0));
+			row.setOpaque(false);
+			row.setAlignmentX(Component.LEFT_ALIGNMENT);
+			row.add(methodCombo);
+			row.add(focusCombo);
+			row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+		}
+		row.setName(WT_PLAYSTYLE_NAME);
+		block.add(row);
+	}
+
+	/** Rolled-at-search semantics, shared by every chance cell. */
+	private static final String WT_ROLLED_AT_SEARCH = "Rewards are rolled when you search the cart, so this is the chance those rewards "
+		+ "represent once searched -- nothing has been rolled yet. A chance, never a promise";
+
+	/**
+	 * REWARD CART (camp): CART REWARDS (what the cart still owes now -- may
+	 * include rewards from before this session; drops as you search) |
+	 * SESSION EARNED (what THIS session's subdues were awarded, from the
+	 * game's "additional N" lines; searching never reduces it).
+	 */
+	private void addWintertodtRewardCart(JPanel block, WintertodtPanelSource source, CurrentSessionSnapshot snapshot)
+	{
+		JPanel section = wtSection(WT_CART_NAME);
+		section.add(caption("Reward cart"));
+		section.add(Box.createVerticalStrut(3));
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(WT_CART_GRID_NAME);
+		grid.setMaxColumns(2);
+		Integer cart = source.cartRewards();
+		long earned = wintertodtRewardsEarned(snapshot);
+		grid.addCell(WT_CART_REWARDS_CELL, cart == null ? null : formatNumber(cart), SpyglassTheme.TEXT_PRIMARY,
+			cart == null ? "Not known yet this login: enter the arena, or use Check on the Reward Cart"
+				: "Rewards still owed in the Reward Cart now (the game's own count). Can include rewards from before this "
+					+ "session; it drops as you search");
+		grid.addCell(WT_SESSION_EARNED_CELL, earned > 0 ? CompletionMetricText.currencyText(earned) : "0", SpyglassTheme.ACCENT_GOLD,
+			"Rewards THIS session's subdues were awarded (\"You're owed an additional N\"). Searching the cart never reduces it");
+		section.add(grid);
+		block.add(section);
+		block.add(Box.createVerticalStrut(6));
+	}
+
+	/**
+	 * REWARD HUNT (camp): the target (account preference), then CHANCE IN
+	 * CART (the cart balance's chance) | SESSION CHANCE (the chance of the
+	 * rewards this session earned), and the target's effective rate. Exact:
+	 * 1 - (1 - p)^n, or the binomial tail for the four-piece outfit.
+	 */
+	private void addWintertodtRewardHunt(JPanel block, WintertodtPanelSource source, CurrentSessionSnapshot snapshot)
+	{
+		WintertodtGoal goal = source.goal() == null ? WintertodtGoal.DEFAULT : source.goal();
+		WintertodtUnique target = goal.getUnique();
+		JPanel section = wtSection(WT_HUNT_NAME);
+		section.add(caption("Reward hunt"));
+		section.add(Box.createVerticalStrut(3));
+		List<PestChoice<WintertodtUnique>> uniques = new java.util.ArrayList<>();
+		for (WintertodtUnique u : WintertodtUnique.values())
+		{
+			uniques.add(new PestChoice<>(u, u.getLabel()));
+		}
+		javax.swing.JComboBox<PestChoice<WintertodtUnique>> combo =
+			planCombo(WT_HUNT_TARGET_NAME, uniques, target, u -> selectWintertodtGoal(goal.withUnique(u)));
+		combo.setToolTipText("The Reward Cart unique you are hunting (remembered for this account)");
+		section.add(pestRow(combo, null));
+		section.add(Box.createVerticalStrut(4));
+
+		Integer cart = source.cartRewards();
+		long earned = wintertodtRewardsEarned(snapshot);
+		boolean outfit = target.getNeeded() > 1;
+		String what = outfit ? "all " + target.getNeeded() + " pieces (assuming none owned yet)" : "at least one " + target.getLabel();
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(WT_HUNT_GRID_NAME);
+		grid.setMaxColumns(2);
+		grid.addCell(WT_CHANCE_IN_CART_CELL, cart == null ? null : WintertodtRewardHunt.percent(WintertodtRewardHunt.chance(target, cart)),
+			SpyglassTheme.ACCENT_GOLD,
+			cart == null ? "Needs the cart balance (enter the arena, or use Check on the Reward Cart)"
+				: "Chance of " + what + " from the " + formatNumber(cart) + " rewards in the cart now. " + WT_ROLLED_AT_SEARCH);
+		grid.addCell(WT_SESSION_CHANCE_CELL, WintertodtRewardHunt.percent(WintertodtRewardHunt.chance(target, earned)),
+			SpyglassTheme.TEXT_PRIMARY,
+			"Chance of " + what + " from the " + formatNumber(earned) + " rewards THIS session earned. " + WT_ROLLED_AT_SEARCH);
+		section.add(grid);
+		section.add(Box.createVerticalStrut(2));
+		JPanel rate = centeredStatusRow(WintertodtRewardHunt.rateText(target), WT_HUNT_RATE_NAME, SpyglassTheme.TEXT_SECONDARY);
+		rate.setToolTipText("The effective rate per reward searched: uniques roll in order and the first success wins");
+		section.add(rate);
+		block.add(section);
+		block.add(Box.createVerticalStrut(6));
+	}
+
+	private static JPanel wtSection(String name)
+	{
+		JPanel section = new JPanel();
+		section.setName(name);
+		section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
+		section.setOpaque(false);
+		section.setAlignmentX(Component.LEFT_ALIGNMENT);
+		return section;
+	}
+
+	private static long wintertodtRewardsEarned(CurrentSessionSnapshot snapshot)
+	{
+		return snapshot.getActivityCurrencyGained(com.osrstelemetry.plugin.collectors.StructuredActivityCollector.WINTERTODT_REWARDS);
+	}
+
+	private static long sessionXp(CurrentSessionSnapshot snapshot, String skill)
+	{
+		for (CurrentSessionSnapshot.XpEntry e : snapshot.getXpEntries())
+		{
+			if (skill.equalsIgnoreCase(e.getSkill()))
+			{
+				return e.getXpGained();
+			}
+		}
+		return 0L;
+	}
+
+	private SlayerStatGrid wintertodtSessionGrid(CurrentSessionSnapshot snapshot)
+	{
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(WT_SESSION_GRID_NAME);
+		grid.setMaxColumns(2);
+		int subdues = snapshot.getCompletionCount();
+		grid.addCell(WT_SUBDUES_CELL, formatNumber(subdues), SpyglassTheme.TEXT_PRIMARY, "Wintertodt subdues this session (the game's own count)");
+		long total = snapshot.getScoreTotal();
+		grid.addCell(WT_TOTAL_POINTS_CELL, total > 0 ? formatNumber(total) : null, SpyglassTheme.TEXT_PRIMARY,
+			"Your points across this session's subdued rounds");
+		Long avg = snapshot.getAverageScore();
+		grid.addCell(WT_AVG_POINTS_CELL, avg == null ? null : formatNumber(avg), SpyglassTheme.TEXT_PRIMARY,
+			"Average points per subdued round");
+		long rewards = wintertodtRewardsEarned(snapshot);
+		grid.addCell(WT_SESSION_REWARDS_CELL, rewards > 0 ? CompletionMetricText.currencyText(rewards) : null, SpyglassTheme.ACCENT_GOLD,
+			"Reward Cart rewards this session actually earned, as the game awarded them (\"You're owed an additional N\"), "
+				+ "including any chance-based extra; claiming never reduces it");
+		int complete = snapshot.getCompleteRounds();
+		grid.addCell(WT_AVG_ROUND_CELL, complete > 0 ? CompletionMetricText.gameTime(snapshot.getCompleteRoundMillis() / complete / 1000L) : null,
+			SpyglassTheme.TEXT_PRIMARY, "Average round length, start to end -- only rounds seen from their start");
+		Double rate = CompletionMetricText.perHour((int) Math.min(Integer.MAX_VALUE, rewards), snapshot.getActiveDurationMillis());
+		grid.addCell(WT_REWARDS_RATE_CELL, rate == null ? null : String.format(java.util.Locale.ROOT, "%.1f", rate), SpyglassTheme.TEXT_PRIMARY,
+			rate == null ? "Rewards per hour of active Wintertodt time. " + RATE_WARMUP_TOOLTIP
+				: "Rewards per hour of active Wintertodt time (rounds and the breaks between them; never logged-out time)");
+		return grid;
+	}
+
+	void selectWintertodtGoal(WintertodtGoal goal)
+	{
+		WintertodtPanelSource source = wintertodtSource;
+		if (source != null && goal != null)
+		{
+			source.setGoal(goal);
+		}
+		pestPopupOpen = false;
+		if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
+	}
+
+	/** A Method pick: Auto hides Focus (and re-enables inference); Mass / Solo show the remembered Focus (XP by default). */
+	void selectWintertodtMethod(WintertodtPlaystyle.Method method)
+	{
+		WintertodtPanelSource source = wintertodtSource;
+		if (source != null && method != null)
+		{
+			source.setMethod(method);
+		}
+		pestPopupOpen = false;
+		if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
+	}
+
+	/** A Focus pick: keeps the Method. */
+	void selectWintertodtFocus(WintertodtPlaystyle.Focus focus)
+	{
+		WintertodtPanelSource source = wintertodtSource;
+		if (source != null && focus != null)
+		{
+			source.setFocus(focus);
+		}
+		pestPopupOpen = false;
+		if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
+	}
+
+	/**
+	 * A planning dropdown (same look as the Pest Control goal dropdowns): the
+	 * shared open-popup render guard, the pick applied after the popup's own
+	 * event, re-picking the current choice does nothing.
+	 */
+	private <T> javax.swing.JComboBox<PestChoice<T>> planCombo(String name, List<PestChoice<T>> choices, T selected,
+		java.util.function.Consumer<T> onPick)
+	{
+		@SuppressWarnings("unchecked")
+		PestChoice<T>[] items = choices.toArray(new PestChoice[0]);
+		javax.swing.JComboBox<PestChoice<T>> combo = new javax.swing.JComboBox<PestChoice<T>>(items)
+		{
+			@Override
+			public Dimension getPreferredSize()
+			{
+				Dimension d = super.getPreferredSize();
+				return new Dimension(Math.min(d.width, PEST_COMBO_MAX_WIDTH), d.height);
+			}
+
+			@Override
+			public Dimension getMinimumSize()
+			{
+				return new Dimension(40, super.getPreferredSize().height);
+			}
+		};
+		combo.setName(name);
+		combo.setFont(FontManager.getRunescapeSmallFont());
+		combo.setFocusable(false);
+		combo.setMaximumRowCount(Math.min(12, items.length));
+		for (PestChoice<T> c : items)
+		{
+			if (java.util.Objects.equals(c.getValue(), selected))
+			{
+				combo.setSelectedItem(c);
+			}
+		}
+		combo.addPopupMenuListener(new javax.swing.event.PopupMenuListener()
+		{
+			@Override
+			public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e)
+			{
+				pestPopupOpen = true;
+			}
+
+			@Override
+			public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e)
+			{
+				pestPopupOpen = false;
+				javax.swing.SwingUtilities.invokeLater(() -> rerenderIfIdle());
+			}
+
+			@Override
+			public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e)
+			{
+				pestPopupOpen = false;
+			}
+		});
+		combo.addActionListener(e ->
+		{
+			Object picked = combo.getSelectedItem();
+			if (picked instanceof PestChoice && !java.util.Objects.equals(((PestChoice<?>) picked).getValue(), selected))
+			{
+				@SuppressWarnings("unchecked")
+				T value = ((PestChoice<T>) picked).getValue();
+				javax.swing.SwingUtilities.invokeLater(() -> onPick.accept(value));
+			}
+		});
+		return combo;
+	}
+
+	/**
+	 * A goal status line centered across the full section width (the Pest
+	 * Control live-QA lesson): the row always spans the width and re-wraps its
+	 * label at the REAL width on every layout, so the text is drawn centered
+	 * under the result grid, never in a stale 160 px fallback.
+	 */
+	private static JPanel centeredStatusRow(String text, String name, Color color)
+	{
+		WrappingHtmlLabel line = new WrappingHtmlLabel(text, true);
+		line.setName(name);
+		line.setFont(FontManager.getRunescapeSmallFont());
+		line.setForeground(color);
+		line.setHorizontalAlignment(JLabel.CENTER);
+		JPanel row = new JPanel(new BorderLayout())
+		{
+			@Override
+			public Dimension getPreferredSize()
+			{
+				return new Dimension(0, super.getPreferredSize().height);
+			}
+
+			@Override
+			public Dimension getMaximumSize()
+			{
+				return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+			}
+
+			@Override
+			public void doLayout()
+			{
+				if (getWidth() > 0)
+				{
+					int wanted = line.getPreferredSize().height;
+					if (wanted != getHeight() - getInsets().top - getInsets().bottom)
+					{
+						revalidate();
+					}
+				}
+				super.doLayout();
+			}
+		};
+		row.setOpaque(false);
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+		row.add(line, BorderLayout.CENTER);
+		return row;
+	}
+
+	// ---- SKILL COMPANION (first: Mining) ---------------------------------------------
+
+	static final String SC_BLOCK_NAME = "skillCompanionBlock";
+	static final String SC_METHOD_NAME = "skillMethod";
+	static final String SC_TRIP_NAME = "skillTrip";
+	static final String SC_TRIP_GRID_NAME = "skillTripGrid";
+	static final String SC_SPACE_LEFT_CELL = "SPACE LEFT";
+	static final String SC_EST_FULL_CELL = "EST. FULL";
+	static final String SC_STORAGE_NAME = "skillStorage";
+	static final String SC_PRODUCTION_NAME = "skillProduction";
+	static final String SC_PRODUCTION_GRID_NAME = "skillProductionGrid";
+	static final String SC_BANKED_CELL = "BANKED";
+	static final String SC_RATE_NAME = "skillRate";
+	static final String SC_BREAKDOWN_NAME = "skillBreakdown";
+	static final String SC_BYPRODUCT_PREFIX = "skillByproduct:";
+	static final String SC_CONTEXT_PREFIX = "skillContext:";
+	static final String SC_SUPPLY_NAME = "skillSupply";
+	static final String SC_CYCLE_NAME = "skillCycle";
+	static final String SC_CYCLE_GRID_NAME = "skillCycleGrid";
+	static final String SC_CYCLE_SESSION_NAME = "skillCycleSession";
+	static final String SC_CYCLE_SESSION_GRID_NAME = "skillCycleSessionGrid";
+	static final String SC_REWARDS_NAME = "skillRewards";
+	static final String SC_REWARDS_GRID_NAME = "skillRewardsGrid";
+	static final String SC_SUPPLY_GRID_NAME = "skillSupplyGrid";
+	static final String SC_FOCUS_NAME = "skillFocus";
+	static final String SC_FOCUS_GRID_NAME = "skillFocusGrid";
+	static final String SC_FOCUS_LABEL_NAME = "skillFocusLabel";
+	static final String SC_EVENT_NAME = "skillEvent";
+	static final String SC_EVENT_TITLE_NAME = "skillEventTitle";
+	static final String SC_EVENT_GRID_NAME = "skillEventGrid";
+	static final String SC_EVENT_LINE_PREFIX = "skillEventLine:";
+	static final String SC_AUTO_TRANSFORMED_NAME = "skillAutoTransformed";
+	static final String SC_CONSUMED_NAME = "skillConsumed";
+	static final String SC_OTHER_INPUTS_NAME = "skillOtherInputs";
+	static final String SC_OCCURRENCE_LINE_PREFIX = "skillOccurrenceLine:";
+	static final String SC_SECONDARY_NAME = "skillSecondary";
+	static final String SC_SECONDARY_GRID_NAME = "skillSecondaryGrid";
+	static final String SC_SECONDARY_LINE_PREFIX = "skillSecondaryLine:";
+	static final String SC_RUNWAY_CELL = "RUNWAY";
+	static final String SC_ACTIONS_NAME = "skillActions";
+	static final String SC_ACTIONS_GRID_NAME = "skillActionsGrid";
+	static final String SC_UNITS_NAME = "skillUnits";
+	static final String SC_INPUTS_NAME = "skillInputs";
+	static final String SC_INPUTS_GRID_NAME = "skillInputsGrid";
+	static final String SC_INPUTS_LINE_PREFIX = "skillInputsLine:";
+	static final String SC_OWNERSHIP_NAME = "skillTargetOwnership";
+	static final String SC_TARGET_NAME = "skillTarget";
+	static final String SC_TARGET_FAMILY_NAME = "skillTargetFamily";
+	static final String SC_TARGET_RESOURCE_NAME = "skillTargetResource";
+	static final String SC_TARGET_LEVEL_NAME = "skillTargetLevel";
+	static final String SC_TARGET_QUANTITY_NAME = "skillTargetQuantity";
+	static final String SC_TARGET_GRID_NAME = "skillTargetGrid";
+	static final String SC_XP_LEFT_CELL = "XP LEFT";
+	static final String SC_IN_BANK_CELL = "IN BANK";
+	static final String SC_REMAINING_CELL = "REMAINING";
+	static final String SC_ETA_CELL = "ETA";
+	static final String SC_ETA_LINE_NAME = "skillTargetEta";
+
+	/**
+	 * Every skill companion's live state + target (planning), by SKILLING key
+	 * ("mining", "fishing"); empty = none (tests / before wiring). Each session
+	 * reads only its own skill's companion, so two companions never mix.
+	 */
+	private final java.util.Map<String, com.osrstelemetry.plugin.skills.SkillCompanionPanelSource> skillCompanionSources =
+		new java.util.concurrent.ConcurrentHashMap<>();
+
+	/** Adds (or replaces) the companion of the source's skill. */
+	void setSkillCompanionSource(com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source)
+	{
+		if (source != null)
+		{
+			skillCompanionSources.put(source.definition().getSkillKey(), source);
+		}
+	}
+
+	/** The companion of this SKILLING session's skill, or null (every other skill keeps the plain session). */
+	private com.osrstelemetry.plugin.skills.SkillCompanionPanelSource skillCompanionSource(CurrentSessionSnapshot snapshot)
+	{
+		if (snapshot == null || snapshot.getActivityType() != ActivityType.SKILLING || snapshot.getActivityKey() == null)
+		{
+			return null;
+		}
+		return skillCompanionSources.get(snapshot.getActivityKey());
+	}
+
+	/** A SKILLING session of a skill that has a companion (see SkillCompanions). */
+	private boolean isSkillCompanion(CurrentSessionSnapshot snapshot)
+	{
+		return skillCompanionSource(snapshot) != null;
+	}
+
+	/** The model this render uses (tests). */
+	SkillCompanionModel skillCompanionModel(CurrentSessionSnapshot snapshot)
+	{
+		com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source = skillCompanionSource(snapshot);
+		return source == null ? null : SkillCompanionModel.build(snapshot, source.definition(), source.view(), source.goal(),
+			source.skillXp(), source::bankQuantity, source::externalStock);
+	}
+
+	/**
+	 * SKILL COMPANION, between the header and XP -- modular, every section only
+	 * when it earns its space:
+	 * <pre>
+	 * Method                         Amethyst
+	 * CURRENT TRIP   SPACE LEFT | EST. FULL      (capacity-limited methods)
+	 * PRODUCTION     AMETHYST   | BANKED
+	 *                428 amethyst/hr
+	 *                Gems: Sapphire 3 • Ruby 1   (by-products, own line)
+	 * [method context: water flowing ...]
+	 * TARGET         [Level v] Lvl 92  ->  XP LEFT | ETA
+	 *                [Stockpile v] / [Amethyst v] 5,000  ->  IN BANK | REMAINING, ETA
+	 * </pre>
+	 * XP / XP-per-hour stay in the XP cards below (never duplicated here).
+	 */
+	private void renderSkillCompanionBlock(CurrentSessionSnapshot snapshot)
+	{
+		com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source = skillCompanionSource(snapshot);
+		SkillCompanionModel model = skillCompanionModel(snapshot);
+		if (source == null || model == null)
+		{
+			return;
+		}
+		JPanel block = new JPanel();
+		block.setName(SC_BLOCK_NAME);
+		block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
+		block.setBackground(SpyglassTheme.BACKGROUND_MAIN);
+		block.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+		if (model.methodLabel != null)
+		{
+			JPanel method = statRow(source.definition().methodTitle(), null, model.methodLabel, SC_METHOD_NAME, SpyglassTheme.TEXT_PRIMARY);
+			method.setToolTipText("The " + source.definition().methodTitle().toLowerCase(java.util.Locale.ROOT)
+				+ " Spyglass recognises from what you actually " + (source.definition().cycleNoun(false) != null ? "do" : "produce"));
+			block.add(method);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.focus != null)
+		{
+			// CURRENT FOCUS: what it is, what it gave and for how long (never a remaining estimate).
+			JPanel section = wtSection(SC_FOCUS_NAME);
+			section.add(caption(model.focus.title));
+			section.add(Box.createVerticalStrut(3));
+			section.add(wtLine(model.focus.label, SC_FOCUS_LABEL_NAME, SpyglassTheme.TEXT_PRIMARY));
+			section.add(Box.createVerticalStrut(2));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_FOCUS_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(model.focus.countCaption, formatNumber(model.focus.count), SpyglassTheme.TEXT_PRIMARY,
+				source.definition().focusCountTooltip());
+			grid.addCell(model.focus.timeCaption, model.focus.timeText, SpyglassTheme.TEXT_PRIMARY, source.definition().focusTimeTooltip());
+			section.add(grid);
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.event != null)
+		{
+			// CONTEXTUAL EVENT: only while one runs; context of this session, never a session of its own.
+			JPanel section = wtSection(SC_EVENT_NAME);
+			section.add(caption(model.event.title != null ? model.event.title : source.definition().eventTitle()));
+			section.add(Box.createVerticalStrut(3));
+			if (model.event.name != null)
+			{
+				section.add(wtLine(model.event.name + "  " + model.event.timeText, SC_EVENT_TITLE_NAME, SpyglassTheme.ACCENT_GOLD));
+			}
+			if (!model.event.fields.isEmpty())
+			{
+				section.add(Box.createVerticalStrut(2));
+				SlayerStatGrid grid = new SlayerStatGrid();
+				grid.setName(SC_EVENT_GRID_NAME);
+				grid.setMaxColumns(2);
+				for (com.osrstelemetry.plugin.skills.SkillCompanionView.EventView.Field f : model.event.fields)
+				{
+					grid.addCell(f.getCaption(), f.getValue(), SpyglassTheme.TEXT_PRIMARY, f.getTooltip());
+				}
+				section.add(grid);
+			}
+			for (int i = 0; i < model.event.lines.size(); i++)
+			{
+				com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine c = model.event.lines.get(i);
+				section.add(Box.createVerticalStrut(2));
+				JLabel line = wtLine(c.getText(), SC_EVENT_LINE_PREFIX + i,
+					c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.ALERT ? SpyglassTheme.ACCENT_AMBER
+						: c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.QUIET ? SpyglassTheme.TEXT_SECONDARY
+						: SpyglassTheme.TEXT_PRIMARY);
+				line.setToolTipText(c.getTooltip());
+				section.add(line);
+			}
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.cycle != null)
+		{
+			JPanel section = wtSection(SC_CYCLE_NAME);
+			section.add(caption("Current " + source.definition().cycleNoun(false)));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_CYCLE_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(model.cycle.progressCaption, model.cycle.progressText,
+				model.cycle.synced ? SpyglassTheme.TEXT_PRIMARY : SpyglassTheme.TEXT_SECONDARY,
+				model.cycle.synced ? "How far along the route this " + source.definition().cycleNoun(false) + " is"
+					: "Joined part-way: this " + source.definition().cycleNoun(false) + " is not counted -- the next full one is");
+			grid.addCell(model.cycle.timeCaption, model.cycle.timeText, SpyglassTheme.TEXT_PRIMARY, model.cycle.timeTooltip);
+			section.add(grid);
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.cycleSession != null)
+		{
+			SkillCompanionModel.CycleSession cs = model.cycleSession;
+			String unit = source.definition().cycleNoun(true);
+			JPanel section = wtSection(SC_CYCLE_SESSION_NAME);
+			section.add(caption("Session"));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_CYCLE_SESSION_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(cs.countCaption, formatNumber(cs.count), SpyglassTheme.ACCENT_GOLD,
+				"Full " + unit + " of this " + source.definition().methodTitle().toLowerCase(java.util.Locale.ROOT)
+					+ " this session (a " + source.definition().cycleNoun(false) + " joined part-way never counts)");
+			grid.addCell(cs.rateCaption, cs.rateText, SpyglassTheme.TEXT_PRIMARY,
+				"Per hour of time on this " + source.definition().methodTitle().toLowerCase(java.util.Locale.ROOT)
+					+ " (short waits and falls count; long idles and logged-out time never do)");
+			grid.addCell(cs.avgCaption, cs.avgText, SpyglassTheme.TEXT_PRIMARY, "Average of the full " + unit + " this session");
+			grid.addCell(cs.bestCaption, cs.bestText, SpyglassTheme.TEXT_PRIMARY, cs.bestCaption.startsWith("BEST ")
+				? "Fastest full " + source.definition().cycleNoun(false) + " this session"
+				: "Average per full " + source.definition().cycleNoun(false) + " this session (a "
+					+ source.definition().cycleNoun(false) + " joined part-way never counts)");
+			section.add(grid);
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.rewards != null)
+		{
+			JPanel section = wtSection(SC_REWARDS_NAME);
+			section.add(caption("Rewards"));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_REWARDS_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(model.rewards.caption, formatNumber(model.rewards.count), SpyglassTheme.ACCENT_GOLD,
+				source.definition().rewardTooltip());
+			grid.addCell(model.rewards.rateCaption, model.rewards.rateText, SpyglassTheme.TEXT_PRIMARY, model.rewards.rateTooltip);
+			section.add(grid);
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.actions != null)
+		{
+			// SESSION (Phase 6): the shown method's own successful actions and their rate.
+			JPanel section = wtSection(SC_ACTIONS_NAME);
+			section.add(caption("Session"));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_ACTIONS_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(model.actions.caption, formatNumber(model.actions.count), SpyglassTheme.ACCENT_GOLD,
+				"Successful operations of this " + source.definition().methodTitle().toLowerCase(java.util.Locale.ROOT)
+					+ " this session (each one counted once, whatever it produced)");
+			grid.addCell(model.actions.rateCaption, model.actions.rateText, SpyglassTheme.TEXT_PRIMARY,
+				"Per hour of time on this " + source.definition().methodTitle().toLowerCase(java.util.Locale.ROOT)
+					+ " (shown after 5 minutes; banking counts, long idles never do)");
+			section.add(grid);
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.trip != null)
+		{
+			JPanel section = wtSection(SC_TRIP_NAME);
+			section.add(caption("Current trip"));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_TRIP_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(SC_SPACE_LEFT_CELL, formatNumber(model.trip.spaceLeft),
+				model.trip.spaceLeft <= 3 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY, "Free inventory slots");
+			grid.addCell(SC_EST_FULL_CELL, model.trip.estFull, SpyglassTheme.TEXT_PRIMARY, model.trip.estFullTooltip);
+			section.add(grid);
+			if (model.trip.storageLine != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel storage = wtLine(model.trip.storageLine, SC_STORAGE_NAME, SpyglassTheme.TEXT_SECONDARY);
+				storage.setToolTipText(source.definition().storageTooltip());
+				section.add(storage);
+			}
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		SkillCompanionModel.Production production = model.production;
+		if (production != null)
+		{
+			JPanel section = wtSection(SC_PRODUCTION_NAME);
+			section.add(caption("Production"));
+			section.add(Box.createVerticalStrut(3));
+			if (production.caption != null)
+			{
+				SlayerStatGrid grid = new SlayerStatGrid();
+				grid.setName(SC_PRODUCTION_GRID_NAME);
+				grid.setMaxColumns(2);
+				grid.addCell(production.caption, production.totalText != null ? production.totalText : formatNumber(production.total),
+					SpyglassTheme.ACCENT_GOLD,
+					"Everything this session " + source.definition().producedVerb() + " (dropping, banking or moving it never lowers this)");
+				grid.addCell(SC_BANKED_CELL, formatNumber(production.banked), SpyglassTheme.TEXT_PRIMARY, source.definition().bankedTooltip());
+				section.add(grid);
+			}
+			if (production.unitsLine != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel units = wtLine(production.unitsLine, SC_UNITS_NAME, SpyglassTheme.TEXT_SECONDARY);
+				units.setToolTipText("The same amount as whole full items (never a fractional item)");
+				section.add(units);
+			}
+			if (production.rateText != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JPanel rate = centeredStatusRow(production.rateText, SC_RATE_NAME, SpyglassTheme.TEXT_SECONDARY);
+				rate.setToolTipText(production.rateTooltip);
+				section.add(rate);
+			}
+			if (production.autoTransformedLine != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel auto = wtLine(production.autoTransformedLine, SC_AUTO_TRANSFORMED_NAME, SpyglassTheme.TEXT_SECONDARY);
+				auto.setToolTipText(source.definition().autoTransformedTooltip());
+				section.add(auto);
+			}
+			if (production.consumedLine != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel used = wtLine(production.consumedLine, SC_CONSUMED_NAME, SpyglassTheme.TEXT_SECONDARY);
+				used.setToolTipText(source.definition().consumedTooltip());
+				section.add(used);
+			}
+			if (production.otherInputsLine != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel others = wtLine(production.otherInputsLine, SC_OTHER_INPUTS_NAME, SpyglassTheme.TEXT_SECONDARY);
+				others.setToolTipText(source.definition().otherInputsTooltip());
+				section.add(others);
+			}
+			for (int i = 0; i < production.occurrenceLines.size(); i++)
+			{
+				section.add(Box.createVerticalStrut(2));
+				section.add(wtLine(production.occurrenceLines.get(i), SC_OCCURRENCE_LINE_PREFIX + i, SpyglassTheme.TEXT_SECONDARY));
+			}
+			if (production.breakdown != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				section.add(wtLine(production.breakdown, SC_BREAKDOWN_NAME, SpyglassTheme.TEXT_SECONDARY));
+			}
+			for (int i = 0; i < production.byproducts.size(); i++)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel line = wtLine(production.byproducts.get(i), SC_BYPRODUCT_PREFIX + i, SpyglassTheme.TEXT_SECONDARY);
+				line.setToolTipText("By-products of the same actions (exact, as the game named them)");
+				section.add(line);
+			}
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.inputs != null)
+		{
+			// INPUTS USED (Phase 6): exactly what this method's successes used up (never a theoretical amount).
+			JPanel section = wtSection(SC_INPUTS_NAME);
+			section.add(caption("Inputs used"));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_INPUTS_GRID_NAME);
+			grid.setMaxColumns(2);
+			for (com.osrstelemetry.plugin.skills.SkillCompanionView.EventView.Field f : model.inputs.fields)
+			{
+				grid.addCell(f.getCaption(), f.getValue(), SpyglassTheme.TEXT_PRIMARY, f.getTooltip());
+			}
+			section.add(grid);
+			for (int i = 0; i < model.inputs.lines.size(); i++)
+			{
+				section.add(Box.createVerticalStrut(2));
+				section.add(wtLine(model.inputs.lines.get(i), SC_INPUTS_LINE_PREFIX + i, SpyglassTheme.TEXT_SECONDARY));
+			}
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.secondary != null)
+		{
+			// SECONDARY: count + rate cells or one exact line per family -- never folded into the main count.
+			JPanel section = wtSection(SC_SECONDARY_NAME);
+			section.add(caption("Secondary"));
+			section.add(Box.createVerticalStrut(3));
+			if (!model.secondary.cells.isEmpty())
+			{
+				SlayerStatGrid grid = new SlayerStatGrid();
+				grid.setName(SC_SECONDARY_GRID_NAME);
+				grid.setMaxColumns(2);
+				for (SkillCompanionModel.Secondary.Cell c : model.secondary.cells)
+				{
+					grid.addCell(c.caption, c.value, SpyglassTheme.TEXT_PRIMARY, c.tooltip);
+				}
+				section.add(grid);
+			}
+			for (int i = 0; i < model.secondary.lines.size(); i++)
+			{
+				section.add(Box.createVerticalStrut(2));
+				section.add(wtLine(model.secondary.lines.get(i), SC_SECONDARY_LINE_PREFIX + i, SpyglassTheme.TEXT_SECONDARY));
+			}
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.supply != null)
+		{
+			JPanel section = wtSection(SC_SUPPLY_NAME);
+			section.add(caption("Supplies"));
+			section.add(Box.createVerticalStrut(3));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(SC_SUPPLY_GRID_NAME);
+			grid.setMaxColumns(2);
+			grid.addCell(model.supply.caption, formatNumber(model.supply.count),
+				model.supply.count == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+				"In your inventory now (what you can use without banking)");
+			grid.addCell(SC_RUNWAY_CELL, model.supply.runway, model.supply.count == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+				model.supply.runwayTooltip);
+			section.add(grid);
+			block.add(section);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		for (int i = 0; i < model.context.size(); i++)
+		{
+			com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine c = model.context.get(i);
+			Color color = c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.ALERT ? SpyglassTheme.ACCENT_AMBER
+				: c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.QUIET ? SpyglassTheme.TEXT_SECONDARY
+				: SpyglassTheme.TEXT_PRIMARY;
+			JLabel line = wtLine(c.getText(), SC_CONTEXT_PREFIX + i, color);
+			line.setToolTipText(c.getTooltip());
+			block.add(line);
+			block.add(Box.createVerticalStrut(i == model.context.size() - 1 ? 6 : 2));
+		}
+
+		addSkillTarget(block, source, model.target);
+
+		content.add(block);
+		content.add(separator());
+		content.add(Box.createVerticalStrut(6));
+	}
+
+	private void addSkillTarget(JPanel block, com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source, SkillCompanionModel.Target target)
+	{
+		com.osrstelemetry.plugin.skills.SkillGoal goal = target.goal;
+		String skillName = source.definition().getSkill().getName();
+		JPanel section = wtSection(SC_TARGET_NAME);
+		section.add(caption("Target"));
+		section.add(Box.createVerticalStrut(3));
+
+		List<PestChoice<com.osrstelemetry.plugin.skills.SkillGoal.Family>> families = new java.util.ArrayList<>();
+		for (com.osrstelemetry.plugin.skills.SkillGoal.Family f : com.osrstelemetry.plugin.skills.SkillGoal.Family.values())
+		{
+			families.add(new PestChoice<>(f, f.getLabel()));
+		}
+		javax.swing.JComboBox<PestChoice<com.osrstelemetry.plugin.skills.SkillGoal.Family>> familyCombo =
+			planCombo(SC_TARGET_FAMILY_NAME, families, goal.getFamily(), f -> selectSkillGoal(goal.withFamily(f)));
+		familyCombo.setToolTipText("Level: a " + skillName + " level. Stockpile: an amount of a resource you own (your bank, plus any "
+			+ "storage Spyglass reads for it). Remembered for this account");
+
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(SC_TARGET_GRID_NAME);
+		grid.setMaxColumns(2);
+		String eta = com.osrstelemetry.plugin.skills.SkillGoalPlanner.etaText(target.etaMillis);
+		if (goal.getFamily() == com.osrstelemetry.plugin.skills.SkillGoal.Family.LEVEL)
+		{
+			JLabel level = pestLink("Lvl " + goal.getTargetLevel(), SC_TARGET_LEVEL_NAME, "Target level -- click to change",
+				() -> askSkillNumber("Target " + skillName + " level (" + com.osrstelemetry.plugin.skills.SkillGoal.MIN_LEVEL + "-"
+					+ com.osrstelemetry.plugin.skills.SkillGoal.MAX_LEVEL + ")", goal.getTargetLevel(),
+					com.osrstelemetry.plugin.skills.SkillGoal.MIN_LEVEL, com.osrstelemetry.plugin.skills.SkillGoal.MAX_LEVEL,
+					goal::withTargetLevel));
+			section.add(pestRow(familyCombo, level));
+			section.add(Box.createVerticalStrut(4));
+			grid.addCell(SC_XP_LEFT_CELL, target.first == null ? null : formatNumber(target.first),
+				SpyglassTheme.ACCENT_GOLD, "Exact XP from your current " + skillName + " XP to level " + goal.getTargetLevel());
+			grid.addCell(SC_ETA_CELL, target.reached ? "Reached" : eta, SpyglassTheme.TEXT_PRIMARY, target.reached
+				? "You are already at or above this level"
+				: eta == null ? "At this session's " + skillName + " XP/hr -- appears once the XP rate does (after 5 minutes)"
+					: "At this session's observed " + skillName + " XP/hr");
+			section.add(grid);
+		}
+		else
+		{
+			section.add(pestRow(familyCombo, null));
+			section.add(Box.createVerticalStrut(2));
+			if (target.resource == null)
+			{
+				section.add(wtLine(source.definition().stockpileEmptyHint(), SC_ETA_LINE_NAME, SpyglassTheme.TEXT_SECONDARY));
+				block.add(section);
+				return;
+			}
+			List<PestChoice<Integer>> resources = new java.util.ArrayList<>();
+			for (com.osrstelemetry.plugin.skills.SkillResource r : target.choices)
+			{
+				resources.add(new PestChoice<>(r.getItemId(), r.getShortName()));
+			}
+			javax.swing.JComboBox<PestChoice<Integer>> resourceCombo =
+				planCombo(SC_TARGET_RESOURCE_NAME, resources, target.resource.getItemId(), id -> selectSkillGoal(goal.withResource(id)));
+			resourceCombo.setToolTipText("What to stockpile (only resources Spyglass can count reliably)");
+			String promptNoun = target.promptNoun != null ? target.promptNoun
+				: target.resource.getName().toLowerCase(java.util.Locale.ROOT) + " in your bank";
+			JLabel quantity = pestLink(target.quantityText != null ? target.quantityText : formatNumber(goal.getTargetQuantity()),
+				SC_TARGET_QUANTITY_NAME, "Target amount -- click to change",
+				() -> askSkillNumber("How many " + promptNoun + "? (1-"
+					+ formatNumber(com.osrstelemetry.plugin.skills.SkillGoal.MAX_QUANTITY) + ")", goal.getTargetQuantity(), 1,
+					com.osrstelemetry.plugin.skills.SkillGoal.MAX_QUANTITY,
+					q -> goal.withResource(target.resource.getItemId()).withTargetQuantity(q)));
+			section.add(pestRow(resourceCombo, quantity));
+			section.add(Box.createVerticalStrut(4));
+			if (target.firstCaption != null)
+			{
+				// Phase 6: a unit family and / or an account storage outside the bank (exact text from the model).
+				grid.addCell(target.firstCaption, target.firstText, SpyglassTheme.ACCENT_GOLD, target.firstTooltip);
+				grid.addCell(SC_REMAINING_CELL, target.remainingText, SpyglassTheme.TEXT_PRIMARY,
+					"Still to put away to reach " + (target.quantityText != null ? target.quantityText : formatNumber(goal.getTargetQuantity())));
+			}
+			else
+			{
+				grid.addCell(SC_IN_BANK_CELL, target.first == null ? null : formatNumber(target.first), SpyglassTheme.ACCENT_GOLD,
+					target.first == null ? "Open your bank once so Spyglass can see what you already have"
+						: "What your bank holds now (Spyglass's own bank view; this session's deposits included)");
+				grid.addCell(SC_REMAINING_CELL, target.reached ? "Done" : target.remaining == null ? null : formatNumber(target.remaining),
+					SpyglassTheme.TEXT_PRIMARY, "Still to bank to reach " + formatNumber(goal.getTargetQuantity()));
+			}
+			section.add(grid);
+			if (target.ownershipLine != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel owned = wtLine(target.ownershipLine, SC_OWNERSHIP_NAME,
+					target.ownershipAlert ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_SECONDARY);
+				owned.setToolTipText(target.ownershipAlert
+					? "Its contents are read whenever your bank is open; until then OWNED is a lower bound and no ETA is claimed"
+					: "OWNED adds both (they never hold the same item twice); your inventory is not added");
+				section.add(owned);
+			}
+			if (!target.reached)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JPanel etaRow = centeredStatusRow("ETA " + (eta == null ? "-" : eta), SC_ETA_LINE_NAME,
+					eta == null ? SpyglassTheme.TEXT_SECONDARY : SpyglassTheme.TEXT_PRIMARY);
+				etaRow.setToolTipText(eta == null
+					? "At the rate this session actually banks " + target.resource.getShortName().toLowerCase(java.util.Locale.ROOT)
+						+ " -- appears after two deposits and 5 minutes (production per hour is never used instead)"
+					: "At the rate this session actually banks it (time up to your latest deposit)");
+				section.add(etaRow);
+			}
+		}
+		block.add(section);
+	}
+
+	/** Package-private so tests drive the target exactly as a dropdown / prompt does. Planning state only. */
+	void selectSkillGoal(com.osrstelemetry.plugin.skills.SkillGoal goal)
+	{
+		com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source = skillCompanionSource(lastSnapshot);
+		if (source != null && goal != null)
+		{
+			source.setGoal(goal);
+		}
+		pestPopupOpen = false;
+		if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
+	}
+
+	private void askSkillNumber(String prompt, int current, int min, int max,
+		java.util.function.IntFunction<com.osrstelemetry.plugin.skills.SkillGoal> change)
+	{
+		Object answer = javax.swing.JOptionPane.showInputDialog(this, prompt, "Target",
+			javax.swing.JOptionPane.PLAIN_MESSAGE, null, null, String.valueOf(current));
+		Integer value = parseSkillNumber(answer == null ? null : answer.toString(), min, max);
+		if (value != null)
+		{
+			selectSkillGoal(change.apply(value));
+		}
+	}
+
+	/** A whole number within [min, max] (commas allowed, up to 8 digits), else null. */
+	static Integer parseSkillNumber(String text, int min, int max)
+	{
+		if (text == null)
+		{
+			return null;
+		}
+		String t = text.trim().replace(",", "");
+		if (!t.matches("[0-9]{1,8}"))
+		{
+			return null;
+		}
+		int v = Integer.parseInt(t);
+		return v < min || v > max ? null : v;
+	}
+
+	// ---- PEST CONTROL ------------------------------------------------------------
+
+	static final String PEST_BLOCK_NAME = "pestControlBlock";
+	static final String PEST_GAME_GRID_NAME = "pestGameGrid";
+	static final String PEST_ACTIVITY_CELL = "ACTIVITY";
+	static final String PEST_KNIGHT_CELL = "VOID KNIGHT";
+	static final String PEST_PORTALS_CELL = "PORTALS";
+	static final String PEST_TIME_CELL = "GAME TIME";
+	static final String PEST_GOAL_NAME = "pestGoal";
+	static final String PEST_FAMILY_NAME = "pestGoalFamily";
+	static final String PEST_VOID_GOAL_NAME = "pestGoalVoid";
+	static final String PEST_STYLE_NAME = "pestGoalStyle";
+	static final String PEST_PIECE_NAME = "pestGoalPiece";
+	static final String PEST_SKILL_NAME = "pestGoalSkill";
+	static final String PEST_LEVEL_NAME = "pestGoalLevel";
+	static final String PEST_PACK_NAME = "pestGoalPack";
+	static final String PEST_PACK_COUNT_NAME = "pestGoalPackCount";
+	static final String PEST_GOAL_GRID_NAME = "pestGoalGrid";
+	static final String PEST_POINTS_LEFT_CELL = "POINTS LEFT";
+	static final String PEST_COST_CELL = "COST";
+	static final String PEST_ETA_CELL = "ETA";
+	static final String PEST_GOAL_DETAIL_NAME = "pestGoalDetail";
+	static final String PEST_SESSION_GRID_NAME = "pestSessionGrid";
+	static final String PEST_GAMES_CELL = "GAMES WON";
+	static final String PEST_COMMENDATIONS_CELL = "COMMENDATIONS";
+	static final String PEST_AVG_CELL = "AVG GAME";
+	static final String PEST_RATE_CELL = "COMMENDS / HR";
+	/** Goal dropdowns never ask for more than this width, so the narrowest sidebar never scrolls sideways. */
+	static final int PEST_COMBO_MAX_WIDTH = 140;
+
+	/** Pest Control dashboard data (game, balance, ownership, XP, goal); null = none (tests / before wiring). */
+	private volatile PestControlPanelSource pestControlSource;
+	/** "Now" for the live game time / round-time rate (replaceable in tests). */
+	private volatile java.util.function.Supplier<java.time.Instant> nowSupplier = java.time.Instant::now;
+	/** A goal dropdown's popup is open: render() must not rebuild it away (see render). */
+	private boolean pestPopupOpen;
+
+	void setPestControlSource(PestControlPanelSource source)
+	{
+		this.pestControlSource = source;
+	}
+
+	void setNowSupplier(java.util.function.Supplier<java.time.Instant> now)
+	{
+		this.nowSupplier = now;
+	}
+
+	private static boolean isPestControl(CurrentSessionSnapshot snapshot)
+	{
+		return snapshot.getActivityType() == ActivityType.STRUCTURED_ACTIVITY
+			&& StructuredActivityCatalog.PEST_CONTROL.equals(snapshot.getActivityKey());
+	}
+
+	/**
+	 * PEST CONTROL: activity-native block between the header and XP.
+	 * <ul>
+	 * <li>CURRENT GAME (only on the island, 2 x 2): ACTIVITY | VOID KNIGHT
+	 * over PORTALS | GAME TIME -- the game's own status overlay; an unread
+	 * value is a quiet dash, and GAME TIME only when the round's start was
+	 * seen.</li>
+	 * <li>GOAL: an in-panel planner (planning state, never telemetry) --
+	 * family dropdown, the selectors that goal needs, then POINTS LEFT |
+	 * ETA and one concise detail line.</li>
+	 * <li>SESSION (2 x 2): GAMES WON | COMMENDATIONS over AVG GAME |
+	 * COMMENDS / HR.</li>
+	 * </ul>
+	 */
+	private void renderPestControlBlock(CurrentSessionSnapshot snapshot)
+	{
+		JPanel block = new JPanel();
+		block.setName(PEST_BLOCK_NAME);
+		block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
+		block.setBackground(SpyglassTheme.BACKGROUND_MAIN);
+		block.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+		PestControlPanelSource source = pestControlSource;
+		java.time.Instant now = nowSupplier.get();
+		PestControlGameState game = source != null && snapshot.getState() == SessionState.ACTIVE ? source.game() : null;
+		if (game != null)
+		{
+			block.add(caption("Current game"));
+			block.add(Box.createVerticalStrut(3));
+			block.add(pestGameGrid(game, now));
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		Double rate = pestCommendationsPerHour(snapshot, game, now);
+		if (source != null)
+		{
+			addPestGoal(block, source, rate);
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (snapshot.getCompletionLabel() != null)
+		{
+			block.add(caption("Session"));
+			block.add(Box.createVerticalStrut(3));
+			block.add(pestSessionGrid(snapshot, rate));
+			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (block.getComponentCount() == 0)
+		{
+			return;
+		}
+		content.add(block);
+		content.add(separator());
+		content.add(Box.createVerticalStrut(6));
+	}
+
+	private static SlayerStatGrid pestGameGrid(PestControlGameState game, java.time.Instant now)
+	{
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(PEST_GAME_GRID_NAME);
+		grid.setMaxColumns(2);
+		Integer activity = game.getActivityPercent();
+		grid.addCell(PEST_ACTIVITY_CELL, activity == null ? null : activity + "%",
+			activity != null && activity <= 25 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+			"Your activity bar (from the game's status overlay); it must stay above 0% to be rewarded");
+		Integer knight = game.getKnightHealthPercent();
+		grid.addCell(PEST_KNIGHT_CELL, knight == null ? null : knight + "%",
+			knight != null && knight <= 25 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+			"The Void Knight's health (from the game's status overlay)");
+		Integer portals = game.getPortalsDestroyed();
+		grid.addCell(PEST_PORTALS_CELL, portals == null ? null : portals + "/4", SpyglassTheme.TEXT_PRIMARY,
+			"Portals destroyed this game");
+		java.time.Instant started = game.getStartedAt();
+		grid.addCell(PEST_TIME_CELL, started == null ? null
+				: CompletionMetricText.gameTime(Math.max(0L, java.time.Duration.between(started, now).getSeconds())),
+			SpyglassTheme.TEXT_PRIMARY, started == null
+				? "Game time unknown: Spyglass joined this game part-way (login / plugin enabled on the island)"
+				: "Time since this game started (island arrival)");
+		return grid;
+	}
+
+	/** Commendations per hour of game time: closed rounds plus the round in progress (outpost time never counts). */
+	private static Double pestCommendationsPerHour(CurrentSessionSnapshot snapshot, PestControlGameState game, java.time.Instant now)
+	{
+		long live = 0L;
+		if (game != null && game.getOpenedAt() != null)
+		{
+			live = Math.max(0L, java.time.Duration.between(game.getOpenedAt(), now).toMillis());
+		}
+		return CompletionMetricText.commendationsPerHour(snapshot.getActivityCurrencyGained(), snapshot.getRoundMillis(),
+			snapshot.getRoundsTimed(), live, snapshot.getActiveDurationMillis());
+	}
+
+	private static SlayerStatGrid pestSessionGrid(CurrentSessionSnapshot snapshot, Double rate)
+	{
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(PEST_SESSION_GRID_NAME);
+		grid.setMaxColumns(2);
+		int games = snapshot.getCompletionCount();
+		grid.addCell(PEST_GAMES_CELL, formatNumber(games), SpyglassTheme.TEXT_PRIMARY, "Won games this session (a lost game never counts)");
+		long gained = snapshot.getActivityCurrencyGained();
+		grid.addCell(PEST_COMMENDATIONS_CELL, gained > 0 ? CompletionMetricText.currencyText(gained) : null, SpyglassTheme.ACCENT_GOLD,
+			"Void Knight Commendation points earned this session (spending never reduces it)");
+		Long average = snapshot.getAverageScore();
+		int scored = snapshot.getScoredGames();
+		grid.addCell(PEST_AVG_CELL, average == null ? null : CompletionMetricText.gameTime(average), SpyglassTheme.TEXT_PRIMARY,
+			average == null
+				? "Average game time, island arrival to win -- appears after a won game Spyglass saw from its start"
+				: "Average game time, island arrival to win (" + scored + " won game" + (scored == 1 ? "" : "s")
+					+ " seen from the start" + (scored < games ? " of " + games : "") + ")");
+		grid.addCell(PEST_RATE_CELL, rate == null ? null : String.format(java.util.Locale.ROOT, "%.1f", rate), SpyglassTheme.TEXT_PRIMARY,
+			rate == null
+				? "Commendation points per hour of game time (outpost waiting never counts). " + RATE_WARMUP_TOOLTIP
+				: "Commendation points per hour of game time (outpost waiting never counts)");
+		return grid;
+	}
+
+	/** One dropdown choice: a value and the text shown for it. */
+	static final class PestChoice<T>
+	{
+		private final T value;
+		private final String label;
+
+		PestChoice(T value, String label)
+		{
+			this.value = value;
+			this.label = label;
+		}
+
+		T getValue()
+		{
+			return value;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
+	/**
+	 * GOAL: family dropdown, then only the selectors that goal needs (Void:
+	 * goal, then style or piece; XP: skill + target level; Supplies: pack +
+	 * pack count), then POINTS LEFT | ETA (COST | ETA while the balance is
+	 * unknown) and one concise detail line. Planning only.
+	 */
+	private void addPestGoal(JPanel block, PestControlPanelSource source, Double rate)
+	{
+		PestControlGoal goal = source.goal() == null ? PestControlGoal.DEFAULT : source.goal();
+		JPanel section = new JPanel();
+		section.setName(PEST_GOAL_NAME);
+		section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
+		section.setOpaque(false);
+		section.setAlignmentX(Component.LEFT_ALIGNMENT);
+		section.add(caption("Goal"));
+		section.add(Box.createVerticalStrut(3));
+
+		List<PestChoice<PestControlGoal.Family>> families = new java.util.ArrayList<>();
+		for (PestControlGoal.Family f : PestControlGoal.Family.values())
+		{
+			families.add(new PestChoice<>(f, f.toString()));
+		}
+		section.add(pestRow(pestCombo(PEST_FAMILY_NAME, families, goal.getFamily(), goal::withFamily), null));
+
+		switch (goal.getFamily())
+		{
+			case XP:
+			{
+				List<PestChoice<Skill>> skills = new java.util.ArrayList<>();
+				for (Skill skill : PestControlXp.SKILLS)
+				{
+					skills.add(new PestChoice<>(skill, skill.getName()));
+				}
+				JLabel level = pestLink("Lvl " + goal.getXpTargetLevel(), PEST_LEVEL_NAME,
+					"Target level -- click to change", () -> askPestNumber("Target " + goal.getXpSkill().getName() + " level (2-99)",
+						goal.getXpTargetLevel(), 2, 99, goal::withXpTargetLevel));
+				section.add(Box.createVerticalStrut(2));
+				section.add(pestRow(pestCombo(PEST_SKILL_NAME, skills, goal.getXpSkill(), goal::withXpSkill), level));
+				break;
+			}
+			case SUPPLIES:
+			{
+				List<PestChoice<SupplyPack>> packs = new java.util.ArrayList<>();
+				for (SupplyPack pack : SupplyPack.values())
+				{
+					packs.add(new PestChoice<>(pack, pack.getShortName()));
+				}
+				int target = goal.getPackTarget();
+				JLabel count = pestLink(formatNumber(target) + (target == 1 ? " pack" : " packs"), PEST_PACK_COUNT_NAME,
+					"How many packs -- click to change", () -> askPestNumber("How many " + goal.getPack().getItemName().toLowerCase(java.util.Locale.ROOT)
+						+ "s? (1-" + formatNumber(PestControlGoal.MAX_PACKS) + ")", target, 1, PestControlGoal.MAX_PACKS, goal::withPackTarget));
+				section.add(Box.createVerticalStrut(2));
+				section.add(pestRow(pestCombo(PEST_PACK_NAME, packs, goal.getPack(), goal::withPack), count));
+				break;
+			}
+			case VOID:
+			default:
+			{
+				List<PestChoice<PestControlGoal.VoidGoal>> goals = new java.util.ArrayList<>();
+				for (PestControlGoal.VoidGoal g : PestControlGoal.VoidGoal.values())
+				{
+					goals.add(new PestChoice<>(g, g.toString()));
+				}
+				section.add(Box.createVerticalStrut(2));
+				section.add(pestRow(pestCombo(PEST_VOID_GOAL_NAME, goals, goal.getVoidGoal(), goal::withVoidGoal), null));
+				if (goal.getVoidGoal().usesStyle())
+				{
+					List<PestChoice<VoidStyle>> styles = new java.util.ArrayList<>();
+					for (VoidStyle style : VoidStyle.values())
+					{
+						styles.add(new PestChoice<>(style, style.getLabel()));
+					}
+					section.add(Box.createVerticalStrut(2));
+					section.add(pestRow(pestCombo(PEST_STYLE_NAME, styles, goal.getVoidStyle(), goal::withVoidStyle), null));
+				}
+				else if (goal.getVoidGoal() == PestControlGoal.VoidGoal.PIECE)
+				{
+					List<PestChoice<VoidPiece>> pieces = new java.util.ArrayList<>();
+					for (VoidPiece piece : VoidPiece.values())
+					{
+						pieces.add(new PestChoice<>(piece, piece.getItemName()));
+					}
+					section.add(Box.createVerticalStrut(2));
+					section.add(pestRow(pestCombo(PEST_PIECE_NAME, pieces, goal.getVoidPiece(), goal::withVoidPiece), null));
+				}
+				break;
+			}
+		}
+
+		Integer balance = source.balance();
+		PestControlGoalPlanner.Plan plan = PestControlGoalPlanner.plan(goal, source.ownership(), balance, skill ->
+		{
+			Integer xp = source.skillXp(skill);
+			return xp == null ? -1L : xp;
+		});
+		section.add(Box.createVerticalStrut(4));
+		SlayerStatGrid grid = new SlayerStatGrid();
+		grid.setName(PEST_GOAL_GRID_NAME);
+		grid.setMaxColumns(2);
+		Long left = plan.getProblem() == null ? plan.getPointsLeft() : null;
+		boolean balanceKnown = balance != null;
+		String leftCaption = balanceKnown || plan.isComplete() ? PEST_POINTS_LEFT_CELL : PEST_COST_CELL;
+		grid.addCell(leftCaption, left == null ? null : formatNumber(left), SpyglassTheme.ACCENT_GOLD,
+			balanceKnown
+				? "Commendation points still needed (cost " + (plan.getCost() == null ? "-" : formatNumber(plan.getCost()))
+					+ " minus your " + formatNumber(balance) + " points)"
+				: "Your commendation balance has not been seen yet, so this is the full cost (never assumed 0). "
+					+ "The game states it after a game, or on the lander.");
+		Long eta = plan.getProblem() == null ? plan.etaMillis(rate) : null;
+		grid.addCell(PEST_ETA_CELL, PestControlGoalPlanner.etaText(eta), SpyglassTheme.TEXT_PRIMARY,
+			eta == null
+				? "Time to the goal at this session's commendations per hour -- appears once there is a rate"
+				: "Time to the goal at this session's commendations per hour of game time");
+		section.add(grid);
+
+		String detail = plan.getProblem() != null ? plan.getProblem() : plan.getDetail();
+		if (detail != null)
+		{
+			// The goal result's status, centered under the POINTS LEFT / ETA grid
+			// across the full GOAL width. LIVE QA 2026-10-02: the wrapping label
+			// lays its HTML out at whatever width it was last asked about -- on a
+			// fresh render that is the 160 px fallback (parent not sized yet), and
+			// nothing re-asks after layout, so "Owned" was drawn centered in 160 px
+			// (x = 80) whatever the real width. The row below re-wraps the label
+			// at its REAL width on every layout, never lets the fallback widen
+			// the panel, and the label itself centers its text block.
+			WrappingHtmlLabel line = new WrappingHtmlLabel(detail, true);
+			line.setName(PEST_GOAL_DETAIL_NAME);
+			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setForeground(plan.getProblem() != null ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_SECONDARY);
+			line.setHorizontalAlignment(JLabel.CENTER);
+			if (plan.getOwned() != null)
+			{
+				line.setToolTipText("Already owned: " + plan.getOwned());
+			}
+			JPanel statusRow = new JPanel(new BorderLayout())
+			{
+				@Override
+				public Dimension getPreferredSize()
+				{
+					// Height only: the row always takes the GOAL section's width.
+					return new Dimension(0, super.getPreferredSize().height);
+				}
+
+				@Override
+				public Dimension getMaximumSize()
+				{
+					return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+				}
+
+				@Override
+				public void doLayout()
+				{
+					if (getWidth() > 0)
+					{
+						// Re-wrap at the real width (WrappingHtmlLabel sizes its HTML
+						// view to the parent's current width when asked).
+						int wanted = line.getPreferredSize().height;
+						if (wanted != getHeight() - getInsets().top - getInsets().bottom)
+						{
+							// More / fewer wrapped lines at this width: one more layout
+							// pass settles the height (then the heights match: no loop).
+							revalidate();
+						}
+					}
+					super.doLayout();
+				}
+			};
+			statusRow.setOpaque(false);
+			statusRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+			statusRow.add(line, BorderLayout.CENTER);
+			section.add(Box.createVerticalStrut(2));
+			section.add(statusRow);
+		}
+		block.add(section);
+	}
+
+	/** A dropdown row: the combo fills the width, an optional link sits at its right. */
+	private static JPanel pestRow(Component combo, JLabel trailing)
+	{
+		JPanel row = new JPanel(new BorderLayout(4, 0));
+		row.setOpaque(false);
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+		row.add(combo, BorderLayout.CENTER);
+		if (trailing != null)
+		{
+			row.add(trailing, BorderLayout.EAST);
+		}
+		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+		return row;
+	}
+
+	private <T> javax.swing.JComboBox<PestChoice<T>> pestCombo(String name, List<PestChoice<T>> choices, T selected,
+		java.util.function.Function<T, PestControlGoal> change)
+	{
+		@SuppressWarnings("unchecked")
+		PestChoice<T>[] items = choices.toArray(new PestChoice[0]);
+		javax.swing.JComboBox<PestChoice<T>> combo = new javax.swing.JComboBox<PestChoice<T>>(items)
+		{
+			@Override
+			public Dimension getPreferredSize()
+			{
+				Dimension d = super.getPreferredSize();
+				return new Dimension(Math.min(d.width, PEST_COMBO_MAX_WIDTH), d.height);
+			}
+
+			@Override
+			public Dimension getMinimumSize()
+			{
+				return new Dimension(40, super.getPreferredSize().height);
+			}
+		};
+		combo.setName(name);
+		combo.setFont(FontManager.getRunescapeSmallFont());
+		combo.setFocusable(false);
+		combo.setMaximumRowCount(Math.min(12, items.length));
+		for (PestChoice<T> c : items)
+		{
+			if (java.util.Objects.equals(c.getValue(), selected))
+			{
+				combo.setSelectedItem(c);
+			}
+		}
+		combo.addPopupMenuListener(new javax.swing.event.PopupMenuListener()
+		{
+			@Override
+			public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e)
+			{
+				pestPopupOpen = true;
+			}
+
+			@Override
+			public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e)
+			{
+				pestPopupOpen = false;
+				javax.swing.SwingUtilities.invokeLater(() -> rerenderIfIdle());
+			}
+
+			@Override
+			public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e)
+			{
+				pestPopupOpen = false;
+			}
+		});
+		combo.addActionListener(e ->
+		{
+			Object picked = combo.getSelectedItem();
+			if (picked instanceof PestChoice && !java.util.Objects.equals(((PestChoice<?>) picked).getValue(), selected))
+			{
+				@SuppressWarnings("unchecked")
+				T value = ((PestChoice<T>) picked).getValue();
+				PestControlGoal next = change.apply(value);
+				// After the popup's own event finishes: the combo is rebuilt by the render.
+				javax.swing.SwingUtilities.invokeLater(() -> selectPestGoal(next));
+			}
+		});
+		return combo;
+	}
+
+	private void rerenderIfIdle()
+	{
+		if (!pestPopupOpen && lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
+	}
+
+	private static JLabel pestLink(String text, String name, String tooltip, Runnable onClick)
+	{
+		JLabel link = smallLabel(text, SpyglassTheme.ACCENT_GOLD);
+		link.setName(name);
+		link.setToolTipText(tooltip);
+		link.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+		link.addMouseListener(new java.awt.event.MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(java.awt.event.MouseEvent e)
+			{
+				onClick.run();
+			}
+		});
+		return link;
+	}
+
+	/** A small number prompt (target level / pack count); out-of-range or non-numbers change nothing. */
+	private void askPestNumber(String prompt, int current, int min, int max, java.util.function.IntFunction<PestControlGoal> change)
+	{
+		Object answer = javax.swing.JOptionPane.showInputDialog(this, prompt, "Pest Control goal",
+			javax.swing.JOptionPane.PLAIN_MESSAGE, null, null, String.valueOf(current));
+		Integer value = parsePestNumber(answer == null ? null : answer.toString(), min, max);
+		if (value != null)
+		{
+			selectPestGoal(change.apply(value));
+		}
+	}
+
+	/** The typed number when it is a whole number within [min, max] (commas allowed), else null. */
+	static Integer parsePestNumber(String text, int min, int max)
+	{
+		if (text == null)
+		{
+			return null;
+		}
+		String t = text.trim().replace(",", "");
+		if (!t.matches("[0-9]{1,6}"))
+		{
+			return null;
+		}
+		int v = Integer.parseInt(t);
+		return v < min || v > max ? null : v;
+	}
+
+	/** Package-private so tests drive the planner exactly as a dropdown / prompt does. Planning state only. */
+	void selectPestGoal(PestControlGoal goal)
+	{
+		PestControlPanelSource source = pestControlSource;
+		if (source != null && goal != null)
+		{
+			source.setGoal(goal);
+		}
+		pestPopupOpen = false;
+		if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
 		}
 	}
 

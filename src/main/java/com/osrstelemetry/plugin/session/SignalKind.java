@@ -27,6 +27,8 @@ public enum SignalKind
 	SLAYER_TASK_COMPLETED,
 	/** Native bracelet activation (see EventType.SLAYER_BRACELET_EFFECT). Metric-only, never lifecycle evidence. */
 	SLAYER_BRACELET_EFFECT,
+	/** An owned NPC death of the Slayer encounter (see EventType.SLAYER_ENCOUNTER_KILL). Metric-only. */
+	SLAYER_ENCOUNTER_KILL,
 	BOSS_KILL,
 	BOSS_ACTIVITY_CONTEXT,
 	RAID_COMPLETION,
@@ -146,11 +148,21 @@ public enum SignalKind
 	 * (e.g. GotR's separate elemental / catalytic reward points).
 	 */
 	STRUCTURED_ACTIVITY_CURRENCY,
+	/** One round's in-area time (EventType.STRUCTURED_ACTIVITY_ROUND_TIME). Metric-only for the activity's OWN session. */
+	STRUCTURED_ACTIVITY_ROUND_TIME,
+	/** One round's total of one counted action (EventType.STRUCTURED_ACTIVITY_ACTION). Metric-only for the activity's OWN session. */
+	STRUCTURED_ACTIVITY_ACTION,
 	/**
 	 * Items PRODUCED by a confirmed production action in a structured
 	 * activity (GotR runes crafted). Activity output -- never loot, never a
 	 * reward, never lifecycle evidence. Metric-only for the activity's OWN
 	 * session.
 	 */
-	STRUCTURED_ACTIVITY_PRODUCTION
+	STRUCTURED_ACTIVITY_PRODUCTION,
+	/**
+	 * A skill companion's production / banked / method-time update
+	 * (EventType.SKILL_PRODUCTION). Metric-only for the matching SKILLING
+	 * session (same skill), never lifecycle evidence and never loot.
+	 */
+	SKILL_PRODUCTION
 }

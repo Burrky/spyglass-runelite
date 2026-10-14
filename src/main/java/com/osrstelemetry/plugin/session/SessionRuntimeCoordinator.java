@@ -1162,6 +1162,14 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 				// never ride a batch onto any other session.
 				continue;
 			}
+			if (metric.getSkillKey() != null
+				&& (target.getActivityIdentity().getActivityType() != ActivityType.SKILLING
+					|| !metric.getSkillKey().equals(target.getActivityIdentity().getActivityKey())))
+			{
+				// Skill companion production belongs to that skill's own SKILLING
+				// session only (Mining production never lands on Wintertodt, Slayer ...).
+				continue;
+			}
 			SessionAggregateUpdater.apply(target.getAggregates(), metric);
 			// This durable application, the
 			// instant it happens, now represents the raw StatChanged gains
@@ -1384,6 +1392,34 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 	// production object directly" convention as every other test in this
 	// package).
 	// =====================================================================
+
+	/**
+	 * ADDED (Skills Phase 2: Fishing). A skill companion proved, from the
+	 * skill's own native evidence, that the player is doing a method whose
+	 * catches also grant other skills' XP (barbarian fishing). In-memory and
+	 * transient: it only lets the batch resolver break a same-tick tie
+	 * between Skilling identities in favour of that skill while the evidence
+	 * is fresh (ClassifierContext#hasFreshSkillMethodEvidence). Never a
+	 * session by itself, never a metric, never persisted.
+	 */
+	public synchronized void noteSkillMethodEvidence(String skillKey, Instant observedAt)
+	{
+		classifierContext.noteSkillMethodEvidence(skillKey, observedAt);
+	}
+
+	/**
+	 * ADDED (Skills Phase 4). A skill companion proved, from its own native
+	 * evidence, that XP in {@code xpSkill} right now belongs to its skill's
+	 * activity (granted by the same action, or by a contextual event the
+	 * player takes part in). In-memory and transient: it
+	 * only keeps such XP a metric of that activity while the evidence is
+	 * fresh (ClassifierContext#hasFreshSkillContextEvidence). Never a session
+	 * by itself, never persisted.
+	 */
+	public synchronized void noteSkillContextEvidence(String ownerSkillKey, String xpSkill, Instant observedAt)
+	{
+		classifierContext.noteSkillContextEvidence(ownerSkillKey, xpSkill, observedAt);
+	}
 
 	/** Bypasses onEvent()'s account filter and Client-dependent gameTick
 	 * tagging -- tests build already-tick-tagged SessionSignal instances

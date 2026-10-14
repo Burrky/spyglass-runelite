@@ -11,15 +11,22 @@ import com.osrstelemetry.plugin.activity.GotrRewardWallet;
 import com.osrstelemetry.plugin.activity.GotrRunes;
 import com.osrstelemetry.plugin.activity.ProductionTracker;
 import com.osrstelemetry.plugin.activity.LocationPolicy;
+import com.osrstelemetry.plugin.activity.PestControlGameState;
+import com.osrstelemetry.plugin.activity.PestControlGameTracker;
 import com.osrstelemetry.plugin.activity.StructuredActivityDefinition;
 import com.osrstelemetry.plugin.activity.StructuredActivityRegistry;
 import com.osrstelemetry.plugin.activity.StructuredRewardSource;
 import com.osrstelemetry.plugin.activity.TemporossGameState;
 import com.osrstelemetry.plugin.activity.TemporossGameTracker;
+import com.osrstelemetry.plugin.activity.WintertodtRoundTracker;
+import com.osrstelemetry.plugin.activity.WintertodtState;
+import com.osrstelemetry.plugin.wintertodt.WintertodtTools;
 import com.osrstelemetry.plugin.activity.StructuredActivityCatalog;
 import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.events.EventPayloads;
 import com.osrstelemetry.plugin.events.EventType;
+import com.osrstelemetry.plugin.pestcontrol.PestControlXp;
+import com.osrstelemetry.plugin.pestcontrol.VoidOwnership;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -30,6 +37,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.IntFunction;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -87,6 +95,7 @@ import net.runelite.client.util.Text;
  * All of this runs on the client thread (RuneLite event dispatch); only
  * plain item ids/names/quantities leave it, inside the appended event.
  */
+@Slf4j
 public class StructuredActivityCollector
 {
 	private static final int NO_REGION = Integer.MIN_VALUE;
@@ -190,6 +199,29 @@ public class StructuredActivityCollector
 	private Map<Integer, Long> claimSnapshot = new HashMap<>();
 	private int claimTicksLeft;
 
+	/**
+	 * PEST CONTROL CURRENT GAME (native status overlay, interface 408) while
+	 * the player is on the game island (template region 10536); null
+	 * otherwise -- the outpost (10537), the lander, anywhere else, logged
+	 * out. Cleared on every exit, so one round never leaks into the next.
+	 * Presentation only.
+	 */
+	public static final int PEST_CONTROL_ISLAND_REGION = 10536;
+	public static final int PEST_CONTROL_OUTPOST_REGION = 10537;
+	private volatile PestControlGameState pestGame;
+	private final PestControlGameTracker pestTracker = new PestControlGameTracker();
+	/** Last commendation balance the game stated this login (or remembered for this account); null = unknown. */
+	private volatile Integer pestBalance;
+	/** Planning-state sink for a newly stated balance (null = now unknown); never telemetry. */
+	private volatile java.util.function.Consumer<Integer> pestBalanceListener;
+	/** Void pieces owned now (inventory / worn / bank): goal planning only. */
+	private final VoidOwnership voidOwnership = new VoidOwnership();
+	/** Exact XP of the Pest Control reward skills, from StatChanged (goal planning only). */
+	private final Map<Skill, Integer> pestSkillXp = new java.util.concurrent.ConcurrentHashMap<>();
+	/** Last HUD diagnostic line logged (change-only debug logging while the HUD reads are unverified). */
+	private String pestHudDiagnostic;
+	private java.time.Clock clock = java.time.Clock.systemUTC();
+
 	@Inject
 	public StructuredActivityCollector(Client client, ItemManager itemManager, EventLedger eventLedger)
 	{
@@ -218,6 +250,10 @@ public class StructuredActivityCollector
 		// and a game in progress can no longer be proven observed from start.
 		temporossTracker.reset();
 		resetGotrTracking();
+		// A round open before the disable cannot be timed across it: dropped,
+		// and a round still in progress resumes as NOT observed from start.
+		resetPestControl();
+		resetWintertodt();
 	}
 
 	/** GotR: balances, game provenance, Guardian Power, open rifts and the rune baseline are all unknown again. */
@@ -315,6 +351,11 @@ public class StructuredActivityCollector
 
 	public void resetForAccountSwitch()
 	{
+		resetWintertodt();
+		wtSkillXp.clear();
+		resetPestControl();
+		voidOwnership.reset();
+		pestSkillXp.clear();
 		setBarrowsProgress(null);
 		setTemporossGame(null);
 		temporossTracker.reset();
@@ -334,11 +375,16 @@ public class StructuredActivityCollector
 		{
 			// Disarm (for the account that was inside), then forget, so the
 			// next login re-arms from scratch instead of inheriting a lock.
+			// A round in progress ends here for this login (its time so far is real round time).
+			closePestRound(lastAccountHash);
+			emitWintertodtRound(wtTracker.exit(client.getTickCount()), lastAccountHash);
+			resetWintertodt();
 			if (lastActivityKey != null && lastAccountHash != null)
 			{
 				eventLedger.append(lastAccountHash, EventType.STRUCTURED_ACTIVITY_STATE,
 					new EventPayloads.StructuredActivityState(null, null, lastRegionId));
 			}
+			resetPestControl();
 			forgetLocation();
 			disarmClaim();
 			setBarrowsProgress(null);
@@ -346,6 +392,696 @@ public class StructuredActivityCollector
 			temporossTracker.reset();
 			setGotrGame(null);
 			resetGotrTracking();
+		}
+	}
+
+	// ---- Wintertodt -------------------------------------------------------------
+
+	public static final int WINTERTODT_ARENA_REGION = 6462;
+	public static final int WINTERTODT_CAMP_REGION = 6461;
+	public static final String WINTERTODT_REWARDS = "reward_cart_rewards";
+	private final WintertodtRoundTracker wtTracker = new WintertodtRoundTracker();
+	private volatile WintertodtState wtState;
+	private volatile java.util.Set<WintertodtTools> wtTools = java.util.Collections.emptySet();
+	private Map<Integer, Long> wtInventory = java.util.Collections.emptyMap();
+	private Map<Integer, Long> wtWorn = java.util.Collections.emptyMap();
+	private final Map<Skill, Integer> wtSkillXp = new java.util.concurrent.ConcurrentHashMap<>();
+	private String wtDiagnostic;
+	/** The effective Wintertodt playstyle label (planning state) stamped on each round for History; null = none. */
+	private volatile java.util.function.Supplier<String> wtPlaystyleLabel;
+	private String wtCartDiagnostic;
+	/** The cart balance now (see getWintertodtCartRewards); null = unknown this login. */
+	private volatile Integer wtCartBalance;
+	/** The reward-pool varbit was read in the arena this login (only then is the camp read trusted). */
+	private boolean wtPoolSeen;
+	private com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location wtLocation;
+
+	/** Wired by the plugin: the account's effective Wintertodt playstyle label (e.g. "Mass • Points", "Auto"). */
+	public void setWintertodtPlaystyleLabel(java.util.function.Supplier<String> label)
+	{
+		this.wtPlaystyleLabel = label;
+	}
+
+	/** The Wintertodt arena as the game shows it now, or null outside it. Presentation only. */
+	public WintertodtState getWintertodtState()
+	{
+		return wtState;
+	}
+
+	/** Tools carried or worn (only refreshed around Wintertodt). */
+	public java.util.Set<WintertodtTools> getWintertodtTools()
+	{
+		return wtTools;
+	}
+
+	/** Exact Firemaking / Agility XP as the game last reported it this login; null when unknown. */
+	public Integer wintertodtSkillXp(Skill skill)
+	{
+		return skill == null ? null : wtSkillXp.get(skill);
+	}
+
+	private boolean nearWintertodt()
+	{
+		return lastRegionId == WINTERTODT_ARENA_REGION || lastRegionId == WINTERTODT_CAMP_REGION;
+	}
+
+	/** Arena / camp / elsewhere, from the native region only (presentation context, never telemetry). */
+	public com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location getWintertodtLocation()
+	{
+		return wintertodtLocationOf(lastRegionId);
+	}
+
+	static com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location wintertodtLocationOf(int regionId)
+	{
+		return regionId == WINTERTODT_ARENA_REGION ? com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location.ARENA
+			: regionId == WINTERTODT_CAMP_REGION ? com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location.CAMP
+			: com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location.ELSEWHERE;
+	}
+
+	/**
+	 * Rewards still owed in the Reward Cart now; null = not known this login.
+	 * The game's reward-pool varbit (WINT_REWARD_POOL, live-verified as the
+	 * cart balance: 0 -> 3 -> 6 -> 9, and down on Search / Big-search) read in
+	 * the arena, and in the camp once it was seen in the arena this login;
+	 * otherwise the game's own "now owed" / Check line. A balance only --
+	 * never what the session earned. Ephemeral: never persisted.
+	 */
+	public Integer getWintertodtCartRewards()
+	{
+		return wtCartBalance;
+	}
+
+	private void setWintertodtCartBalance(Integer balance)
+	{
+		if (java.util.Objects.equals(balance, wtCartBalance))
+		{
+			return;
+		}
+		wtCartBalance = balance;
+		notifyProgressListener();
+	}
+
+	/** Region class changes (arena / camp / elsewhere) re-render the companion; nothing is recorded. */
+	private void trackWintertodtLocation()
+	{
+		com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource.Location now = getWintertodtLocation();
+		if (now != wtLocation)
+		{
+			wtLocation = now;
+			notifyProgressListener();
+		}
+	}
+
+	/** Camp: the cart balance only, once the arena showed the varbit this login (one varbit read, camp only). */
+	private void trackWintertodtCampCart()
+	{
+		if (lastRegionId != WINTERTODT_CAMP_REGION || !wtPoolSeen)
+		{
+			return;
+		}
+		int pool = client.getVarbitValue(VarbitID.WINT_REWARD_POOL);
+		if (pool >= 0 && pool <= com.osrstelemetry.plugin.wintertodt.WintertodtRewards.CART_MAX)
+		{
+			setWintertodtCartBalance(pool);
+		}
+		if (log.isDebugEnabled())
+		{
+			String cart = "rewardPool=" + pool + " (camp)";
+			if (!cart.equals(wtCartDiagnostic))
+			{
+				wtCartDiagnostic = cart;
+				log.debug("Wintertodt cart: {}", cart);
+			}
+		}
+	}
+
+	/**
+	 * Client thread, once per logged-in tick: the Wintertodt round from native
+	 * state only -- the status overlay's own texts (interface 396: warmth,
+	 * energy, points), the respawn-timer varbit and the reward-pool varbit.
+	 * Three widget lookups and three varbit reads, only in the arena; nothing
+	 * anywhere else. Ephemeral: nothing here is persisted except a finished
+	 * round's time and counted actions (see emitWintertodtRound).
+	 */
+	void trackWintertodtTick()
+	{
+		trackWintertodtLocation();
+		trackWintertodtCampCart();
+		boolean inArena = lastRegionId == WINTERTODT_ARENA_REGION;
+		if (!inArena && wtState == null && !wtTracker.isInRound())
+		{
+			return;
+		}
+		int tick = client.getTickCount();
+		String warmth = null;
+		String energy = null;
+		String points = null;
+		boolean hud = false;
+		int respawn = 0;
+		int pool = -1;
+		if (inArena)
+		{
+			energy = widgetText(InterfaceID.WintStatus.ENERGY_TITLE);
+			hud = energy != null;
+			warmth = widgetText(InterfaceID.WintStatus.WARMTH_TITLE);
+			points = widgetText(InterfaceID.WintStatus.POINTS);
+			respawn = client.getVarbitValue(VarbitID.WINT_TRANSMIT_RESPAWNDELAY);
+			pool = client.getVarbitValue(VarbitID.WINT_REWARD_POOL);
+			if (pool >= 0 && pool <= com.osrstelemetry.plugin.wintertodt.WintertodtRewards.CART_MAX)
+			{
+				wtPoolSeen = true;
+				setWintertodtCartBalance(pool);
+			}
+		}
+		WintertodtRoundTracker.RoundEnd ended = wtTracker.onTick(tick, clock.instant(), inArena, hud, warmth, energy, points, respawn, pool);
+		emitWintertodtRound(ended, client.getAccountHash());
+		setWintertodtState(wtTracker.state());
+		if (inArena && log.isDebugEnabled())
+		{
+			String line = "warmth='" + warmth + "' (varbit " + client.getVarbitValue(VarbitID.WINT_WARMTH) + ") energy='" + energy
+				+ "' points='" + points + "' respawn=" + respawn + " needsWarning=" + client.getVarbitValue(VarbitID.WINT_NEEDS_WARNING)
+				+ " kills=" + client.getVarpValue(net.runelite.api.gameval.VarPlayerID.TOTAL_WINTERTODT_KILLS)
+				+ " wintInt=" + client.getVarpValue(net.runelite.api.gameval.VarPlayerID.WINT_INT);
+			if (!line.equals(wtDiagnostic))
+			{
+				wtDiagnostic = line;
+				log.debug("Wintertodt HUD: {} -> {}", line, wtState);
+			}
+			String cart = "rewardPool=" + pool;
+			if (!cart.equals(wtCartDiagnostic))
+			{
+				wtCartDiagnostic = cart;
+				log.debug("Wintertodt cart: {}", cart);
+			}
+		}
+	}
+
+	/** A finished (or left) round: its time and its counted actions -- one event each, never per tick. */
+	private void emitWintertodtRound(WintertodtRoundTracker.RoundEnd end, Long accountHash)
+	{
+		if (end == null || accountHash == null)
+		{
+			return;
+		}
+		String key = StructuredActivityCatalog.WINTERTODT;
+		if (end.getMillis() > 0)
+		{
+			EventPayloads.StructuredActivityRoundTime round = new EventPayloads.StructuredActivityRoundTime(key, end.getMillis());
+			round.setCompleteRound(end.isComplete());
+			java.util.function.Supplier<String> style = wtPlaystyleLabel;
+			round.setPlaystyle(style == null ? null : style.get());
+			eventLedger.append(accountHash, EventType.STRUCTURED_ACTIVITY_ROUND_TIME, round);
+		}
+		for (Map.Entry<String, Integer> a : end.getActions().entrySet())
+		{
+			eventLedger.append(accountHash, EventType.STRUCTURED_ACTIVITY_ACTION,
+				new EventPayloads.StructuredActivityAction(key, a.getKey(), a.getValue()));
+		}
+		log.debug("Wintertodt round: ended millis={} complete={} points={} actions={}", end.getMillis(), end.isComplete(),
+			end.getPoints(), end.getActions());
+	}
+
+	private static final java.util.regex.Pattern WT_SUBDUE = java.util.regex.Pattern.compile("Your subdued Wintertodt count is: ([0-9,]+)");
+	private Integer lastWtSubdueCount;
+
+	/**
+	 * "Your subdued Wintertodt count is: N" (the game's own running count --
+	 * the same line the generic completion path counts): deduped by N, then
+	 * the round's final points (Avg Points) and the rewards it owes.
+	 */
+	void onWintertodtSubdueLine(String message)
+	{
+		if (message == null || !message.startsWith("Your subdued Wintertodt"))
+		{
+			return;
+		}
+		java.util.regex.Matcher m = WT_SUBDUE.matcher(message);
+		if (!m.find())
+		{
+			return;
+		}
+		int count;
+		try
+		{
+			count = Integer.parseInt(m.group(1).replace(",", ""));
+		}
+		catch (NumberFormatException e)
+		{
+			return;
+		}
+		if (lastWtSubdueCount != null && count <= lastWtSubdueCount)
+		{
+			return;
+		}
+		lastWtSubdueCount = count;
+		recordWintertodtSubdue(StructuredActivityCatalog.WINTERTODT, count);
+	}
+
+	/** The subdued round's final points and the rewards it owes (2 at 500 points, +1 per further 500; none below 500). */
+	private void recordWintertodtSubdue(String key, Integer count)
+	{
+		Integer points = wtTracker.pointsForSubdue(client.getTickCount());
+		if (points == null)
+		{
+			return;
+		}
+		eventLedger.append(client.getAccountHash(), EventType.STRUCTURED_ACTIVITY_SCORE,
+			new EventPayloads.StructuredActivityScore(key, count, points, true));
+		// Rewards are NOT derived from the points here: the game states the
+		// actual award (which can include a chance-based extra reward) in its
+		// own line -- see onWintertodtRewardLine.
+	}
+
+	/**
+	 * The game's own award line, LIVE-VERIFIED 2026-10-02 (GAMEMESSAGE, same tick
+	 * as the subdue line): "You're owed an additional 3 rewards from the reward
+	 * cart. You're now owed 9 rewards." The ADDITIONAL amount is what this
+	 * session earned (it can exceed the 500-point formula's guaranteed count);
+	 * the "now owed" total is only the cart balance, which can include rewards
+	 * from before the session.
+	 */
+	static final java.util.regex.Pattern WT_REWARD_AWARD = java.util.regex.Pattern.compile(
+		"You're owed an additional ([0-9,]+) rewards? from the reward cart");
+	static final java.util.regex.Pattern WT_REWARD_NOW_OWED = java.util.regex.Pattern.compile("You're now owed ([0-9,]+) rewards?");
+	/**
+	 * The cart's "Check" answer, LIVE-VERIFIED 2026-10-02: "You are owed 9 more
+	 * rewards from the cart." Balance only -- never earned rewards.
+	 */
+	static final java.util.regex.Pattern WT_REWARD_CHECK = java.util.regex.Pattern.compile("You are owed ([0-9,]+) more rewards? from the cart");
+	/** The same award line delivered again this soon is one award. */
+	static final int WT_AWARD_DEDUPE_TICKS = 5;
+	private String lastWtAwardLine;
+	private int lastWtAwardTick;
+	/** Rewards waiting in the cart as the game last stated it (award line / Check); null = not stated this login. */
+	private volatile Integer wtCartOwed;
+
+	/** Rewards waiting in the Reward Cart as the game last stated it this login; null = unknown. Never session-earned rewards. */
+	public Integer getWintertodtCartOwed()
+	{
+		return wtCartOwed;
+	}
+
+	/** Award and Check lines (Wintertodt only). Returns true when the message was one of them. */
+	boolean onWintertodtRewardLine(String message)
+	{
+		if (message == null || !nearWintertodt())
+		{
+			return false;
+		}
+		if (message.startsWith("You are owed "))
+		{
+			Integer owed = firstNumber(WT_REWARD_CHECK, message);
+			if (owed == null)
+			{
+				return false;
+			}
+			setWintertodtCartOwed(owed, "check");
+			return true;
+		}
+		if (!message.startsWith("You're owed an additional"))
+		{
+			return false;
+		}
+		Integer additional = firstNumber(WT_REWARD_AWARD, message);
+		if (additional == null)
+		{
+			return false;
+		}
+		Integer owed = firstNumber(WT_REWARD_NOW_OWED, message);
+		int tick = client.getTickCount();
+		if (message.equals(lastWtAwardLine) && tick - lastWtAwardTick >= 0 && tick - lastWtAwardTick <= WT_AWARD_DEDUPE_TICKS)
+		{
+			// The same line delivered twice (two chat types / a re-sent line): one award.
+			return true;
+		}
+		lastWtAwardLine = message;
+		lastWtAwardTick = tick;
+		if (additional > 0)
+		{
+			eventLedger.append(client.getAccountHash(), EventType.STRUCTURED_ACTIVITY_CURRENCY,
+				new EventPayloads.StructuredActivityCurrency(StructuredActivityCatalog.WINTERTODT, WINTERTODT_REWARDS, additional,
+					owed == null ? -1 : owed));
+		}
+		if (owed != null)
+		{
+			setWintertodtCartOwed(owed, "award");
+		}
+		return true;
+	}
+
+	private void setWintertodtCartOwed(int owed, String source)
+	{
+		if (Integer.valueOf(owed).equals(wtCartOwed))
+		{
+			// The same statement again still corrects the balance (the varbit may have moved since).
+			setWintertodtCartBalance(owed);
+			return;
+		}
+		wtCartOwed = owed;
+		log.debug("Wintertodt cart: owed={} (from {})", owed, source);
+		wtCartBalance = owed;
+		notifyProgressListener();
+	}
+
+	private static Integer firstNumber(java.util.regex.Pattern pattern, String message)
+	{
+		java.util.regex.Matcher m = pattern.matcher(message);
+		if (!m.find())
+		{
+			return null;
+		}
+		try
+		{
+			return Integer.parseInt(m.group(1).replace(",", ""));
+		}
+		catch (NumberFormatException e)
+		{
+			return null;
+		}
+	}
+
+	private void onWintertodtInventory(Map<Integer, Long> inventory)
+	{
+		wtInventory = inventory;
+		int roots = (int) (long) inventory.getOrDefault(net.runelite.api.gameval.ItemID.WINT_BRUMA_ROOT, 0L);
+		int kindling = (int) (long) inventory.getOrDefault(net.runelite.api.gameval.ItemID.WINT_BRUMA_KINDLING, 0L);
+		int doses = 4 * (int) (long) inventory.getOrDefault(net.runelite.api.gameval.ItemID.WINT_POTION4, 0L)
+			+ 3 * (int) (long) inventory.getOrDefault(net.runelite.api.gameval.ItemID.WINT_POTION3, 0L)
+			+ 2 * (int) (long) inventory.getOrDefault(net.runelite.api.gameval.ItemID.WINT_POTION2, 0L)
+			+ (int) (long) inventory.getOrDefault(net.runelite.api.gameval.ItemID.WINT_POTION1, 0L);
+		boolean before = wtTools.contains(WintertodtTools.KNIFE);
+		refreshWintertodtTools();
+		wtTracker.onInventory(client.getTickCount(), roots, kindling, doses, wtTools.contains(WintertodtTools.KNIFE));
+		if (nearWintertodt() || before != wtTools.contains(WintertodtTools.KNIFE))
+		{
+			setWintertodtState(wtTracker.state());
+		}
+	}
+
+	/** Tools from the inventory + worn items, by item name -- only around Wintertodt (bounded). */
+	private void refreshWintertodtTools()
+	{
+		if (!nearWintertodt())
+		{
+			return;
+		}
+		Map<Integer, Long> all = new HashMap<>(wtInventory);
+		wtWorn.forEach((k, v) -> all.merge(k, v, Long::sum));
+		java.util.Set<WintertodtTools> tools = WintertodtTools.in(all, itemNames);
+		if (!tools.equals(wtTools))
+		{
+			wtTools = java.util.Collections.unmodifiableSet(tools);
+			notifyProgressListener();
+		}
+	}
+
+	private void setWintertodtState(WintertodtState state)
+	{
+		if (Objects.equals(state, wtState))
+		{
+			return;
+		}
+		wtState = state;
+		notifyProgressListener();
+	}
+
+	/** Logout / hop / re-enable / account switch: no round, no live state (a round in progress resumes as joined part-way). */
+	private void resetWintertodt()
+	{
+		wtTracker.reset();
+		lastWtSubdueCount = null;
+		lastWtAwardLine = null;
+		wtCartOwed = null;
+		wtCartBalance = null;
+		wtPoolSeen = false;
+		wtDiagnostic = null;
+		wtCartDiagnostic = null;
+		setWintertodtState(null);
+	}
+
+	// ---- Pest Control ----------------------------------------------------------
+
+	/** The current Pest Control game as the game's status overlay shows it, or null when not on the island. */
+	public PestControlGameState getPestControlGame()
+	{
+		return pestGame;
+	}
+
+	/** Last commendation balance the game stated (or remembered for this account); null = unknown. */
+	public Integer getPestBalance()
+	{
+		return pestBalance;
+	}
+
+	/** Void pieces owned now (inventory / worn / bank), for goal planning. */
+	public VoidOwnership getVoidOwnership()
+	{
+		return voidOwnership;
+	}
+
+	/** Exact XP of a Pest Control reward skill as the game last reported it; null = not seen this login. */
+	public Integer pestSkillXp(Skill skill)
+	{
+		return skill == null ? null : pestSkillXp.get(skill);
+	}
+
+	/** Receives each newly stated balance (null = no longer known); planning state only. */
+	public void setPestBalanceListener(java.util.function.Consumer<Integer> listener)
+	{
+		this.pestBalanceListener = listener;
+	}
+
+	/** Login: the balance last remembered for this account, until the game states it again. */
+	public void seedPestBalance(Integer remembered)
+	{
+		pestTracker.seedBalance(remembered);
+		Integer b = pestTracker.getBalance();
+		if (!Objects.equals(b, pestBalance))
+		{
+			pestBalance = b;
+			notifyProgressListener();
+		}
+	}
+
+	/** Login: the bank as Spyglass last saw it (its own bank.json), until the bank is opened again. */
+	public void seedBankOwnership(Map<Integer, Long> bankItems)
+	{
+		if (bankItems != null && !voidOwnership.getSnapshot().isBankKnown())
+		{
+			voidOwnership.update(VoidOwnership.Container.BANK, bankItems);
+		}
+	}
+
+	/** Test seam: the wall clock for a round's start time (durations always come from game ticks). */
+	void setClock(java.time.Clock clock)
+	{
+		this.clock = clock;
+	}
+
+	/**
+	 * Island entry / exit (template regions): entering 10536 opens a round
+	 * (observed from start only when arriving from another region); leaving
+	 * it closes the round and records its time.
+	 */
+	private void onPestControlRegion(int previousRegion, int regionId, boolean firstObservation)
+	{
+		boolean wasIsland = previousRegion == PEST_CONTROL_ISLAND_REGION;
+		boolean isIsland = regionId == PEST_CONTROL_ISLAND_REGION;
+		if (isIsland && !wasIsland)
+		{
+			pestTracker.onEnter(client.getTickCount(), !firstObservation, clock.instant());
+			pestHudDiagnostic = null;
+			setPestGame(pestTracker.state());
+		}
+		else if (wasIsland && !isIsland)
+		{
+			closePestRound(client.getAccountHash());
+		}
+	}
+
+	/** Ends an open round: its island time becomes ROUND TIME (the Commendations/hr denominator). */
+	private void closePestRound(Long accountHash)
+	{
+		Long millis = pestTracker.onExit(client.getTickCount());
+		setPestGame(null);
+		if (millis != null && accountHash != null)
+		{
+			eventLedger.append(accountHash, EventType.STRUCTURED_ACTIVITY_ROUND_TIME,
+				new EventPayloads.StructuredActivityRoundTime(StructuredActivityCatalog.PEST_CONTROL, millis));
+		}
+	}
+
+	/** Logout / hop / re-enable / account switch: no round, no HUD, balance unknown (re-seeded at login). */
+	private void resetPestControl()
+	{
+		pestTracker.reset();
+		pestHudDiagnostic = null;
+		setPestGame(null);
+		if (pestBalance != null)
+		{
+			pestBalance = null;
+			notifyProgressListener();
+		}
+	}
+
+	/**
+	 * Client thread, once per logged-in tick. On the island: the status
+	 * overlay (interface 408) -- two widget widths, one health text and four
+	 * portal texts. In the outpost: the lander overlay's points line. Nothing
+	 * anywhere else.
+	 */
+	void trackPestControlTick()
+	{
+		if (!pestTracker.isInGame() && lastRegionId == PEST_CONTROL_ISLAND_REGION)
+		{
+			// Still on the island after a re-enable: a round joined mid-game.
+			pestTracker.onEnter(client.getTickCount(), false, clock.instant());
+		}
+		if (pestTracker.isInGame())
+		{
+			readPestHud();
+			setPestGame(pestTracker.state());
+		}
+		else if (lastRegionId == PEST_CONTROL_OUTPOST_REGION)
+		{
+			String points = widgetText(InterfaceID.PestLanderOverlay.PEST_LANDER_OVER_POINTS);
+			if (points != null)
+			{
+				publishPestBalance(pestTracker.onLanderPoints(points));
+			}
+		}
+	}
+
+	private static final int[] PEST_PORTAL_HP = {
+		InterfaceID.PestStatusOverlay.PEST_STATUS_PORTTXT1, InterfaceID.PestStatusOverlay.PEST_STATUS_PORTTXT2,
+		InterfaceID.PestStatusOverlay.PEST_STATUS_PORTTXT3, InterfaceID.PestStatusOverlay.PEST_STATUS_PORTTXT4};
+
+	/**
+	 * SOURCES (read only while Jagex's own status overlay, interface 408, is
+	 * LOADED -- never only when visible):
+	 *  - ACTIVITY: the game's activity varbit (PEST_ACTIVITY_COUNTER, 0..50),
+	 *    shown as value / 50. Live QA 2026-10-02 proved the overlay's
+	 *    ACTIVITY_CONTAINER / ACTIVITY_BAR layers are static frame pieces
+	 *    (widths 145 / 141 all game), so their width ratio was a constant
+	 *    ~97%; the moving fill is drawn by the game script from this varbit.
+	 *  - VOID KNIGHT: PEST_STATUS_OVER_HEALTH's text, hitpoints of 200.
+	 *  - PORTALS: a portal's health text reading exactly "0" is destroyed --
+	 *    the same rule RuneLite's own overlay uses to mark a portal dead.
+	 * Change-only debug diagnostics (activity geometry included) stay for
+	 * live QA.
+	 */
+	private void readPestHud()
+	{
+		Widget frame = client.getWidget(InterfaceID.PestStatusOverlay.ACTIVITY_CONTAINER);
+		Widget fill = client.getWidget(InterfaceID.PestStatusOverlay.ACTIVITY_BAR);
+		int counter = client.getVarbitValue(VarbitID.PEST_ACTIVITY_COUNTER);
+		// The varbit is only meaningful with the game's own activity meter up.
+		Integer activity = frame == null ? null : PestControlGameTracker.activityPercent(counter);
+		String health = widgetText(InterfaceID.PestStatusOverlay.PEST_STATUS_OVER_HEALTH);
+		Integer knight = PestControlGameTracker.knightPercent(health);
+		Integer portals = null;
+		StringBuilder hp = new StringBuilder();
+		for (int id : PEST_PORTAL_HP)
+		{
+			String text = widgetText(id);
+			hp.append(text == null ? "-" : text.trim()).append(',');
+			if (text != null)
+			{
+				portals = (portals == null ? 0 : portals) + (PestControlGameTracker.isPortalDead(text) ? 1 : 0);
+			}
+		}
+		pestTracker.onHud(activity, knight, portals);
+		if (log.isDebugEnabled())
+		{
+			String line = "activity: counter=" + counter + "/" + PestControlGameTracker.ACTIVITY_MAX
+				+ " source=" + (frame == null ? "none(overlay not loaded)" : "varbit5662")
+				+ " container=" + geometry(frame) + " progress=" + geometry(fill)
+				+ " | health='" + health + "' portalHp=" + hp;
+			if (!line.equals(pestHudDiagnostic))
+			{
+				pestHudDiagnostic = line;
+				log.debug("Pest Control HUD: {} -> activity={} knight={} portals={}", line, activity, knight, portals);
+			}
+		}
+	}
+
+	/** Diagnostics only: a widget's geometry, and its first child's (the game may draw a fill there). */
+	private static String geometry(Widget w)
+	{
+		if (w == null)
+		{
+			return "-";
+		}
+		StringBuilder sb = new StringBuilder();
+		sb.append(w.getId()).append("{hidden=").append(w.isHidden()).append(" w=").append(w.getWidth())
+			.append(" orig=").append(w.getOriginalWidth());
+		java.awt.Rectangle b = w.getBounds();
+		sb.append(" bounds=").append(b == null ? "-" : String.valueOf(b.width));
+		Widget parent = w.getParent();
+		sb.append(" parentW=").append(parent == null ? "-" : String.valueOf(parent.getWidth()));
+		Widget child = w.getChild(0);
+		if (child != null)
+		{
+			java.awt.Rectangle cb = child.getBounds();
+			sb.append(" child0{hidden=").append(child.isHidden()).append(" w=").append(child.getWidth())
+				.append(" orig=").append(child.getOriginalWidth()).append(" bounds=").append(cb == null ? "-" : String.valueOf(cb.width))
+				.append('}');
+		}
+		return sb.append('}').toString();
+	}
+
+	private void setPestGame(PestControlGameState state)
+	{
+		if (Objects.equals(state, pestGame))
+		{
+			return;
+		}
+		pestGame = state;
+		notifyProgressListener();
+	}
+
+	private void publishPestBalance(Integer stated)
+	{
+		if (stated == null || stated.equals(pestBalance))
+		{
+			return;
+		}
+		pestBalance = stated;
+		notifyBalanceListener(stated);
+		notifyProgressListener();
+	}
+
+	/**
+	 * The Void Knight reward shop opened: a purchase there changes the
+	 * balance without the game restating it, so the balance is unknown
+	 * again until it does (never a stale number). Its TOTAL text is logged
+	 * for live QA (format unverified, so not used).
+	 */
+	void onPestRewardShopOpened()
+	{
+		log.debug("Pest Control reward shop: total='{}'", widgetText(InterfaceID.PestRewardshop.TOTAL));
+		pestTracker.forgetBalance();
+		if (pestBalance != null)
+		{
+			pestBalance = null;
+			notifyBalanceListener(null);
+			notifyProgressListener();
+		}
+	}
+
+	private void notifyBalanceListener(Integer balance)
+	{
+		java.util.function.Consumer<Integer> listener = pestBalanceListener;
+		if (listener != null)
+		{
+			try
+			{
+				listener.accept(balance);
+			}
+			catch (RuntimeException e)
+			{
+				// Planning state only: never let it affect collection.
+			}
 		}
 	}
 
@@ -592,6 +1328,18 @@ public class StructuredActivityCollector
 	@Subscribe
 	public void onStatChanged(StatChanged event)
 	{
+		if (event.getSkill() == Skill.FIREMAKING || event.getSkill() == Skill.AGILITY)
+		{
+			// Wintertodt goal / between-round opportunity: exact XP (cheap map put).
+			wtSkillXp.put(event.getSkill(), event.getXp());
+			return;
+		}
+		if (PestControlXp.isEligible(event.getSkill()))
+		{
+			// Pest Control XP goals: the exact XP the game reports (cheap map put).
+			pestSkillXp.put(event.getSkill(), event.getXp());
+			return;
+		}
 		if (event.getSkill() != Skill.RUNECRAFT)
 		{
 			return;
@@ -734,6 +1482,8 @@ public class StructuredActivityCollector
 		{
 			trackTemporossTick();
 			trackGotrTick();
+			trackPestControlTick();
+			trackWintertodtTick();
 		}
 	}
 
@@ -745,7 +1495,9 @@ public class StructuredActivityCollector
 			return;
 		}
 		boolean firstObservation = lastRegionId == NO_REGION;
+		int previousRegion = lastRegionId;
 		lastRegionId = regionId;
+		onPestControlRegion(previousRegion, regionId, firstObservation);
 
 		StructuredActivityDefinition def = registry.forRegion(regionId);
 		String key = def == null ? null : def.getKey();
@@ -766,6 +1518,14 @@ public class StructuredActivityCollector
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
+		if (event.getType() == ChatMessageType.DIALOG)
+		{
+			// NPC dialogue ("Speaker|text"): ONLY completion patterns of
+			// activities that declare completionInDialogue are tried -- never
+			// the GotR / Tempoross / claim parsing that game messages get.
+			onDialogueMessage(Text.removeTags(event.getMessage()));
+			return;
+		}
 		if (event.getType() != ChatMessageType.GAMEMESSAGE && event.getType() != ChatMessageType.SPAM
 			&& event.getType() != ChatMessageType.MESBOX)
 		{
@@ -774,8 +1534,41 @@ public class StructuredActivityCollector
 		onGameMessage(Text.removeTags(event.getMessage()));
 	}
 
+	/**
+	 * One NPC dialogue line as RuneLite delivers it ("Squire|Congratulations!
+	 * ..."): the speaker prefix is dropped and only dialogue-declared
+	 * completion patterns are matched (live-verified 2026-10-01: the Pest
+	 * Control win arrives this way, never as a game message).
+	 */
+	void onDialogueMessage(String message)
+	{
+		if (message == null)
+		{
+			return;
+		}
+		int bar = message.indexOf('|');
+		String text = bar >= 0 ? message.substring(bar + 1) : message;
+		StructuredActivityRegistry.ChatCompletion match = registry.matchCompletionDialogue(text);
+		if (match != null)
+		{
+			recordChatCompletion(match);
+		}
+	}
+
 	void onGameMessage(String message)
 	{
+		wtTracker.onChat(client.getTickCount(), message);
+		onWintertodtSubdueLine(message);
+		if (onWintertodtRewardLine(message))
+		{
+			return;
+		}
+		Integer pestStated = pestTracker.onBalanceMessage(message);
+		if (pestStated != null)
+		{
+			publishPestBalance(pestStated);
+			return;
+		}
 		TemporossGameTracker.Result game = temporossTracker.onGameMessage(message, client.getVarbitValue(VarbitID.TEMPOROSS_CURRENT_POINTS));
 		if (game != null)
 		{
@@ -803,6 +1596,18 @@ public class StructuredActivityCollector
 		{
 			return;
 		}
+		recordChatCompletion(match);
+	}
+
+	/**
+	 * One matched completion line -> at most one STRUCTURED_ACTIVITY_COMPLETION
+	 * (deduped by running count, or by a per-activity tick window when the
+	 * message has no count), followed by the currency award the SAME line
+	 * carries, if any -- so a duplicate line can add neither a second game
+	 * nor a second award.
+	 */
+	private void recordChatCompletion(StructuredActivityRegistry.ChatCompletion match)
+	{
 		String key = match.getDefinition().getKey();
 		Integer count = match.getCount();
 		if (StructuredActivityCatalog.GUARDIANS_OF_THE_RIFT.equals(key))
@@ -826,14 +1631,40 @@ public class StructuredActivityCollector
 			// not become two games.
 			int tick = client.getTickCount();
 			Integer previousTick = lastCountlessCompletionTick.get(key);
-			if (previousTick != null && tick - previousTick >= 0 && tick - previousTick <= COUNTLESS_COMPLETION_DEDUPE_TICKS)
+			Integer window = match.getDefinition().getCompletionDedupeTicks();
+			int dedupeTicks = window != null ? window : COUNTLESS_COMPLETION_DEDUPE_TICKS;
+			if (previousTick != null && tick - previousTick >= 0 && tick - previousTick <= dedupeTicks)
 			{
 				return;
 			}
 			lastCountlessCompletionTick.put(key, tick);
 		}
+		boolean pestControl = StructuredActivityCatalog.PEST_CONTROL.equals(key);
+		if (pestControl)
+		{
+			// AVG GAME: this won round's entry-to-win time, only when its start was observed.
+			Integer seconds = pestTracker.onWin(client.getTickCount());
+			if (seconds != null)
+			{
+				eventLedger.append(client.getAccountHash(), EventType.STRUCTURED_ACTIVITY_SCORE,
+					new EventPayloads.StructuredActivityScore(key, null, seconds, true));
+			}
+		}
 		eventLedger.append(client.getAccountHash(), EventType.STRUCTURED_ACTIVITY_COMPLETION,
 			new EventPayloads.StructuredActivityCompletion(key, count, "CHAT"));
+		String currencyKey = match.getDefinition().getCompletionCurrencyKey();
+		Integer amount = match.getAmount();
+		if (currencyKey != null && amount != null && amount > 0)
+		{
+			// Balance unknown from this line (the game states it separately).
+			eventLedger.append(client.getAccountHash(), EventType.STRUCTURED_ACTIVITY_CURRENCY,
+				new EventPayloads.StructuredActivityCurrency(key, currencyKey, amount, -1));
+			if (pestControl)
+			{
+				// A known balance advances; the "You now have N" box restates it shortly after.
+				publishPestBalance(pestTracker.onAward(amount));
+			}
+		}
 	}
 
 	/**
@@ -932,6 +1763,11 @@ public class StructuredActivityCollector
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
+		if (event.getGroupId() == InterfaceID.PEST_REWARDSHOP)
+		{
+			onPestRewardShopOpened();
+			return;
+		}
 		StructuredRewardSource reward = registry.rewardForInterface(event.getGroupId());
 		if (reward == null)
 		{
@@ -949,11 +1785,26 @@ public class StructuredActivityCollector
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
+		if (event.getContainerId() == InventoryID.WORN)
+		{
+			Map<Integer, Long> worn = itemsOf(event.getItemContainer());
+			voidOwnership.update(VoidOwnership.Container.EQUIPMENT, worn);
+			wtWorn = worn;
+			refreshWintertodtTools();
+			return;
+		}
+		if (event.getContainerId() == InventoryID.BANK)
+		{
+			voidOwnership.update(VoidOwnership.Container.BANK, itemsOf(event.getItemContainer()));
+			return;
+		}
 		if (event.getContainerId() != InventoryID.INV)
 		{
 			return;
 		}
 		Map<Integer, Long> inventory = itemsOf(event.getItemContainer());
+		voidOwnership.update(VoidOwnership.Container.INVENTORY, inventory);
+		onWintertodtInventory(inventory);
 		// The pouch is read first so its baseline exists before any craft
 		// (it may not have changed since login).
 		observeRunePouch();

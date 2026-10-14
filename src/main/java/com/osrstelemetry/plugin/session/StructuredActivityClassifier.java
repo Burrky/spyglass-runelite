@@ -51,6 +51,13 @@ final class StructuredActivityClassifier
 			StructuredActivityDefinition def = registry.byKey(signal.getStructuredActivityKey());
 			LocationPolicy policy = def == null || signal.getRegionId() == null ? null : def.policyFor(signal.getRegionId());
 			tracker.onLocation(policy == null ? null : def, policy);
+			if (policy == LocationPolicy.EXCLUSIVE && def.startsOnEntry(signal.getRegionId()))
+			{
+				// A region the game only puts the player in while a round is
+				// being played (Pest Control island): entry IS the start, so the
+				// session's active time begins here, not at the first XP drop.
+				return evidence(def, tracker, signal, Collections.<MetricUpdate>emptyList());
+			}
 			return SignalClassification.ignore();
 		}
 
@@ -86,6 +93,8 @@ final class StructuredActivityClassifier
 				return classifyReward(signal, tracker, armed, owning);
 			case STRUCTURED_ACTIVITY_SCORE:
 			case STRUCTURED_ACTIVITY_CURRENCY:
+			case STRUCTURED_ACTIVITY_ROUND_TIME:
+			case STRUCTURED_ACTIVITY_ACTION:
 			case STRUCTURED_ACTIVITY_PRODUCTION:
 				return classifyStats(signal, owning);
 			case SLAYER_TASK_PROGRESS:
@@ -250,6 +259,19 @@ final class StructuredActivityClassifier
 				: SignalClassification.metricOnly(MetricUpdate.activityProduction(key, produced));
 		}
 		Long amount = signal.getActivityAmount();
+		if (signal.getKind() == SignalKind.STRUCTURED_ACTIVITY_ROUND_TIME)
+		{
+			return amount == null || amount <= 0
+				? SignalClassification.ignore()
+				: SignalClassification.metricOnly(MetricUpdate.activityRoundTime(key, amount, signal.isActivityAmountTrusted(),
+					signal.getActivityRoundPlaystyle()));
+		}
+		if (signal.getKind() == SignalKind.STRUCTURED_ACTIVITY_ACTION)
+		{
+			return amount == null || amount <= 0 || signal.getActivityActionKey() == null
+				? SignalClassification.ignore()
+				: SignalClassification.metricOnly(MetricUpdate.activityAction(key, signal.getActivityActionKey(), amount));
+		}
 		if (signal.getKind() == SignalKind.STRUCTURED_ACTIVITY_CURRENCY)
 		{
 			return amount == null || amount <= 0

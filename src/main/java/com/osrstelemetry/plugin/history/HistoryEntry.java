@@ -4,6 +4,7 @@ import com.osrstelemetry.plugin.session.ActivityIdentity;
 import com.osrstelemetry.plugin.session.ActivityType;
 import com.osrstelemetry.plugin.session.Session;
 import com.osrstelemetry.plugin.session.SessionAggregates;
+import java.util.List;
 import java.util.Map;
 import lombok.Getter;
 
@@ -50,6 +51,17 @@ public final class HistoryEntry
 	private final int slayerAssignmentCount;
 	/** Structured-activity completions this session; null when the session has no completion metric. */
 	private final Integer activityCompletionCount;
+	/**
+	 * Skill companion sessions (Mining): everything produced (TOTAL), and the
+	 * method trained longest (its key, e.g. "amethyst"); 0 / null otherwise.
+	 * Cheap summaries for the list row -- the detail view reads the session.
+	 */
+	private long skillProducedTotal;
+	private String skillPrimaryMethod;
+	/** Completed cycles (Agility: laps across all courses); 0 for skills without cycles and older entries. */
+	private long skillCycleTotal;
+	/** ADDED (Phase 6): the skill's own list-row facts (SkillCompanionDefinition#historyRowFacts); null = the generic facts. */
+	private List<String> skillRowFacts;
 
 	/** Title of a Slayer session that spanned more than one assignment. */
 	public static final String MULTI_TASK_SLAYER_TITLE = "Slayer Session";
@@ -109,13 +121,162 @@ public final class HistoryEntry
 			reliableCount = aggregates.getReliableCount();
 		}
 
-		return new HistoryEntry(session.getSessionId(), session.getActivityIdentity(), session.getStartedAt(),
+		HistoryEntry entry = new HistoryEntry(session.getSessionId(), session.getActivityIdentity(), session.getStartedAt(),
 			session.getFinalizedAt(), session.getAccumulatedActiveDurationMillis(), totalXp, reliableCount,
 			lootDropCount, session.getStartingLoadout() != null, session.getEndingLoadout() != null,
 			slayerAssignmentCount(session),
 			session.getActivityIdentity().getActivityType() == ActivityType.STRUCTURED_ACTIVITY
 				? (aggregates == null || aggregates.getActivityCompletions() == null ? 0 : aggregates.getActivityCompletions().getSessionCompletions())
 				: null);
+		if (aggregates != null && aggregates.getSkillStats() != null)
+		{
+			com.osrstelemetry.plugin.skills.SkillCompanionDefinition def =
+				com.osrstelemetry.plugin.skills.SkillCompanions.forSkillKey(aggregates.getSkillStats().getSkillKey());
+			entry.skillProducedTotal = def != null && def.historyCountsPrimaryOnly() ? primaryTotal(aggregates, def) : producedTotal(aggregates);
+			entry.skillPrimaryMethod = primaryMethod(aggregates.getSkillStats());
+			entry.skillCycleTotal = cycleTotal(aggregates.getSkillStats());
+			if (def != null)
+			{
+				List<String> facts = def.historyRowFacts(skillTotals(aggregates, session.getAccumulatedActiveDurationMillis(), def));
+				entry.skillRowFacts = facts == null ? null : java.util.Collections.unmodifiableList(new java.util.ArrayList<>(facts));
+			}
+		}
+		return entry;
+	}
+
+	/**
+	 * ADDED (Phase 6). One finished skill session's semantic totals as generic
+	 * maps (produced, banked, consumed, per-method time, occurrences, the
+	 * skill's own XP) -- what a definition's History rows / facts read.
+	 */
+	public static com.osrstelemetry.plugin.skills.SkillCompanionDefinition.SessionTotals skillTotals(SessionAggregates aggregates,
+		long activeMillis, com.osrstelemetry.plugin.skills.SkillCompanionDefinition def)
+	{
+		Map<Integer, Long> produced = new java.util.LinkedHashMap<>();
+		Map<Integer, Long> banked = new java.util.LinkedHashMap<>();
+		Map<Integer, Long> consumed = new java.util.LinkedHashMap<>();
+		Map<String, Long> millis = new java.util.LinkedHashMap<>();
+		Map<String, Long> occurrences = new java.util.LinkedHashMap<>();
+		long xp = 0L;
+		if (aggregates != null)
+		{
+			addItems(produced, aggregates.getProducedItems());
+			SessionAggregates.SkillSessionStats stats = aggregates.getSkillStats();
+			if (stats != null)
+			{
+				addItems(banked, stats.getBanked());
+				addItems(consumed, stats.getConsumed());
+				if (stats.getMethodMillis() != null)
+				{
+					millis.putAll(stats.getMethodMillis());
+				}
+				if (stats.getOccurrences() != null)
+				{
+					occurrences.putAll(stats.getOccurrences());
+				}
+			}
+			if (aggregates.getXpGainedBySkill() != null && def != null)
+			{
+				for (Map.Entry<String, Long> e : aggregates.getXpGainedBySkill().entrySet())
+				{
+					if (e.getKey() != null && e.getValue() != null && def.getSkill().name().equalsIgnoreCase(e.getKey()))
+					{
+						xp += e.getValue();
+					}
+				}
+			}
+		}
+		return new com.osrstelemetry.plugin.skills.SkillCompanionDefinition.SessionTotals(produced, banked, consumed, millis, occurrences,
+			activeMillis, xp);
+	}
+
+	private static void addItems(Map<Integer, Long> into, List<SessionAggregates.ProducedItemAggregate> items)
+	{
+		if (items == null)
+		{
+			return;
+		}
+		for (SessionAggregates.ProducedItemAggregate p : items)
+		{
+			if (p != null && p.getItemId() != null && p.getQuantity() > 0)
+			{
+				into.merge(p.getItemId(), p.getQuantity(), Long::sum);
+			}
+		}
+	}
+
+	/** Valid completed cycles over every method (Agility: all laps); 0 when none. */
+	static long cycleTotal(SessionAggregates.SkillSessionStats stats)
+	{
+		long total = 0L;
+		if (stats != null && stats.getCycles() != null)
+		{
+			for (SessionAggregates.CycleAggregate c : stats.getCycles().values())
+			{
+				if (c != null && c.getCount() > 0)
+				{
+					total += c.getCount();
+				}
+			}
+		}
+		return total;
+	}
+
+	/** Only the skill's PRIMARY production (never secondary families); unknown ids never count. */
+	static long primaryTotal(SessionAggregates aggregates, com.osrstelemetry.plugin.skills.SkillCompanionDefinition def)
+	{
+		long total = 0L;
+		if (aggregates.getProducedItems() != null)
+		{
+			for (SessionAggregates.ProducedItemAggregate p : aggregates.getProducedItems())
+			{
+				com.osrstelemetry.plugin.skills.SkillResource r = p == null ? null : def.resource(p.getItemId());
+				if (r != null && r.getRole() == com.osrstelemetry.plugin.skills.SkillResource.Role.PRIMARY && p.getQuantity() > 0)
+				{
+					total += p.getQuantity();
+				}
+			}
+		}
+		return total;
+	}
+
+	static long producedTotal(SessionAggregates aggregates)
+	{
+		long total = 0L;
+		if (aggregates.getProducedItems() != null)
+		{
+			for (SessionAggregates.ProducedItemAggregate p : aggregates.getProducedItems())
+			{
+				if (p != null && p.getQuantity() > 0)
+				{
+					total += p.getQuantity();
+				}
+			}
+		}
+		return total;
+	}
+
+	/** The method trained longest this session (the last one seen when no time was recorded); null when none. */
+	public static String primaryMethod(SessionAggregates.SkillSessionStats stats)
+	{
+		if (stats == null)
+		{
+			return null;
+		}
+		String best = null;
+		long bestMillis = -1L;
+		if (stats.getMethodMillis() != null)
+		{
+			for (Map.Entry<String, Long> e : stats.getMethodMillis().entrySet())
+			{
+				if (e.getKey() != null && e.getValue() != null && e.getValue() > bestMillis)
+				{
+					best = e.getKey();
+					bestMillis = e.getValue();
+				}
+			}
+		}
+		return best != null ? best : stats.getLastMethod();
 	}
 
 	/**

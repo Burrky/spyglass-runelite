@@ -65,7 +65,7 @@ public class StructuredActivityAdaptersTest extends StructuredActivityTestSuppor
 		new Spec("tempoross", "Tempoross", 12076, new String[] {"FISHING", "CONSTRUCTION", "COOKING"},
 			(t, n) -> SessionSignal.bossKill(t, "Tempoross", n), "tempoross_reward_pool", "Tempoross Reward Pool", 12588, "Games"),
 		new Spec("pest_control", "Pest Control", 10536, new String[] {"ATTACK", "HITPOINTS", "MAGIC"},
-			(t, n) -> SessionSignal.structuredActivityCompletion(t, "pest_control", null), null, null, 0, "Games"),
+			(t, n) -> SessionSignal.structuredActivityCompletion(t, "pest_control", null), null, null, 0, "Games won"),
 		new Spec("giants_foundry", "Giants' Foundry", 13491, new String[] {"SMITHING"}, null, null, null, 0, null),
 		new Spec("barrows", "Barrows", 14231, new String[] {"RANGED", "HITPOINTS", "DEFENCE"},
 			(t, n) -> SessionSignal.activityCompletion(t, "Barrows chest", n), "barrows", "Barrows", 14231, "Chests"),
@@ -76,6 +76,11 @@ public class StructuredActivityAdaptersTest extends StructuredActivityTestSuppor
 	{
 		tearDownCoordinator();
 		setUpCoordinator();
+	}
+
+	static boolean startsOnEntry(Spec spec)
+	{
+		return com.osrstelemetry.plugin.activity.StructuredActivityRegistry.defaults().byKey(spec.key).startsOnEntry(spec.region);
 	}
 
 	boolean is(Spec spec, Session s)
@@ -125,8 +130,17 @@ public class StructuredActivityAdaptersTest extends StructuredActivityTestSuppor
 		{
 			fresh();
 			onTick(T0, enter(spec.key, spec.region, T0));
-			assertNull(spec + ": entry alone is no session", current());
-			assertEquals(spec + ": armed", RecognitionState.ARMED, recognition());
+			if (startsOnEntry(spec))
+			{
+				// Pest Control island: the game's own play area -- entry IS the start.
+				assertTrue(spec + ": entry starts the activity", is(spec, current()));
+				assertEquals(spec + ": active from entry", RecognitionState.ACTIVE, recognition());
+			}
+			else
+			{
+				assertNull(spec + ": entry alone is no session", current());
+				assertEquals(spec + ": armed", RecognitionState.ARMED, recognition());
+			}
 
 			Session s = play(spec, T0);
 			assertTrue(spec + ": activated", is(spec, s));
@@ -258,7 +272,7 @@ public class StructuredActivityAdaptersTest extends StructuredActivityTestSuppor
 			restartPlugin();
 			Instant after = base.plusSeconds(80);
 			onTick(after, enter(spec.key, spec.region, after));
-			assertEquals(spec + ": re-armed", RecognitionState.ARMED, recognition());
+			assertEquals(spec + ": re-armed", startsOnEntry(spec) ? RecognitionState.ACTIVE : RecognitionState.ARMED, recognition());
 			onTick(after.plusSeconds(5), xpAt(spec.expectedSkills[0], 10, after.plusSeconds(5)));
 			assertEquals(spec + ": same session after restart", id, current().getSessionId());
 		}

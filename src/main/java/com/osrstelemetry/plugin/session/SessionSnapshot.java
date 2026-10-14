@@ -252,7 +252,7 @@ public final class SessionSnapshot
 		ActivityIdentity identity = session.getActivityIdentity();
 		SessionAggregates aggregates = session.getAggregates();
 
-		return new SessionSnapshot(
+		SessionSnapshot captured = new SessionSnapshot(
 			true,
 			session.getSessionId(),
 			identity == null ? null : identity.getActivityType(),
@@ -278,6 +278,101 @@ public final class SessionSnapshot
 			copyActivityCompletions(aggregates),
 			copyActivityStats(aggregates),
 			copyProducedItems(aggregates));
+		captured.skillStats = copySkillStats(aggregates);
+		return captured;
+	}
+
+	/** Deep copy of SessionAggregates#skillStats (skill companion), or null. Set once by capture(). */
+	private SessionAggregates.SkillSessionStats skillStats;
+
+	/** The skill companion's banked / method-time stats (a private copy), or null. */
+	public SessionAggregates.SkillSessionStats getSkillStats()
+	{
+		return skillStats;
+	}
+
+	static SessionAggregates.SkillSessionStats copySkillStats(SessionAggregates aggregates)
+	{
+		if (aggregates == null || aggregates.getSkillStats() == null)
+		{
+			return null;
+		}
+		SessionAggregates.SkillSessionStats source = aggregates.getSkillStats();
+		SessionAggregates.SkillSessionStats copy = new SessionAggregates.SkillSessionStats();
+		copy.setSkillKey(source.getSkillKey());
+		copy.setLastMethod(source.getLastMethod());
+		copy.setMethodMillis(source.getMethodMillis() == null ? null
+			: Collections.unmodifiableMap(new LinkedHashMap<>(source.getMethodMillis())));
+		if (source.getBanked() != null)
+		{
+			List<SessionAggregates.ProducedItemAggregate> banked = new ArrayList<>();
+			for (SessionAggregates.ProducedItemAggregate b : source.getBanked())
+			{
+				if (b != null)
+				{
+					SessionAggregates.ProducedItemAggregate c = new SessionAggregates.ProducedItemAggregate();
+					c.setItemId(b.getItemId());
+					c.setItemName(b.getItemName());
+					c.setQuantity(b.getQuantity());
+					banked.add(c);
+				}
+			}
+			copy.setBanked(Collections.unmodifiableList(banked));
+		}
+		if (source.getCycles() != null)
+		{
+			Map<String, SessionAggregates.CycleAggregate> cycles = new LinkedHashMap<>();
+			for (Map.Entry<String, SessionAggregates.CycleAggregate> e : source.getCycles().entrySet())
+			{
+				if (e.getKey() != null && e.getValue() != null)
+				{
+					SessionAggregates.CycleAggregate c = new SessionAggregates.CycleAggregate();
+					c.setCount(e.getValue().getCount());
+					c.setTotalMillis(e.getValue().getTotalMillis());
+					c.setBestMillis(e.getValue().getBestMillis());
+					c.setFailures(e.getValue().getFailures());
+					cycles.put(e.getKey(), c);
+				}
+			}
+			copy.setCycles(Collections.unmodifiableMap(cycles));
+		}
+		if (source.getAutoTransformed() != null)
+		{
+			List<SessionAggregates.ProducedItemAggregate> transformed = new ArrayList<>();
+			for (SessionAggregates.ProducedItemAggregate b : source.getAutoTransformed())
+			{
+				if (b != null)
+				{
+					SessionAggregates.ProducedItemAggregate c = new SessionAggregates.ProducedItemAggregate();
+					c.setItemId(b.getItemId());
+					c.setItemName(b.getItemName());
+					c.setQuantity(b.getQuantity());
+					transformed.add(c);
+				}
+			}
+			copy.setAutoTransformed(Collections.unmodifiableList(transformed));
+		}
+		if (source.getConsumed() != null)
+		{
+			List<SessionAggregates.ProducedItemAggregate> used = new ArrayList<>();
+			for (SessionAggregates.ProducedItemAggregate b : source.getConsumed())
+			{
+				if (b != null)
+				{
+					SessionAggregates.ProducedItemAggregate c = new SessionAggregates.ProducedItemAggregate();
+					c.setItemId(b.getItemId());
+					c.setItemName(b.getItemName());
+					c.setQuantity(b.getQuantity());
+					used.add(c);
+				}
+			}
+			copy.setConsumed(Collections.unmodifiableList(used));
+		}
+		if (source.getOccurrences() != null)
+		{
+			copy.setOccurrences(Collections.unmodifiableMap(new LinkedHashMap<>(source.getOccurrences())));
+		}
+		return copy;
 	}
 
 	private static List<SessionAggregates.ProducedItemAggregate> copyProducedItems(SessionAggregates aggregates)
@@ -318,6 +413,12 @@ public final class SessionSnapshot
 		copy.setScoreTotal(source.getScoreTotal());
 		copy.setBestScore(source.getBestScore());
 		copy.setLastScoredCompletionCount(source.getLastScoredCompletionCount());
+		copy.setRoundMillis(source.getRoundMillis());
+		copy.setRoundsTimed(source.getRoundsTimed());
+		copy.setCompleteRoundMillis(source.getCompleteRoundMillis());
+		copy.setCompleteRounds(source.getCompleteRounds());
+		copy.setActionCounts(source.getActionCounts() == null ? null : new java.util.LinkedHashMap<>(source.getActionCounts()));
+		copy.setPlaystyle(source.getPlaystyle());
 		return copy;
 	}
 
@@ -392,6 +493,11 @@ public final class SessionSnapshot
 			c.setMasterId(a.getMasterId());
 			c.setSlaughterProcs(a.getSlaughterProcs());
 			c.setExpeditiousProcs(a.getExpeditiousProcs());
+			c.setKillsByNpc(a.getKillsByNpc() == null ? null : Collections.unmodifiableMap(new LinkedHashMap<>(a.getKillsByNpc())));
+			c.setSuperiorsByNpc(a.getSuperiorsByNpc() == null ? null
+				: Collections.unmodifiableMap(new LinkedHashMap<>(a.getSuperiorsByNpc())));
+			c.setSubordinatesByNpc(a.getSubordinatesByNpc() == null ? null
+				: Collections.unmodifiableMap(new LinkedHashMap<>(a.getSubordinatesByNpc())));
 			c.setXpGainedBySkill(a.getXpGainedBySkill() == null ? null
 				: Collections.unmodifiableMap(new LinkedHashMap<>(a.getXpGainedBySkill())));
 			c.setActiveDurationStartMillis(a.getActiveDurationStartMillis());

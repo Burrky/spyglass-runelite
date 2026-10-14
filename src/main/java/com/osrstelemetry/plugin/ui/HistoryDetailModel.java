@@ -105,8 +105,29 @@ final class HistoryDetailModel
 		 * unknown, not shown.
 		 */
 		private final Long activeDurationMillis;
-		/** Observed kills (SlayerAssignmentRecord#observedKills); null = not tracked for this record. */
+		/** ACTUAL kills (SlayerAssignmentRecord#actualKills -- never task units); null = not tracked for this record. */
 		private Integer kills;
+		/** Owned encounter deaths by exact NPC; null = not tracked (older record). */
+		private java.util.Map<String, Long> killsByNpc;
+		/** Superior creatures by exact NPC; null = not tracked. */
+		private java.util.Map<String, Long> superiorsByNpc;
+		/** The per-NPC breakdown accounts for every actual kill (else it is not shown). */
+		private boolean breakdownComplete;
+
+		java.util.Map<String, Long> getKillsByNpc()
+		{
+			return killsByNpc;
+		}
+
+		java.util.Map<String, Long> getSuperiorsByNpc()
+		{
+			return superiorsByNpc;
+		}
+
+		boolean isBreakdownComplete()
+		{
+			return breakdownComplete;
+		}
 		/** Master varbit recorded for the assignment; null = unknown. */
 		private Integer masterId;
 		/** Native bracelet activations; null = not tracked (older record). */
@@ -274,6 +295,43 @@ final class HistoryDetailModel
 		return activityStats == null ? null : activityStats.getBestScore();
 	}
 
+	long getScoreTotal()
+	{
+		return activityStats == null ? 0L : activityStats.getScoreTotal();
+	}
+
+	int getCompleteRounds()
+	{
+		return activityStats == null ? 0 : activityStats.getCompleteRounds();
+	}
+
+	long getCompleteRoundMillis()
+	{
+		return activityStats == null ? 0L : activityStats.getCompleteRoundMillis();
+	}
+
+	java.util.Map<String, Long> getActionCounts()
+	{
+		return activityStats == null || activityStats.getActionCounts() == null
+			? java.util.Collections.<String, Long>emptyMap() : activityStats.getActionCounts();
+	}
+
+	/** Wintertodt: the session's playstyle label ("Mass • Points" / "Auto"); null on older sessions. */
+	String getPlaystyle()
+	{
+		return activityStats == null ? null : activityStats.getPlaystyle();
+	}
+
+	long getRoundMillis()
+	{
+		return activityStats == null ? 0L : activityStats.getRoundMillis();
+	}
+
+	int getRoundsTimed()
+	{
+		return activityStats == null ? 0 : activityStats.getRoundsTimed();
+	}
+
 	int getScoredGames()
 	{
 		return activityStats == null ? 0 : activityStats.getScoredCompletions();
@@ -349,7 +407,9 @@ final class HistoryDetailModel
 			{
 				continue;
 			}
-			Integer k = r.observedKills();
+			// ACTUAL kills (owned encounter deaths; the unit-derived kills are the floor), never task units.
+			Long actual = r.actualKills();
+			Integer k = actual == null ? null : (int) Math.min(Integer.MAX_VALUE, actual);
 			if (k == null)
 			{
 				allTracked = false;
@@ -359,6 +419,10 @@ final class HistoryDetailModel
 				kills += k;
 			}
 			slayerSlaughterProcs += r.getSlaughterProcs() == null ? 0 : r.getSlaughterProcs();
+			if (r.getSuperiorsByNpc() != null)
+			{
+				r.getSuperiorsByNpc().forEach((npc, n) -> slayerSuperiors.merge(npc, n == null ? 0L : n, Long::sum));
+			}
 			slayerExpeditiousProcs += r.getExpeditiousProcs() == null ? 0 : r.getExpeditiousProcs();
 		}
 		slayerKills = allTracked ? kills : null;
@@ -367,6 +431,14 @@ final class HistoryDetailModel
 	Integer getSlayerKills()
 	{
 		return slayerKills;
+	}
+
+	/** Superior creatures killed over the whole Slayer session, by exact creature (empty when none / not tracked). */
+	private final java.util.Map<String, Long> slayerSuperiors = new java.util.LinkedHashMap<>();
+
+	java.util.Map<String, Long> getSlayerSuperiors()
+	{
+		return slayerSuperiors;
 	}
 
 	int getSlayerSlaughterProcs()
@@ -486,7 +558,31 @@ final class HistoryDetailModel
 			com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.buildProducedItemViews(
 				aggregates == null ? null : aggregates.getProducedItems()));
 		model.applySlayerTotals(session);
+		model.skillStats = aggregates == null ? null : aggregates.getSkillStats();
+		model.sessionAggregates = aggregates;
 		return model;
+	}
+
+	/** Skill companion stats (banked, method time); null for sessions without a companion. */
+	private SessionAggregates.SkillSessionStats skillStats;
+	/** The session's aggregates (Phase 6: a skill's own History rows read its semantic totals); may be null. */
+	private SessionAggregates sessionAggregates;
+
+	SessionAggregates getSessionAggregates()
+	{
+		return sessionAggregates;
+	}
+
+	SessionAggregates.SkillSessionStats getSkillStats()
+	{
+		return skillStats;
+	}
+
+	/** The skill companion this SKILLING session had (Mining), or null. */
+	com.osrstelemetry.plugin.skills.SkillCompanionDefinition getSkillDefinition()
+	{
+		return activityIdentity.getActivityType() == com.osrstelemetry.plugin.session.ActivityType.SKILLING
+			? com.osrstelemetry.plugin.skills.SkillCompanions.forSkillKey(activityIdentity.getActivityKey()) : null;
 	}
 
 	/**
@@ -550,7 +646,11 @@ final class HistoryDetailModel
 				record.getInitialAmount(), record.getLatestRemaining(), record.isBootstrapped(), record.getEndReason(),
 				lootRowsFrom(record.getItems() == null ? Collections.<SessionAggregates.LootItemAggregate>emptyList() : record.getItems()),
 				Collections.unmodifiableList(xpRows), duration);
-			task.kills = record.observedKills();
+			Long actual = record.actualKills();
+			task.kills = actual == null ? null : (int) Math.min(Integer.MAX_VALUE, actual);
+			task.killsByNpc = record.getKillsByNpc();
+			task.superiorsByNpc = record.getSuperiorsByNpc();
+			task.breakdownComplete = record.breakdownComplete();
 			task.masterId = record.getMasterId();
 			task.slaughterProcs = record.getSlaughterProcs();
 			task.expeditiousProcs = record.getExpeditiousProcs();

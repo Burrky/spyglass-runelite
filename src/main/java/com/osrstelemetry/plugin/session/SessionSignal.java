@@ -312,6 +312,24 @@ public final class SessionSignal
 		return new SessionSignal(SignalKind.SLAYER_BRACELET_EFFECT, observedAt, null, null, null, null, null, null, effect, null, null, null, null, null, null, null, null, null, null);
 	}
 
+	/** An owned Slayer-encounter NPC death: the NPC's exact name (task slot) and its role (source slot). */
+	public static SessionSignal slayerEncounterKill(Instant observedAt, String npcName, String role)
+	{
+		return new SessionSignal(SignalKind.SLAYER_ENCOUNTER_KILL, observedAt, null, null, npcName, null, null, null, role, null, null, null, null, null, null, null, null, null, null);
+	}
+
+	/** SLAYER_ENCOUNTER_KILL: the dead NPC's exact name, else null. */
+	public String getEncounterKillNpc()
+	{
+		return kind == SignalKind.SLAYER_ENCOUNTER_KILL ? slayerTaskName : null;
+	}
+
+	/** SLAYER_ENCOUNTER_KILL: "TASK" / "SUBORDINATE" / "SUPERIOR", else null. */
+	public String getEncounterKillRole()
+	{
+		return kind == SignalKind.SLAYER_ENCOUNTER_KILL ? bossOrActivitySource : null;
+	}
+
 	/** SLAYER_TASK_ASSIGNED / SLAYER_TASK_PROGRESS: the Slayer master varbit, or null. */
 	public Integer getSlayerMasterId()
 	{
@@ -471,11 +489,35 @@ public final class SessionSignal
 	 */
 	public SessionSignal withGameTick(long gameTick)
 	{
-		return new SessionSignal(
+		SessionSignal tagged = new SessionSignal(
 			kind, observedAt, skill, xpDelta, slayerTaskName, slayerTaskLocation, slayerUnitsConsumed,
 			slayerInitialAmount, bossOrActivitySource, reliableCount, lootDrops, gameTick, slayerCurrentRemaining,
 			npcId, npcName, xpWindowStart, xpNewValue, structuredActivityKey, regionId, slayerTaskCancelled,
 			activityAmount, activityAmountTrusted);
+		tagged.skillProduction = skillProduction;
+		return tagged;
+	}
+
+	/**
+	 * SKILL_PRODUCTION only: the skill companion's update. Set once by
+	 * {@link #skillProduction(Instant, SkillProductionUpdate)} (and carried by
+	 * {@link #withGameTick}); null for every other kind.
+	 */
+	private SkillProductionUpdate skillProduction;
+
+	/** See SignalKind#SKILL_PRODUCTION. */
+	public static SessionSignal skillProduction(Instant observedAt, SkillProductionUpdate update)
+	{
+		SessionSignal s = new SessionSignal(SignalKind.SKILL_PRODUCTION, observedAt, null, null, null, null, null, null, null,
+			null, null, null, null, null, null, null, null, null, null, false, null, false);
+		s.skillProduction = Objects.requireNonNull(update, "update");
+		return s;
+	}
+
+	/** SKILL_PRODUCTION only: the update; null for every other kind. */
+	public SkillProductionUpdate getSkillProduction()
+	{
+		return kind == SignalKind.SKILL_PRODUCTION ? skillProduction : null;
 	}
 
 	/** See SignalKind#STRUCTURED_ACTIVITY_SCORE. completionCount: the game's running count (dedupe), or null. */
@@ -515,10 +557,49 @@ public final class SessionSignal
 			null, producedItems, null, null, null, null, null, null, activityKey, null, false, null, false);
 	}
 
+	/** See SignalKind#STRUCTURED_ACTIVITY_ROUND_TIME. The milliseconds ride in the amount slot. */
+	public static SessionSignal structuredActivityRoundTime(Instant observedAt, String activityKey, long roundMillis)
+	{
+		return structuredActivityRoundTime(observedAt, activityKey, roundMillis, false);
+	}
+
+	/** Same, plus whether the round was seen from start to end (rides in the trusted flag). */
+	public static SessionSignal structuredActivityRoundTime(Instant observedAt, String activityKey, long roundMillis, boolean completeRound)
+	{
+		return structuredActivityRoundTime(observedAt, activityKey, roundMillis, completeRound, null);
+	}
+
+	/** Same, plus the round's effective playstyle label (History only; rides in the source slot). */
+	public static SessionSignal structuredActivityRoundTime(Instant observedAt, String activityKey, long roundMillis, boolean completeRound,
+		String playstyle)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_ROUND_TIME, observedAt, null, null, null, null, null, null, playstyle,
+			null, null, null, null, null, null, null, null, activityKey, null, false, roundMillis, completeRound);
+	}
+
+	/** See SignalKind#STRUCTURED_ACTIVITY_ACTION. The action key rides in the source slot, the count in the amount slot. */
+	public static SessionSignal structuredActivityAction(Instant observedAt, String activityKey, String action, long count)
+	{
+		return new SessionSignal(SignalKind.STRUCTURED_ACTIVITY_ACTION, observedAt, null, null, null, null, null, null, action,
+			null, null, null, null, null, null, null, null, activityKey, null, false, count, false);
+	}
+
 	/** STRUCTURED_ACTIVITY_CURRENCY only: which currency (null = the activity's single currency). */
 	public String getActivityCurrencyKey()
 	{
 		return kind == SignalKind.STRUCTURED_ACTIVITY_CURRENCY ? bossOrActivitySource : null;
+	}
+
+	/** STRUCTURED_ACTIVITY_ROUND_TIME only: the round's playstyle label (e.g. "Mass • Points"), or null. */
+	public String getActivityRoundPlaystyle()
+	{
+		return kind == SignalKind.STRUCTURED_ACTIVITY_ROUND_TIME ? bossOrActivitySource : null;
+	}
+
+	/** STRUCTURED_ACTIVITY_ACTION only: which counted action (e.g. "roots_fed"). */
+	public String getActivityActionKey()
+	{
+		return kind == SignalKind.STRUCTURED_ACTIVITY_ACTION ? bossOrActivitySource : null;
 	}
 
 	/** STRUCTURED_ACTIVITY_PRODUCTION only: the produced items (id, name, exact quantity). */

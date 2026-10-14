@@ -71,11 +71,28 @@ public final class StructuredActivityCatalog
 				.currencyLabel("Permits")
 				.build(),
 			StructuredActivityDefinition.builder(PEST_CONTROL, "Pest Control")
+				// LIVE-VERIFIED (2026-10-01): 10536 is the game island (the
+				// player is only ever there during a game); the outpost /
+				// post-game area is 10537 and is deliberately not registered.
 				.region(LocationPolicy.EXCLUSIVE, 10536)
+				// Entering the island IS the game starting (same tick as the
+				// Squire's "You must defend the Void Knight..." line).
+				.startOnEntry(10536)
 				.combatExpected()
-				// Adapter-isolated fallback: only a won, rewarded game prints this.
-				.completionChat("awarded you [0-9,]+ Void Knight Commendation points?")
-				.completionLabel("Games")
+				// LIVE-VERIFIED win text, delivered as ChatMessageType.DIALOG
+				// ("Squire|Congratulations! You managed to destroy all the
+				// portals! We've awarded you 8 Void Knight Commendation points.
+				// Please also accept these coins as a reward."), shown twice
+				// about two seconds apart. Only a rewarded win prints it; a lost
+				// or zero-contribution game never does.
+				.completionChat("awarded you (?<amount>[0-9,]+) Void Knight Commendation points?")
+				.completionInDialogue()
+				.completionCurrency("commendation_points")
+				// The two copies arrived ~2 s apart (beyond the default 2
+				// ticks); no real game can follow a win within 30 s.
+				.completionDedupeTicks(50)
+				.completionLabel("Games won")
+				.currencyLabel("Commendation points")
 				.build(),
 			StructuredActivityDefinition.builder(GIANTS_FOUNDRY, "Giants' Foundry")
 				.region(LocationPolicy.EXCLUSIVE, 13491)
@@ -107,7 +124,7 @@ public final class StructuredActivityCatalog
 				// never attributed to a Wintertodt session.
 				.rewardClaimMessage("wintertodt_reward_cart", "Wintertodt Reward Cart", CLAIM_MESSAGE, false, new int[] {6461},
 					"Reward cart (Wintertodt)")
-				.completionLabel("Games")
+				.completionLabel("Subdues")
 				.build()));
 	}
 }

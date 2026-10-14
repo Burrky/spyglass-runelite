@@ -78,6 +78,8 @@ public final class CompletionMetricText
 				return "Catalytic";
 			case "reward_permits":
 				return "Permits";
+			case "commendation_points":
+				return "Commendation points";
 			default:
 				return null;
 		}
@@ -94,6 +96,14 @@ public final class CompletionMetricText
 	/** What Avg / Best measure for the activity (tooltip wording). */
 	public static String scoreNoun(String activityKey)
 	{
+		if (isPestControl(activityKey))
+		{
+			return "Game time";
+		}
+		if (isWintertodt(activityKey))
+		{
+			return "Points";
+		}
 		return com.osrstelemetry.plugin.activity.StructuredActivityCatalog.GUARDIANS_OF_THE_RIFT.equals(activityKey)
 			? "Total energy" : "Final points";
 	}
@@ -106,7 +116,73 @@ public final class CompletionMetricText
 	public static boolean hasHistorySessionBlock(String activityKey)
 	{
 		return com.osrstelemetry.plugin.activity.StructuredActivityCatalog.TEMPOROSS.equals(activityKey)
-			|| com.osrstelemetry.plugin.activity.StructuredActivityCatalog.GUARDIANS_OF_THE_RIFT.equals(activityKey);
+			|| com.osrstelemetry.plugin.activity.StructuredActivityCatalog.GUARDIANS_OF_THE_RIFT.equals(activityKey)
+			|| isPestControl(activityKey)
+			|| isWintertodt(activityKey);
+	}
+
+	public static boolean isWintertodt(String activityKey)
+	{
+		return com.osrstelemetry.plugin.activity.StructuredActivityCatalog.WINTERTODT.equals(activityKey);
+	}
+
+	/** History's Wintertodt action breakdown ("Roots fed 120 • Kindling fed 64 • ..."), or null when none. */
+	public static String wintertodtActions(java.util.Map<String, Long> counts)
+	{
+		if (counts == null || counts.isEmpty())
+		{
+			return null;
+		}
+		String[][] labels = {
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.ROOTS_FED, "Roots fed"},
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.KINDLING_FED, "Kindling fed"},
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.LIT, "Lit"},
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.REPAIRED, "Repaired"},
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.HEALED, "Healed"},
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.CHOPPED, "Chopped"},
+			{com.osrstelemetry.plugin.activity.WintertodtRoundTracker.FLETCHED, "Fletched"}};
+		StringBuilder sb = new StringBuilder();
+		for (String[] l : labels)
+		{
+			Long v = counts.get(l[0]);
+			if (v != null && v > 0)
+			{
+				sb.append(sb.length() == 0 ? "" : "   \u2022   ").append(l[1]).append(' ').append(String.format(Locale.ROOT, "%,d", v));
+			}
+		}
+		return sb.length() == 0 ? null : sb.toString();
+	}
+
+	public static boolean isPestControl(String activityKey)
+	{
+		return com.osrstelemetry.plugin.activity.StructuredActivityCatalog.PEST_CONTROL.equals(activityKey);
+	}
+
+	/**
+	 * Pest Control COMMENDATIONS / HR: points earned per hour of ROUND time
+	 * (island time, win or loss), so outpost / lander waiting never dilutes
+	 * it. {@code liveRoundMillis} is the round in progress (Current Session
+	 * only). Sessions recorded before round time existed fall back to active
+	 * time. Null below the shared 5-minute floor or with nothing earned.
+	 */
+	public static Double commendationsPerHour(long gained, long roundMillis, int roundsTimed, long liveRoundMillis,
+		long fallbackActiveMillis)
+	{
+		long denominator = roundsTimed > 0 || liveRoundMillis > 0 ? roundMillis + Math.max(0L, liveRoundMillis) : fallbackActiveMillis;
+		if (gained <= 0 || denominator < MIN_DURATION_FOR_RATE_MILLIS)
+		{
+			return null;
+		}
+		return gained * 3_600_000d / denominator;
+	}
+
+	/** "2:04" (minutes:seconds), "1:02:04" past an hour. */
+	public static String gameTime(long seconds)
+	{
+		long s = Math.max(0L, seconds);
+		return s >= 3600
+			? String.format(Locale.ROOT, "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
+			: String.format(Locale.ROOT, "%d:%02d", s / 60, s % 60);
 	}
 
 	/** "+11" -- earned this session (never a balance). */
@@ -157,7 +233,7 @@ public final class CompletionMetricText
 		Double rate = perHour(count, activeMillis);
 		if (rate != null)
 		{
-			line.fact(label + "/hr: " + String.format(Locale.ROOT, "%.1f", rate));
+			line.fact(rateLabel(label) + ": " + String.format(Locale.ROOT, "%.1f", rate));
 		}
 		return line;
 	}
@@ -167,6 +243,31 @@ public final class CompletionMetricText
 	{
 		String text = countText(label, count);
 		Double rate = perHour(count, activeMillis);
-		return rate == null ? text : text + "   •   " + label + "/hr: " + String.format(Locale.ROOT, "%.1f", rate);
+		return rate == null ? text : text + "   •   " + rateLabel(label) + ": " + String.format(Locale.ROOT, "%.1f", rate);
+	}
+
+	/**
+	 * The rate's label: the completion noun per hour. A qualified label keeps
+	 * only its noun ("Games won" -> "Games/hr"), so "Games won/hr" never shows.
+	 */
+	public static String rateLabel(String label)
+	{
+		int space = label.indexOf(' ');
+		return (space > 0 ? label.substring(0, space) : label) + "/hr";
+	}
+
+	/**
+	 * The generic completion line plus the activity's single native currency
+	 * earned this session ("Games won: 3  •  Games/hr: 9.0  •  Commendation
+	 * points: +24"), for activities without a dedicated block.
+	 */
+	static FactLine factLine(String label, int count, long activeMillis, String currencyLabel, long currencyGained)
+	{
+		FactLine line = factLine(label, count, activeMillis);
+		if (currencyLabel != null)
+		{
+			line.fact(currencyLabel + ": " + currencyText(currencyGained));
+		}
+		return line;
 	}
 }

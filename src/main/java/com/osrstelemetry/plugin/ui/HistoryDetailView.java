@@ -197,6 +197,7 @@ final class HistoryDetailView extends JPanel
 		content.add(Box.createVerticalStrut(4));
 		renderHeader(model);
 		renderSessionBlock(model);
+		renderSkillBlock(model);
 		renderSlayerBlock(model);
 		renderProducedItems(model);
 		renderXpBreakdown(model);
@@ -304,6 +305,16 @@ final class HistoryDetailView extends JPanel
 			tasksLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 			content.add(tasksLabel);
 		}
+		String superiors = slayerSuperiorsText(model);
+		if (superiors != null)
+		{
+			JLabel superiorsLabel = new WrappingHtmlLabel(superiors, false);
+			superiorsLabel.setName(SLAYER_SUPERIORS_NAME);
+			superiorsLabel.setFont(FontManager.getRunescapeSmallFont());
+			superiorsLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
+			superiorsLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+			content.add(superiorsLabel);
+		}
 
 		content.add(Box.createVerticalStrut(6));
 		content.add(separator());
@@ -347,6 +358,20 @@ final class HistoryDetailView extends JPanel
 		block.setOpaque(false);
 		block.setAlignmentX(Component.LEFT_ALIGNMENT);
 		block.add(sectionTitle("SESSION"));
+		if (CompletionMetricText.isPestControl(model.getActivityKey()))
+		{
+			addPestControlSessionRows(block, model);
+			content.add(block);
+			content.add(Box.createVerticalStrut(6));
+			return;
+		}
+		if (CompletionMetricText.isWintertodt(model.getActivityKey()))
+		{
+			addWintertodtSessionRows(block, model);
+			content.add(block);
+			content.add(Box.createVerticalStrut(6));
+			return;
+		}
 
 		String label = model.getCompletionLabel();
 		int count = model.getCompletionCount();
@@ -391,6 +416,108 @@ final class HistoryDetailView extends JPanel
 		}
 		content.add(block);
 		content.add(Box.createVerticalStrut(6));
+	}
+
+	/**
+	 * PEST CONTROL session summary (no live game state and no goal -- those
+	 * are transient / planning state):
+	 * <pre>
+	 * Games won 3                 Avg 2:04
+	 * Commendations +24           31.0/hr
+	 * </pre>
+	 * Avg = entry-to-win time of won games observed from their start; the
+	 * rate is per hour of game (island) time, never outpost waiting.
+	 */
+	private static void addPestControlSessionRows(JPanel block, HistoryDetailModel model)
+	{
+		int games = model.getCompletionCount();
+		Long average = model.getAverageScore();
+		int scored = model.getScoredGames();
+		JPanel first = sessionRow(model.getCompletionLabel() + " " + formatNumber(games), SESSION_GAMES_NAME,
+			average == null ? null : "Avg " + CompletionMetricText.gameTime(average), SESSION_AVG_NAME);
+		if (average != null)
+		{
+			first.setToolTipText("Average game time, island entry to win (" + scored + " won game" + (scored == 1 ? "" : "s")
+				+ " seen from the start" + (scored < games ? " of " + games : "") + ")");
+		}
+		block.add(first);
+		long gained = model.getCurrencyGained(null);
+		if (gained > 0)
+		{
+			Double rate = CompletionMetricText.commendationsPerHour(gained, model.getRoundMillis(), model.getRoundsTimed(), 0L,
+				model.getAccumulatedActiveDurationMillis());
+			JPanel row = sessionRow("Commendations " + CompletionMetricText.currencyText(gained), SESSION_CURRENCY_PREFIX + "single",
+				rate == null ? null : String.format(java.util.Locale.ROOT, "%.1f/hr", rate), SESSION_RATE_NAME);
+			row.setToolTipText("Void Knight Commendation points earned this session"
+				+ (rate == null ? "" : "; per hour of game time (outpost waiting never counts)"));
+			block.add(row);
+		}
+	}
+
+	static final String WT_ROUND_ROW_NAME = "historyWtRounds";
+	static final String WT_ACTIONS_NAME = "historyWtActions";
+	static final String WT_PLAYSTYLE_ROW_NAME = "historyWtPlaystyle";
+	static final String WT_DOWNTIME_NAME = "historyWtDowntime";
+
+	/**
+	 * WINTERTODT session summary (outcomes only -- no warmth / energy samples,
+	 * no live state, no playstyle or goal):
+	 * <pre>
+	 * Subdues 6                    Avg 742 pts
+	 * Points 4,452                 Rewards +12
+	 * Avg round 3:41               9.6/hr
+	 * Roots fed 120 • Kindling fed 64 • Lit 6 ...
+	 * Downtime: Agility +540 XP (the arena Gap)
+	 * </pre>
+	 */
+	private static void addWintertodtSessionRows(JPanel block, HistoryDetailModel model)
+	{
+		int subdues = model.getCompletionCount();
+		Long avg = model.getAverageScore();
+		block.add(sessionRow(model.getCompletionLabel() + " " + formatNumber(subdues), SESSION_GAMES_NAME,
+			avg == null ? null : "Avg " + formatNumber(avg) + " pts", SESSION_AVG_NAME));
+		long rewards = model.getCurrencyGained(com.osrstelemetry.plugin.collectors.StructuredActivityCollector.WINTERTODT_REWARDS);
+		long total = model.getScoreTotal();
+		if (total > 0 || rewards > 0)
+		{
+			block.add(sessionRow("Points " + formatNumber(total), SESSION_CURRENCY_PREFIX + "points",
+				rewards > 0 ? "Rewards " + CompletionMetricText.currencyText(rewards) : null, SESSION_CURRENCY_PREFIX + "rewards"));
+		}
+		int complete = model.getCompleteRounds();
+		Double rate = CompletionMetricText.perHour((int) Math.min(Integer.MAX_VALUE, rewards), model.getAccumulatedActiveDurationMillis());
+		if (complete > 0 || rate != null)
+		{
+			JPanel row = sessionRow(complete > 0 ? "Avg round " + CompletionMetricText.gameTime(model.getCompleteRoundMillis() / complete / 1000L) : "Avg round -",
+				WT_ROUND_ROW_NAME, rate == null ? null : String.format(java.util.Locale.ROOT, "%.1f/hr", rate), SESSION_RATE_NAME);
+			row.setToolTipText("Average length of rounds seen from start to end; rewards per hour of active Wintertodt time");
+			block.add(row);
+		}
+		String playstyle = model.getPlaystyle();
+		if (playstyle != null && !playstyle.trim().isEmpty())
+		{
+			JPanel row = sessionRow("Playstyle " + playstyle, WT_PLAYSTYLE_ROW_NAME, null, null);
+			row.setToolTipText("The Wintertodt playstyle in effect (Auto = never resolved this session)");
+			block.add(row);
+		}
+		String actions = CompletionMetricText.wintertodtActions(model.getActionCounts());
+		if (actions != null)
+		{
+			JLabel line = new WrappingHtmlLabel(actions, false);
+			line.setName(WT_ACTIONS_NAME);
+			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setForeground(SpyglassTheme.TEXT_SECONDARY);
+			line.setAlignmentX(Component.LEFT_ALIGNMENT);
+			block.add(line);
+		}
+		for (HistoryDetailModel.XpRow xp : model.getXpRows())
+		{
+			if ("agility".equalsIgnoreCase(xp.getSkill()) && xp.getXpGained() > 0)
+			{
+				JPanel row = sessionRow("Downtime: Agility +" + formatNumber(xp.getXpGained()) + " XP", WT_DOWNTIME_NAME, null, null);
+				row.setToolTipText("Agility XP inside the arena (the Gap shortcut between rounds) stays part of Wintertodt");
+				block.add(row);
+			}
+		}
 	}
 
 	static final String SLAYER_BLOCK_NAME = "historySlayerBlock";
@@ -439,6 +566,419 @@ final class HistoryDetailView extends JPanel
 		content.add(Box.createVerticalStrut(6));
 	}
 
+	static final String SKILL_BLOCK_NAME = "historySkillBlock";
+	static final String SKILL_PRODUCED_NAME = "historySkillProduced";
+	static final String SKILL_PRODUCED_RATE_NAME = "historySkillProducedRate";
+	static final String SKILL_BANKED_NAME = "historySkillBanked";
+	static final String SKILL_BANKED_RATE_NAME = "historySkillBankedRate";
+	static final String SKILL_XP_NAME = "historySkillXp";
+	static final String SKILL_XP_RATE_NAME = "historySkillXpRate";
+	static final String SKILL_METHOD_PREFIX = "historySkillMethod:";
+	static final String SKILL_CYCLES_NAME = "historySkillCycles";
+	static final String SKILL_CYCLES_RATE_NAME = "historySkillCyclesRate";
+	static final String SKILL_CYCLE_AVG_NAME = "historySkillCycleAvg";
+	static final String SKILL_CYCLE_BEST_NAME = "historySkillCycleBest";
+	static final String SKILL_FAILURES_NAME = "historySkillFailures";
+	static final String SKILL_REWARD_PREFIX = "historySkillReward:";
+	static final String SKILL_METHODS_TITLE_NAME = "historySkillMethodsTitle";
+	static final String SKILL_AUTO_TRANSFORMED_NAME = "historySkillAutoTransformed";
+	static final String SKILL_CONSUMED_NAME = "historySkillConsumed";
+	static final String SKILL_CYCLE_YIELD_PREFIX = "historySkillCycleYield:";
+	static final String SKILL_OCCURRENCE_LINE_PREFIX = "historySkillOccurrenceLine:";
+	static final String SKILL_CONSUMED_PREFIX = "historySkillConsumed:";
+	static final String SKILL_SECONDARY_PREFIX = "historySkillSecondary:";
+	static final String SKILL_OCCURRENCES_NAME = "historySkillOccurrences";
+	static final String SKILL_OCCURRENCE_PREFIX = "historySkillOccurrence:";
+	static final String SKILL_OWN_ROW_PREFIX = "historySkillRow:";
+
+	/**
+	 * SKILL COMPANION session summary (Mining) -- what was actually
+	 * accomplished; per-resource counts are the produced grid below it:
+	 * <pre>
+	 * MINING
+	 * Mined 4,821                     428/hr
+	 * Banked 3,912 (81%)              347/hr
+	 * Mining XP 168,900            15,000/hr
+	 * Amethyst                        1:42:10
+	 * Iron                              31:05
+	 * </pre>
+	 * Rates are per hour of the session's active time (logged-out time and
+	 * long idles never count) and only once it reaches 5 minutes. Targets are
+	 * planning state and never part of History.
+	 */
+	private void renderSkillBlock(HistoryDetailModel model)
+	{
+		com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill = model.getSkillDefinition();
+		com.osrstelemetry.plugin.session.SessionAggregates.SkillSessionStats stats = model.getSkillStats();
+		if (skill == null || stats == null)
+		{
+			return;
+		}
+		boolean primaryOnly = skill.historyCountsPrimaryOnly();
+		long produced = primaryOnly ? primaryTotal(skill, model.getProducedItems()) : model.getProducedItemTotal();
+		long banked = 0L;
+		if (stats.getBanked() != null)
+		{
+			for (com.osrstelemetry.plugin.session.SessionAggregates.ProducedItemAggregate b : stats.getBanked())
+			{
+				if (!primaryOnly || isPrimary(skill, b.getItemId()))
+				{
+					banked += b.getQuantity();
+				}
+			}
+		}
+		long active = model.getAccumulatedActiveDurationMillis();
+		boolean rated = active >= com.osrstelemetry.plugin.skills.SkillGoalPlanner.MIN_RATE_MILLIS;
+		JPanel block = new JPanel();
+		block.setName(SKILL_BLOCK_NAME);
+		block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
+		block.setOpaque(false);
+		block.setAlignmentX(Component.LEFT_ALIGNMENT);
+		block.add(sectionTitle(skill.getSkill().getName().toUpperCase(java.util.Locale.ROOT)));
+		String verb = Character.toUpperCase(skill.producedVerb().charAt(0)) + skill.producedVerb().substring(1);
+		boolean cyclesSkill = skill.cycleNoun(true) != null;
+		java.util.Map<String, com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate> cycles =
+			stats.getCycles() == null ? java.util.Collections.<String, com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate>emptyMap()
+				: stats.getCycles();
+		if (cyclesSkill)
+		{
+			addCycleRows(block, skill, cycles, stats.getMethodMillis(), stats.getOccurrences());
+		}
+		java.util.List<com.osrstelemetry.plugin.skills.SkillCompanionDefinition.HistoryRow> ownRows = skill.historyRows(
+			com.osrstelemetry.plugin.history.HistoryEntry.skillTotals(model.getSessionAggregates(), active, skill));
+		if (ownRows != null)
+		{
+			// Rendered below (the skill's own rows).
+		}
+		else if (skill.productionIsReward())
+		{
+			// Course REWARDS: each reward and its rate per hour of time on the courses that hand it out.
+			for (com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView item : model.getProducedItems())
+			{
+				if (item.getItemId() == null || item.getQuantity() <= 0)
+				{
+					continue;
+				}
+				com.osrstelemetry.plugin.skills.SkillResource r = skill.resource(item.getItemId());
+				long rewardMillis = 0L;
+				if (stats.getMethodMillis() != null)
+				{
+					for (java.util.Map.Entry<String, Long> m : stats.getMethodMillis().entrySet())
+					{
+						for (com.osrstelemetry.plugin.skills.SkillResource o : skill.stockpileResources(m.getKey()))
+						{
+							if (o.getItemId() == item.getItemId() && m.getValue() != null)
+							{
+								rewardMillis += m.getValue();
+								break;
+							}
+						}
+					}
+				}
+				boolean rewardRated = rewardMillis >= com.osrstelemetry.plugin.skills.SkillGoalPlanner.MIN_RATE_MILLIS;
+				block.add(sessionRow((r == null ? item.getItemName() : r.getShortName()) + " " + formatNumber(item.getQuantity()),
+					SKILL_REWARD_PREFIX + item.getItemId(),
+					rewardRated ? String.format(java.util.Locale.ROOT, "%.1f/hr", item.getQuantity() * 3_600_000d / rewardMillis) : null, null));
+			}
+		}
+		else if (produced > 0)
+		{
+			JPanel row = sessionRow(verb + " " + formatNumber(produced), SKILL_PRODUCED_NAME,
+				rated ? formatNumber(Math.round(produced * 3_600_000d / active)) + "/hr" : null, SKILL_PRODUCED_RATE_NAME);
+			row.setToolTipText("Everything this session " + skill.producedVerb() + " (per resource below)");
+			block.add(row);
+			String share = " (" + Math.round(banked * 100d / produced) + "%)";
+			JPanel bankedRow = sessionRow("Banked " + formatNumber(banked) + share, SKILL_BANKED_NAME,
+				rated && banked > 0 ? formatNumber(Math.round(banked * 3_600_000d / active)) + "/hr" : null, SKILL_BANKED_RATE_NAME);
+			bankedRow.setToolTipText("Of that, what Spyglass saw you deposit into your bank; drops and unproven deposits never count");
+			block.add(bankedRow);
+			long transformed = 0L;
+			if (skill.autoTransformedVerb() != null && stats.getAutoTransformed() != null)
+			{
+				for (com.osrstelemetry.plugin.session.SessionAggregates.ProducedItemAggregate a : stats.getAutoTransformed())
+				{
+					transformed += a.getQuantity();
+				}
+			}
+			if (transformed > 0)
+			{
+				String v = skill.autoTransformedVerb();
+				JPanel autoRow = sessionRow(Character.toUpperCase(v.charAt(0)) + v.substring(1) + " " + formatNumber(transformed)
+					+ " (" + Math.round(transformed * 100d / produced) + "%)", SKILL_AUTO_TRANSFORMED_NAME, null, null);
+				autoRow.setToolTipText(skill.autoTransformedTooltip());
+				block.add(autoRow);
+			}
+		}
+		if (ownRows != null)
+		{
+			// Phase 6: the skill's own rows replace the generic produced / banked / consumed rows (each method's
+			// own counts and rates, never one blended number); XP and per-method time stay generic below.
+			for (int i = 0; i < ownRows.size(); i++)
+			{
+				com.osrstelemetry.plugin.skills.SkillCompanionDefinition.HistoryRow r = ownRows.get(i);
+				JPanel row = sessionRow(r.getLabel(), SKILL_OWN_ROW_PREFIX + i, r.getValue(), null);
+				row.setToolTipText(r.getTooltip());
+				block.add(row);
+			}
+		}
+		else
+		{
+			addSecondaryRows(block, skill, stats, model.getProducedItems(), active);
+			addConsumedRows(block, skill, stats, active);
+		}
+		java.util.List<String> occLines = ownRows != null ? java.util.Collections.<String>emptyList()
+			: skill.occurrenceLines(com.osrstelemetry.plugin.history.HistoryEntry.primaryMethod(stats), stats.getOccurrences());
+		for (int i = 0; i < occLines.size(); i++)
+		{
+			block.add(sessionRow(occLines.get(i), SKILL_OCCURRENCE_LINE_PREFIX + i, null, null));
+		}
+		for (HistoryDetailModel.XpRow xp : model.getXpRows())
+		{
+			if (skill.getSkill().getName().equalsIgnoreCase(xp.getSkill()))
+			{
+				block.add(sessionRow(skill.getSkill().getName() + " XP " + formatNumber(xp.getXpGained()), SKILL_XP_NAME,
+					rated ? formatNumber(Math.round(xp.getXpGained() * 3_600_000d / active)) + "/hr" : null, SKILL_XP_RATE_NAME));
+			}
+		}
+		if (stats.getMethodMillis() != null && !stats.getMethodMillis().isEmpty())
+		{
+			java.util.List<java.util.Map.Entry<String, Long>> methods = new java.util.ArrayList<>(stats.getMethodMillis().entrySet());
+			methods.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+			for (java.util.Map.Entry<String, Long> m : methods)
+			{
+				String label = skill.methodLabel(m.getKey());
+				if (label == null || m.getValue() == null || m.getValue() < 1000L)
+				{
+					continue;
+				}
+				com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate c = cycles.get(m.getKey());
+				String right = formatDuration(m.getValue());
+				if (skill.historyMethodProduction())
+				{
+					long methodProduced = 0L;
+					for (com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView item : model.getProducedItems())
+					{
+						if (item.getItemId() != null && skill.methodProduces(m.getKey(), item.getItemId()))
+						{
+							methodProduced += item.getQuantity();
+						}
+					}
+					if (methodProduced > 0)
+					{
+						right = formatNumber(methodProduced) + " \u2022 " + right;
+					}
+				}
+				if (cyclesSkill && c != null && c.getCount() > 0)
+				{
+					right = right + " \u2022 " + formatNumber(c.getCount()) + " " + skill.cycleNoun(c.getCount() != 1);
+				}
+				JPanel row = sessionRow(label, SKILL_METHOD_PREFIX + m.getKey(), right, null);
+				row.setToolTipText(cyclesSkill ? "Time on this " + skill.methodTitle().toLowerCase(java.util.Locale.ROOT) + " and its full "
+					+ skill.cycleNoun(true) + " (each " + skill.methodTitle().toLowerCase(java.util.Locale.ROOT) + "'s own; never blended)"
+					: "Time spent on this method (respawns, walking and banking count; long idles do not)");
+				block.add(row);
+			}
+		}
+		if (block.getComponentCount() <= 1)
+		{
+			return;
+		}
+		content.add(block);
+		content.add(Box.createVerticalStrut(6));
+	}
+
+	/** Consumed inputs (Skills Phase 5): the total with its rate, then each exact input when there are several. */
+	private void addConsumedRows(JPanel block, com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill,
+		com.osrstelemetry.plugin.session.SessionAggregates.SkillSessionStats stats, long active)
+	{
+		if (skill.consumedPhrase() == null || stats.getConsumed() == null || stats.getConsumed().isEmpty())
+		{
+			return;
+		}
+		long total = 0L;
+		boolean others = false;
+		for (com.osrstelemetry.plugin.session.SessionAggregates.ProducedItemAggregate c : stats.getConsumed())
+		{
+			if (skill.isPrimaryInput(c.getItemId()))
+			{
+				total += c.getQuantity();
+			}
+			else
+			{
+				others = true;
+			}
+		}
+		boolean rated = active >= com.osrstelemetry.plugin.skills.SkillGoalPlanner.MIN_RATE_MILLIS;
+		String phrase = skill.consumedPhrase();
+		if (total > 0)
+		{
+			block.add(sessionRow(Character.toUpperCase(phrase.charAt(0)) + phrase.substring(1) + " " + formatNumber(total), SKILL_CONSUMED_NAME,
+				rated ? formatNumber(Math.round(total * 3_600_000d / active)) + "/hr" : null, null));
+		}
+		if (stats.getConsumed().size() > 1 || others)
+		{
+			for (com.osrstelemetry.plugin.session.SessionAggregates.ProducedItemAggregate c : stats.getConsumed())
+			{
+				block.add(sessionRow("  " + c.getItemName() + " " + formatNumber(c.getQuantity()), SKILL_CONSUMED_PREFIX + c.getItemId(), null, null));
+			}
+		}
+	}
+
+	private static boolean isPrimary(com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill, Integer itemId)
+	{
+		com.osrstelemetry.plugin.skills.SkillResource r = itemId == null ? null : skill.resource(itemId);
+		return r != null && r.getRole() == com.osrstelemetry.plugin.skills.SkillResource.Role.PRIMARY;
+	}
+
+	private static long primaryTotal(com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill,
+		java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView> items)
+	{
+		long total = 0L;
+		for (com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView item : items)
+		{
+			if (isPrimary(skill, item.getItemId()))
+			{
+				total += item.getQuantity();
+			}
+		}
+		return total;
+	}
+
+	/**
+	 * Secondary families with a section of their own (count, rate when
+	 * meaningful) and contextual occurrences per kind. The exact variants are
+	 * in the produced grid below.
+	 */
+	private void addSecondaryRows(JPanel block, com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill,
+		com.osrstelemetry.plugin.session.SessionAggregates.SkillSessionStats stats,
+		java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView> items, long active)
+	{
+		boolean rated = active >= com.osrstelemetry.plugin.skills.SkillGoalPlanner.MIN_RATE_MILLIS;
+		for (com.osrstelemetry.plugin.skills.SkillCompanionDefinition.Secondary sec : skill.secondaries())
+		{
+			long count = 0L;
+			for (com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView item : items)
+			{
+				com.osrstelemetry.plugin.skills.SkillResource r = item.getItemId() == null ? null : skill.resource(item.getItemId());
+				if (r != null && sec.getGroup().equals(r.getGroup()))
+				{
+					count += item.getQuantity();
+				}
+			}
+			if (count <= 0)
+			{
+				continue;
+			}
+			String title = sec.isCompactLine() ? sec.getCaption() : skill.groupTitle(sec.getGroup());
+			JPanel row = sessionRow(title + " " + formatNumber(count), SKILL_SECONDARY_PREFIX + sec.getGroup(),
+				!sec.isCompactLine() && rated && count >= 2 ? String.format(java.util.Locale.ROOT, "%.1f/hr", count * 3_600_000d / active) : null,
+				null);
+			row.setToolTipText(sec.getTooltip());
+			block.add(row);
+		}
+		if (skill.occurrencesTitle() == null || stats.getOccurrences() == null || stats.getOccurrences().isEmpty())
+		{
+			return;
+		}
+		long total = 0L;
+		for (Long v : stats.getOccurrences().values())
+		{
+			total += v == null ? 0L : v;
+		}
+		if (total <= 0)
+		{
+			return;
+		}
+		block.add(sessionRow(skill.occurrencesTitle() + " " + formatNumber(total), SKILL_OCCURRENCES_NAME, null, null));
+		java.util.List<java.util.Map.Entry<String, Long>> kinds = new java.util.ArrayList<>(stats.getOccurrences().entrySet());
+		kinds.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+		for (java.util.Map.Entry<String, Long> e : kinds)
+		{
+			String label = skill.occurrenceLabel(e.getKey());
+			if (label != null && e.getValue() != null && e.getValue() > 0)
+			{
+				JPanel row = sessionRow("  " + label, SKILL_OCCURRENCE_PREFIX + e.getKey(), formatNumber(e.getValue()), null);
+				block.add(row);
+			}
+		}
+	}
+
+	/**
+	 * Cycle skills (Agility laps): the session's full cycles and their rate;
+	 * AVG / BEST only when one method has cycles (lap times of different
+	 * courses are never blended); reliably-evidenced failures.
+	 */
+	private void addCycleRows(JPanel block, com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill,
+		java.util.Map<String, com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate> cycles, java.util.Map<String, Long> methodMillis,
+		java.util.Map<String, Long> occurrences)
+	{
+		String onlyKey = null;
+		long count = 0L;
+		long millis = 0L;
+		long failures = 0L;
+		com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate only = null;
+		int withCycles = 0;
+		for (java.util.Map.Entry<String, com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate> e : cycles.entrySet())
+		{
+			com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate c = e.getValue();
+			if (c == null)
+			{
+				continue;
+			}
+			failures += c.getFailures();
+			if (c.getCount() > 0)
+			{
+				count += c.getCount();
+				withCycles++;
+				only = c;
+				onlyKey = e.getKey();
+				Long m = methodMillis == null ? null : methodMillis.get(e.getKey());
+				millis += m == null ? 0L : m;
+			}
+		}
+		if (count <= 0 && failures <= 0)
+		{
+			return;
+		}
+		String units = skill.cycleNoun(true);
+		String unitsTitle = Character.toUpperCase(units.charAt(0)) + units.substring(1);
+		boolean rated = millis >= com.osrstelemetry.plugin.skills.SkillGoalPlanner.MIN_RATE_MILLIS;
+		if (count > 0)
+		{
+			JPanel row = sessionRow(unitsTitle + " " + formatNumber(count), SKILL_CYCLES_NAME,
+				rated ? String.format(java.util.Locale.ROOT, "%.1f/hr", count * 3_600_000d / millis) : null, SKILL_CYCLES_RATE_NAME);
+			row.setToolTipText("Full " + units + " (a " + skill.cycleNoun(false) + " joined part-way never counts), per hour of time on "
+				+ skill.methodTitle().toLowerCase(java.util.Locale.ROOT) + "s that had them");
+			block.add(row);
+		}
+		if (withCycles == 1 && only != null)
+		{
+			block.add(sessionRow("Avg " + skill.cycleNoun(false), SKILL_CYCLE_AVG_NAME,
+				CompletionMetricText.gameTime(only.getTotalMillis() / only.getCount() / 1000), null));
+			if (only.getBestMillis() > 0)
+			{
+				block.add(sessionRow("Best " + skill.cycleNoun(false), SKILL_CYCLE_BEST_NAME,
+					CompletionMetricText.gameTime(only.getBestMillis() / 1000), null));
+			}
+			// Per-cycle yields of that one method's COUNTED cycles (never blended across methods).
+			for (com.osrstelemetry.plugin.skills.SkillCompanionDefinition.CycleYield y : skill.cycleYields())
+			{
+				Long sum = occurrences == null ? null : occurrences.get(y.getKeyPrefix() + onlyKey);
+				if (sum != null && only.getCount() > 0)
+				{
+					block.add(sessionRow(y.getHistoryLabel(), SKILL_CYCLE_YIELD_PREFIX + y.getKeyPrefix(),
+						String.format(java.util.Locale.ROOT, "%,.1f", sum / (double) only.getCount()), null));
+				}
+			}
+		}
+		if (failures > 0 && skill.failureNoun(true) != null)
+		{
+			String f = skill.failureNoun(true);
+			block.add(sessionRow(Character.toUpperCase(f.charAt(0)) + f.substring(1) + " " + formatNumber(failures), SKILL_FAILURES_NAME,
+				null, null));
+		}
+	}
+
 	/** RUNES CRAFTED (or any future produced-items list): header with total, then the compact item grid. */
 	private void renderProducedItems(HistoryDetailModel model)
 	{
@@ -447,8 +987,9 @@ final class HistoryDetailView extends JPanel
 		{
 			return;
 		}
+		com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill = model.getSkillDefinition();
 		String title = com.osrstelemetry.plugin.activity.StructuredActivityCatalog.GUARDIANS_OF_THE_RIFT.equals(model.getActivityKey())
-			? "Runes crafted" : "Produced";
+			? "Runes crafted" : skill != null ? skill.producedTitle() : "Produced";
 		// Title alone (bold) fits the narrowest sidebar; the total sits on its
 		// own small line rather than making one long title that clips at 150px.
 		long total = model.getProducedItemTotal();
@@ -652,12 +1193,16 @@ final class HistoryDetailView extends JPanel
 			List<LootPricing.ValuedLootRow> rows = LootPricing.valueAndSort(task.getLootRows(), itemId -> unitValue(itemId, mode));
 			int ordinal = task.getOrdinal();
 			boolean expanded = expandedTaskOrdinals.contains(ordinal);
+			long value = LootPricing.sumTotalValue(rows);
 			section.add(SlayerTaskCards.card(HISTORY_TASK_CARD_NAME_PREFIX + ordinal, expanded,
 				SlayerTaskCards.title(task.getTaskName(), task.getUnitsCompleted(), task.getEndReason()),
 				SlayerTaskCards.tooltip(task.getTaskName(), task.getUnitsCompleted(), task.isBootstrapped(),
 					task.getRemaining(), task.getEndReason(), historyTaskDetails(task)),
-				SpyglassTheme.TEXT_PRIMARY, LootPricing.sumTotalValue(rows), () -> toggleSlayerTask(ordinal),
-				expanded ? taskCardContent(task, rows, modeLabel) : null));
+				SpyglassTheme.TEXT_PRIMARY, value, () -> toggleSlayerTask(ordinal),
+				expanded ? SlayerTaskCards.details(task.getUnitsCompleted(), task.getKills(), value, task.getSuperiorsByNpc(),
+					task.getKillsByNpc(), task.isBreakdownComplete()) : null,
+				expanded ? taskCardContent(task, rows, modeLabel) : null,
+				SlayerTaskCards.subLines(task.getKills(), task.getSuperiorsByNpc())));
 		}
 	}
 
@@ -733,6 +1278,30 @@ final class HistoryDetailView extends JPanel
 	}
 
 	/** "6 tasks  •  5 completed  •  1 skipped" -- only statuses the persisted records prove. */
+	static final String SLAYER_SUPERIORS_NAME = "historySlayerSuperiors";
+
+	/** "Superiors killed: 3 (Nechryarch 1 • Marble gargoyle 1 • Chasm crawler 1)"; null when none. */
+	static String slayerSuperiorsText(HistoryDetailModel model)
+	{
+		long total = SlayerTaskCards.total(model.getSlayerSuperiors());
+		if (total <= 0)
+		{
+			return null;
+		}
+		StringBuilder sb = new StringBuilder("Superiors killed: ").append(total).append(" (");
+		boolean first = true;
+		for (java.util.Map.Entry<String, Long> e : model.getSlayerSuperiors().entrySet())
+		{
+			if (e.getValue() == null || e.getValue() <= 0)
+			{
+				continue;
+			}
+			sb.append(first ? "" : " \u2022 ").append(e.getKey()).append(' ').append(e.getValue());
+			first = false;
+		}
+		return sb.append(')').toString();
+	}
+
 	static String slayerSummaryText(HistoryDetailModel model)
 	{
 		StringBuilder sb = new StringBuilder(HistoryEntry.taskCountText(model.getSlayerTasks().size()));

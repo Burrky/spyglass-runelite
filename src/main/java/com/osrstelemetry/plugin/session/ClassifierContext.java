@@ -569,5 +569,140 @@ public final class ClassifierContext
 		this.xpBoundaryOwnerSessionId = null;
 		this.xpAtSessionStartBySkill.clear();
 		this.structuredActivity.clear();
+		// Ownership evidence is the previous account's: it must never break a tie for the next one.
+		this.skillMethodEvidence.clear();
+		this.skillContextEvidence.clear();
+	}
+
+	// ---- SKILL-METHOD EVIDENCE (Skills Phase 2: Fishing) ------------------------------------
+
+	/**
+	 * How far before an XP_CHANGE's own event time a skill's method-specific
+	 * evidence still counts: one XP window (the plugin closes XP windows every
+	 * 50 ticks, ~30 s) plus the shared click-hint freshness
+	 * (skills.MethodTracker#HINT_FRESH_MILLIS, 15 s).
+	 */
+	static final Duration SKILL_METHOD_EVIDENCE_MAX_AGE = Duration.ofSeconds(30)
+		.plusMillis(com.osrstelemetry.plugin.skills.MethodTracker.HINT_FRESH_MILLIS);
+	/** Clock tolerance after the XP event (evidence and XP come from the same client clock). */
+	static final Duration SKILL_METHOD_EVIDENCE_SLACK = Duration.ofSeconds(5);
+
+	/**
+	 * Latest STRONG, method-specific evidence per SKILLING key, reported by a
+	 * skill companion (e.g. Fishing: a barbarian catch line or a "Use-rod"
+	 * click on a barbarian spot). Only ever used to break a same-tick tie
+	 * between several Skilling identities (SessionSignalBatchResolver) --
+	 * never lifecycle evidence by itself, never a metric, never persisted.
+	 */
+	private final Map<String, Instant> skillMethodEvidence = new HashMap<>();
+
+	void noteSkillMethodEvidence(String skillKey, Instant at)
+	{
+		if (skillKey == null || at == null)
+		{
+			return;
+		}
+		Instant previous = skillMethodEvidence.get(skillKey);
+		if (previous == null || at.isAfter(previous))
+		{
+			skillMethodEvidence.put(skillKey, at);
+		}
+	}
+
+	/**
+	 * Whether {@code skillKey} has method-specific evidence recent enough to
+	 * belong to an XP_CHANGE observed at {@code observedAt} (its XP window
+	 * began at {@code windowStart}, may be null): no older than
+	 * {@link #SKILL_METHOD_EVIDENCE_MAX_AGE} before the event, never before
+	 * the window's own start minus the click-hint freshness, and not from
+	 * after the event.
+	 */
+	boolean hasFreshSkillMethodEvidence(String skillKey, Instant windowStart, Instant observedAt)
+	{
+		Instant at = skillKey == null || observedAt == null ? null : skillMethodEvidence.get(skillKey);
+		if (at == null)
+		{
+			return false;
+		}
+		Instant earliest = observedAt.minus(SKILL_METHOD_EVIDENCE_MAX_AGE);
+		if (windowStart != null)
+		{
+			Instant fromWindow = windowStart.minusMillis(com.osrstelemetry.plugin.skills.MethodTracker.HINT_FRESH_MILLIS);
+			if (fromWindow.isAfter(earliest))
+			{
+				earliest = fromWindow;
+			}
+		}
+		return !at.isBefore(earliest) && !at.isAfter(observedAt.plus(SKILL_METHOD_EVIDENCE_SLACK));
+	}
+
+	// ---- SKILL-CONTEXT XP EVIDENCE (Skills Phase 4) -----------------------------
+
+	/** Evidence before the XP window's own start still counts by this much (same-tick clock jitter only). */
+	static final Duration SKILL_CONTEXT_EVIDENCE_LEAD = Duration.ofMillis(1_000L);
+	/** Never older than this before the XP event (one XP window). */
+	static final Duration SKILL_CONTEXT_EVIDENCE_MAX_AGE = Duration.ofSeconds(30);
+
+	/**
+	 * Latest CONTEXT evidence per (owning SKILLING key, other skill name): the
+	 * owning skill's companion proved, from its own native evidence, that
+	 * XP in the OTHER skill right now is part of the owning skill's activity
+	 * (another skill's XP granted by the same action, or by a contextual
+	 * event inside the owning skill's activity). In-memory and
+	 * transient, never persisted, never lifecycle evidence by itself.
+	 */
+	private final Map<String, Instant> skillContextEvidence = new HashMap<>();
+
+	private static String contextKey(String ownerSkillKey, String xpSkill)
+	{
+		return ownerSkillKey.toLowerCase(java.util.Locale.ROOT) + "|" + xpSkill.toLowerCase(java.util.Locale.ROOT);
+	}
+
+	void noteSkillContextEvidence(String ownerSkillKey, String xpSkill, Instant at)
+	{
+		if (ownerSkillKey == null || xpSkill == null || at == null)
+		{
+			return;
+		}
+		String key = contextKey(ownerSkillKey, xpSkill);
+		Instant previous = skillContextEvidence.get(key);
+		if (previous == null || at.isAfter(previous))
+		{
+			skillContextEvidence.put(key, at);
+		}
+	}
+
+	/**
+	 * Whether {@code xpSkill} XP observed at {@code observedAt} (its window
+	 * began at {@code windowStart}, may be null) is backed by fresh context
+	 * evidence from {@code ownerSkillKey}'s companion: evidence from INSIDE
+	 * that XP window (at most {@link #SKILL_CONTEXT_EVIDENCE_LEAD} before its
+	 * start), no older than {@link #SKILL_CONTEXT_EVIDENCE_MAX_AGE}, and not
+	 * from after the event (beyond the usual clock slack). Stricter than
+	 * method evidence on purpose: a window that began after the owning
+	 * activity's last evidence (the other skill trained on its own afterwards)
+	 * is never covered.
+	 */
+	boolean hasFreshSkillContextEvidence(String ownerSkillKey, String xpSkill, Instant windowStart, Instant observedAt)
+	{
+		if (ownerSkillKey == null || xpSkill == null || observedAt == null)
+		{
+			return false;
+		}
+		Instant at = skillContextEvidence.get(contextKey(ownerSkillKey, xpSkill));
+		if (at == null)
+		{
+			return false;
+		}
+		Instant earliest = observedAt.minus(SKILL_CONTEXT_EVIDENCE_MAX_AGE);
+		if (windowStart != null)
+		{
+			Instant fromWindow = windowStart.minus(SKILL_CONTEXT_EVIDENCE_LEAD);
+			if (fromWindow.isAfter(earliest))
+			{
+				earliest = fromWindow;
+			}
+		}
+		return !at.isBefore(earliest) && !at.isAfter(observedAt.plus(SKILL_METHOD_EVIDENCE_SLACK));
 	}
 }

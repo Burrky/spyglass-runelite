@@ -225,4 +225,77 @@ public class StructuredActivityDisplayTest
 		assertNull(component(detail, HistoryDetailView.COMPLETION_METRIC_NAME));
 		assertNull(HistoryEntry.from(finalized).getActivityCompletionCount());
 	}
+
+	// ---- Pest Control: "Games won" + commendation points (simple UI) --------
+
+	private static final String PEST_AGGREGATES =
+		"{'xpGainedBySkill':{'ATTACK':4000,'HITPOINTS':1300},'lootDrops':[],"
+			+ "'activityCompletions':{'activityKey':'pest_control','sessionCompletions':3},"
+			+ "'activityStats':{'activityKey':'pest_control','currencyGained':24,'currencyGainedByKey':{'commendation_points':24}}}";
+
+	@Test
+	public void pestControl_currentSession_sessionGrid_atEveryWidth()
+	{
+		// Superseded the live-QA repair's single header line: the approved
+		// dashboard carries GAMES WON | COMMENDATIONS / AVG GAME | COMMENDS / HR.
+		Session live = session("SUSPENDED", "STRUCTURED_ACTIVITY", "pest_control", "Pest Control", PEST_AGGREGATES);
+		CurrentSessionSnapshot snap = CurrentSessionSnapshot.from(SessionSnapshot.capture(live), Instant.parse("2026-09-20T10:50:00Z"));
+		assertEquals("only rewarded wins are countable", "Games won", snap.getCompletionLabel());
+		assertEquals(3, snap.getCompletionCount());
+		for (int width : new int[] {150, 180, 213, 260})
+		{
+			CurrentSessionView view = new CurrentSessionView(null, null, null, CONFIG);
+			view.render(snap);
+			layoutAt(view, width);
+			assertNull("no duplicate header line", component(view, CurrentSessionView.COMPLETION_METRIC_NAME));
+			assertEquals("3", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_GAMES_CELL)));
+			assertEquals("+24", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_COMMENDATIONS_CELL)));
+			// No round time recorded (older session): active time is the fallback denominator, 24 / 0.7 h.
+			assertEquals("34.3", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_RATE_CELL)));
+			java.util.List<String> problems = SidebarClippingRegressionTest.audit(view, width);
+			assertTrue(width + ": " + problems, problems.isEmpty());
+		}
+	}
+
+	@Test
+	public void pestControl_noWinYet_showsZeroGames_neverAFabricatedRate()
+	{
+		Session live = session("ACTIVE", "STRUCTURED_ACTIVITY", "pest_control", "Pest Control", "{'xpGainedBySkill':{'ATTACK':100}}");
+		CurrentSessionSnapshot snap = CurrentSessionSnapshot.from(SessionSnapshot.capture(live), Instant.parse("2026-09-20T10:50:00Z"));
+		CurrentSessionView view = new CurrentSessionView(null, null, null, CONFIG);
+		view.render(snap);
+		layoutAt(view, 213);
+		assertEquals("0", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_GAMES_CELL)));
+		assertEquals("-", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_COMMENDATIONS_CELL)));
+		assertEquals("-", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_AVG_CELL)));
+		assertEquals("-", UiText.visible(named(view, SlayerStatGrid.VALUE_PREFIX + CurrentSessionView.PEST_RATE_CELL)));
+	}
+
+	@Test
+	public void pestControl_history_sessionBlock_gamesWon_andCommendations()
+	{
+		Session finalized = session("FINALIZED", "STRUCTURED_ACTIVITY", "pest_control", "Pest Control", PEST_AGGREGATES);
+		HistoryDetailModel model = HistoryDetailModel.from(finalized);
+		assertEquals("Games won", model.getCompletionLabel());
+		HistoryDetailView detail = new HistoryDetailView(null, null, null, CONFIG, null);
+		detail.render(model);
+		layoutAt(detail, 213);
+		assertNull("SESSION block, not the inline line", component(detail, HistoryDetailView.COMPLETION_METRIC_NAME));
+		assertEquals("Games won 3", UiText.visible(component(detail, HistoryDetailView.SESSION_GAMES_NAME)));
+		assertEquals("Commendations +24", UiText.visible(component(detail, HistoryDetailView.SESSION_CURRENCY_PREFIX + "single")));
+		assertEquals("34.3/hr", UiText.visible(component(detail, HistoryDetailView.SESSION_RATE_NAME)));
+
+		HistoryView list = new HistoryView(null, null, null, CONFIG, null);
+		list.render(Collections.singletonList(HistoryEntry.from(finalized)));
+		layoutAt(list, 213);
+		assertNotNull("the row leads with Games won, never a misleading Games", startingWith(list, "Games won: 3"));
+	}
+
+	@Test
+	public void otherActivitiesKeepTheirRateLabel()
+	{
+		assertEquals("Games/hr", CompletionMetricText.rateLabel("Games"));
+		assertEquals("Chests/hr", CompletionMetricText.rateLabel("Chests"));
+		assertEquals("Games/hr", CompletionMetricText.rateLabel("Games won"));
+	}
 }

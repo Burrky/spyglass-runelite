@@ -37,6 +37,14 @@ public final class StructuredActivityDefinition
 	private final String completionLabel;
 	/** Player-facing name of the activity's native reward currency ("Permits"), or null. */
 	private final String currencyLabel;
+	/** Regions whose ENTRY alone starts the activity (only ever entered while actually playing). */
+	private final Set<Integer> startOnEntryRegions;
+	/** Whether the completion pattern is also matched against NPC dialogue (ChatMessageType.DIALOG). */
+	private final boolean completionInDialogue;
+	/** Currency the completion pattern's named group {@code amount} awards, or null. */
+	private final String completionCurrencyKey;
+	/** Count-less completion dedupe window in ticks; null = the collector default. */
+	private final Integer completionDedupeTicks;
 
 	private StructuredActivityDefinition(Builder b)
 	{
@@ -57,6 +65,10 @@ public final class StructuredActivityDefinition
 		this.rewardSources = Collections.unmodifiableList(sources);
 		this.completionLabel = b.completionLabel;
 		this.currencyLabel = b.currencyLabel;
+		this.startOnEntryRegions = Collections.unmodifiableSet(new LinkedHashSet<>(b.startOnEntryRegions));
+		this.completionInDialogue = b.completionInDialogue;
+		this.completionCurrencyKey = b.completionCurrencyKey;
+		this.completionDedupeTicks = b.completionDedupeTicks;
 	}
 
 	public static Builder builder(String key, String displayName)
@@ -139,6 +151,34 @@ public final class StructuredActivityDefinition
 		return currencyLabel;
 	}
 
+	/**
+	 * True when merely entering {@code regionId} starts (or resumes) this
+	 * activity -- only for regions the game puts the player in solely while
+	 * a round is actually being played (e.g. the Pest Control island). Never
+	 * true for lobbies, camps or reward areas.
+	 */
+	public boolean startsOnEntry(int regionId)
+	{
+		return startOnEntryRegions.contains(regionId) && regionPolicies.get(regionId) == LocationPolicy.EXCLUSIVE;
+	}
+
+	public boolean isCompletionInDialogue()
+	{
+		return completionInDialogue;
+	}
+
+	/** Currency key credited with the completion message's {@code amount} group, or null. */
+	public String getCompletionCurrencyKey()
+	{
+		return completionCurrencyKey;
+	}
+
+	/** Count-less completion dedupe window override (ticks), or null for the default. */
+	public Integer getCompletionDedupeTicks()
+	{
+		return completionDedupeTicks;
+	}
+
 	public boolean hasCompletionSource()
 	{
 		return completionLabel != null
@@ -164,6 +204,10 @@ public final class StructuredActivityDefinition
 		private final java.util.List<RewardSpec> rewardSpecs = new java.util.ArrayList<>();
 		private String completionLabel;
 		private String currencyLabel;
+		private final Set<Integer> startOnEntryRegions = new LinkedHashSet<>();
+		private boolean completionInDialogue;
+		private String completionCurrencyKey;
+		private Integer completionDedupeTicks;
 
 		private Builder(String key, String displayName)
 		{
@@ -222,10 +266,46 @@ public final class StructuredActivityDefinition
 			return this;
 		}
 
-		/** Group 1, when present, must be the authoritative running count. */
+		/**
+		 * The completion message. A named group {@code count} (or, when the
+		 * pattern has no named groups, group 1) is the authoritative running
+		 * count; a named group {@code amount} is a currency award carried by
+		 * the same message (see {@link #completionCurrency}).
+		 */
 		public Builder completionChat(String regex)
 		{
 			this.completionChatPattern = Pattern.compile(regex);
+			return this;
+		}
+
+		/** Also match the completion pattern against NPC dialogue lines (ChatMessageType.DIALOG). */
+		public Builder completionInDialogue()
+		{
+			this.completionInDialogue = true;
+			return this;
+		}
+
+		/** The completion message's {@code amount} group credits this currency, once per (deduped) completion. */
+		public Builder completionCurrency(String currencyKey)
+		{
+			this.completionCurrencyKey = currencyKey;
+			return this;
+		}
+
+		/** Count-less completions closer than this many ticks are one (the game re-shows the same line). */
+		public Builder completionDedupeTicks(int ticks)
+		{
+			this.completionDedupeTicks = ticks;
+			return this;
+		}
+
+		/** EXCLUSIVE regions whose entry alone starts the activity (see {@link StructuredActivityDefinition#startsOnEntry}). */
+		public Builder startOnEntry(int... regionIds)
+		{
+			for (int id : regionIds)
+			{
+				startOnEntryRegions.add(id);
+			}
 			return this;
 		}
 

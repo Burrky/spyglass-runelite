@@ -137,6 +137,15 @@ public enum EventType
 	SLAYER_BRACELET_EFFECT,
 
 	/**
+	 * An OWNED NPC death that is part of the active Slayer task's encounter
+	 * (the task's own target, a subordinate it summons, or its superior --
+	 * see SlayerEncounterKills): the dying NPC was fighting the local
+	 * player, or the local player was attacking it. An ACTUAL KILL, kept
+	 * apart from task units (which only the game's task count decides).
+	 */
+	SLAYER_ENCOUNTER_KILL,
+
+	/**
 	 * Renamed from NPC_KILL. net.runelite.api.events.ActorDeath does not
 	 * prove as much as the old name claimed:
 	 * ActorDeath, filtered to actor instanceof NPC, proves only "RuneLite
@@ -370,11 +379,38 @@ public enum EventType
 	STRUCTURED_ACTIVITY_CURRENCY,
 
 	/**
+	 * Time spent inside one round of a structured activity's play area
+	 * (e.g. on the Pest Control island, entry to exit), win or loss. Lets
+	 * an activity's per-hour rates exclude lobby / outpost waiting, which
+	 * the session's own active duration includes when the gap is short.
+	 */
+	STRUCTURED_ACTIVITY_ROUND_TIME,
+
+	/**
+	 * One counted action's total for one round of a structured activity
+	 * (Wintertodt roots fed, kindling fed, braziers lit / repaired,
+	 * pyromancers healed, ...). Bounded: at most one per action kind per
+	 * round, written when the round ends.
+	 */
+	STRUCTURED_ACTIVITY_ACTION,
+
+	/**
 	 * Items PRODUCED by a confirmed production action inside a structured
 	 * activity (Guardians of the Rift runes crafted at its altars: guardian
 	 * essence consumed + runes gained + Runecraft XP). Activity output --
 	 * deliberately NOT loot and never a reward. Session-summary metric only,
 	 * never lifecycle evidence.
 	 */
-	STRUCTURED_ACTIVITY_PRODUCTION
+	STRUCTURED_ACTIVITY_PRODUCTION,
+
+	/**
+	 * A skill companion's bounded progress update for its own SKILLING
+	 * session (first: Mining): resources CAUSALLY produced (TOTAL), this
+	 * session's production positively observed entering the bank (BANKED),
+	 * and time per method -- all since the previous update. Coalesced: about
+	 * one per 30 s of activity plus one per bank deposit, never per item or
+	 * per tick. Session-summary metric only, never lifecycle evidence, never
+	 * loot.
+	 */
+	SKILL_PRODUCTION
 }

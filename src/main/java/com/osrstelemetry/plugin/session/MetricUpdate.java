@@ -54,6 +54,15 @@ final class MetricUpdate
 	private Long currencyGained;
 	/** Which currency currencyGained is for (null = the activity's single currency). */
 	private String currencyKey;
+	/** STRUCTURED_ACTIVITY_ROUND_TIME: one round's in-area milliseconds. */
+	private Long roundMillis;
+	/** STRUCTURED_ACTIVITY_ROUND_TIME: the round was seen from start to end. */
+	private boolean completeRound;
+	/** STRUCTURED_ACTIVITY_ROUND_TIME: the round's playstyle label (History), or null. */
+	private String roundPlaystyle;
+	/** STRUCTURED_ACTIVITY_ACTION: which action, and how many. */
+	private String actionKey;
+	private Long actionCount;
 	/** Produced items (output, never loot) for the activity's own session. */
 	private List<SessionSignal.LootDrop> producedItems;
 	private Integer score;
@@ -65,6 +74,12 @@ final class MetricUpdate
 
 	/** SLAYER_BRACELET_EFFECT: "SLAUGHTER" / "EXPEDITIOUS" -- one proc for the assignment current at referenceTime. */
 	private String slayerBraceletEffect;
+	/** SLAYER_ENCOUNTER_KILL: one actual kill of this exact NPC, and its role, for the assignment current at referenceTime. */
+	private String encounterKillNpc;
+	private String encounterKillRole;
+
+	/** SKILL_PRODUCTION: the companion update, applied only to the SKILLING session of the same skill key. */
+	private SkillProductionUpdate skillProduction;
 
 	private MetricUpdate(
 		String xpSkill,
@@ -101,12 +116,20 @@ final class MetricUpdate
 		copy.activityStatsKey = activityStatsKey;
 		copy.currencyGained = currencyGained;
 		copy.currencyKey = currencyKey;
+		copy.roundMillis = roundMillis;
+		copy.completeRound = completeRound;
+		copy.roundPlaystyle = roundPlaystyle;
+		copy.actionKey = actionKey;
+		copy.actionCount = actionCount;
 		copy.producedItems = producedItems;
 		copy.score = score;
 		copy.scoreCompletionCount = scoreCompletionCount;
 		copy.scoreTrusted = scoreTrusted;
 		copy.scoreUpdate = scoreUpdate;
 		copy.slayerBraceletEffect = slayerBraceletEffect;
+		copy.encounterKillNpc = encounterKillNpc;
+		copy.encounterKillRole = encounterKillRole;
+		copy.skillProduction = skillProduction;
 		return copy;
 	}
 
@@ -183,7 +206,83 @@ final class MetricUpdate
 		return m;
 	}
 
+	/** One round's in-area time for the activity's own session (routed by activityStatsKey). */
+	static MetricUpdate activityRoundTime(String activityKey, long roundMillis)
+	{
+		return activityRoundTime(activityKey, roundMillis, false);
+	}
+
+	static MetricUpdate activityRoundTime(String activityKey, long roundMillis, boolean completeRound)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.activityStatsKey = activityKey;
+		m.roundMillis = roundMillis;
+		m.completeRound = completeRound;
+		return m;
+	}
+
+	static MetricUpdate activityRoundTime(String activityKey, long roundMillis, boolean completeRound, String playstyle)
+	{
+		MetricUpdate m = activityRoundTime(activityKey, roundMillis, completeRound);
+		m.roundPlaystyle = playstyle;
+		return m;
+	}
+
+	String getRoundPlaystyle()
+	{
+		return roundPlaystyle;
+	}
+
+	/** One round's total of one counted action for the activity's own session. */
+	static MetricUpdate activityAction(String activityKey, String action, long count)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.activityStatsKey = activityKey;
+		m.actionKey = action;
+		m.actionCount = count;
+		return m;
+	}
+
+	boolean isCompleteRound()
+	{
+		return completeRound;
+	}
+
+	String getActionKey()
+	{
+		return actionKey;
+	}
+
+	Long getActionCount()
+	{
+		return actionCount;
+	}
+
+	Long getRoundMillis()
+	{
+		return roundMillis;
+	}
+
 	/** Produced items for the activity's own session (routed by activityStatsKey, like the other session stats). */
+	/** A skill companion update for the SKILLING session of {@code update.getSkillKey()} (routed by that key). */
+	static MetricUpdate skillProduction(SkillProductionUpdate update)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.skillProduction = update;
+		return m;
+	}
+
+	SkillProductionUpdate getSkillProduction()
+	{
+		return skillProduction;
+	}
+
+	/** The SKILLING session key a skill companion update belongs to, or null. */
+	String getSkillKey()
+	{
+		return skillProduction == null ? null : skillProduction.getSkillKey();
+	}
+
 	static MetricUpdate activityProduction(String activityKey, List<SessionSignal.LootDrop> items)
 	{
 		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
@@ -264,6 +363,24 @@ final class MetricUpdate
 	String getSlayerBraceletEffect()
 	{
 		return slayerBraceletEffect;
+	}
+
+	static MetricUpdate slayerEncounterKill(String npcName, String role)
+	{
+		MetricUpdate m = new MetricUpdate(null, null, null, null, null, null, null, null, null, null);
+		m.encounterKillNpc = npcName;
+		m.encounterKillRole = role;
+		return m;
+	}
+
+	String getEncounterKillNpc()
+	{
+		return encounterKillNpc;
+	}
+
+	String getEncounterKillRole()
+	{
+		return encounterKillRole;
 	}
 
 	static MetricUpdate slayerProgress(int unitsConsumed, Integer currentRemaining)

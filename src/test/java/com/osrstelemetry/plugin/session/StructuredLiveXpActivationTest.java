@@ -321,9 +321,19 @@ public class StructuredLiveXpActivationTest extends StructuredActivityTestSuppor
 	}
 
 	@Test
-	public void pestControl_activatesFromLiveCombatXp()
+	public void pestControl_islandEntryAlone_activates_liveCombatXpKeepsIt()
 	{
-		activatesOnFirstLiveGain("pest_control", 10536, "ATTACK");
+		coordinator.noteAbsoluteXp("MINING", 100L);
+		coordinator.noteAbsoluteXp("ATTACK", 50_000L);
+		xp("MINING", 200, T0);
+		closeTick(T0.plusSeconds(60 + 6 * 60)); // suspended
+		Instant at = T0.plusSeconds(60 + 7 * 60);
+		onTick(at, enter("pest_control", 10536, at));
+		assertEquals("the island is the game itself: entry starts it", "pest_control", current().getActivityIdentity().getActivityKey());
+		String id = current().getSessionId();
+		coordinator.testRecordLiveXp("ATTACK", 40, 50_040L, tick, at.plusSeconds(2));
+		closeTick(at.plusSeconds(3));
+		assertEquals(id, current().getSessionId());
 	}
 
 	@Test

@@ -165,6 +165,15 @@ public final class EventPayloads
 		private final int masterId;
 	}
 
+	/** See EventType.SLAYER_ENCOUNTER_KILL. role: "TASK", "SUBORDINATE" or "SUPERIOR"; npcId null when unknown. */
+	@Data
+	public static class SlayerEncounterKill
+	{
+		private final String npcName;
+		private final Integer npcId;
+		private final String role;
+	}
+
 	/** See EventType.SLAYER_BRACELET_EFFECT. effect: "SLAUGHTER" or "EXPEDITIOUS". */
 	@Data
 	public static class SlayerBraceletEffect
@@ -447,6 +456,39 @@ public final class EventPayloads
 		private final int balance;
 	}
 
+	/** Backs EventType.STRUCTURED_ACTIVITY_ROUND_TIME: one round's in-area time (milliseconds, from game ticks). */
+	@Data
+	public static class StructuredActivityRoundTime
+	{
+		private final String activityKey;
+		private final long roundMillis;
+		/**
+		 * True when the round was seen from its start to its end (Wintertodt: the
+		 * Avg Round population); null on older events and for activities that do
+		 * not report it (Pest Control's Avg Game comes from its score instead).
+		 */
+		private Boolean completeRound;
+		/**
+		 * Wintertodt: the effective playstyle when the round ended ("Mass • XP",
+		 * "Mass • Points", "Solo • XP", "Solo • Points" or "Auto" while
+		 * unresolved) -- a History label only; null on older events / others.
+		 */
+		private String playstyle;
+	}
+
+	/**
+	 * Backs EventType.STRUCTURED_ACTIVITY_ACTION: how many times the player did
+	 * one counted action during one round (e.g. Wintertodt "roots_fed" 26).
+	 * Emitted once per action kind at round end -- never per action.
+	 */
+	@Data
+	public static class StructuredActivityAction
+	{
+		private final String activityKey;
+		private final String action;
+		private final int count;
+	}
+
 	/** Backs EventType.STRUCTURED_ACTIVITY_PRODUCTION: exact produced quantities of one confirmed action. */
 	@Data
 	public static class StructuredActivityProduction
@@ -470,5 +512,67 @@ public final class EventPayloads
 		private final int itemId;
 		private final String itemName;
 		private final int quantity;
+	}
+
+	/**
+	 * Backs EventType.SKILL_PRODUCTION: one skill companion update since the
+	 * previous one. {@code skill} is the Skill name ("MINING"); {@code method}
+	 * the method current when it was sent (e.g. "amethyst"), or null.
+	 * {@code produced} / {@code banked}: exact quantities (an item id of -1 is
+	 * a resource whose identity the game never stated, e.g. an unnamed gem);
+	 * {@code methodMillis}: training time per method key. Any part may be
+	 * empty; an update with nothing in it is never written.
+	 */
+	@Data
+	public static class SkillProduction
+	{
+		private final String skill;
+		private final String method;
+		private final java.util.List<ProducedItem> produced;
+		private final java.util.List<ProducedItem> banked;
+		private final java.util.Map<String, Long> methodMillis;
+		/**
+		 * ADDED (Skills Phase 3: Agility). Completed CYCLES per method since the
+		 * previous update (Agility: laps per course), never items: laps are not
+		 * production and never touch {@code produced} / {@code banked}. Null for
+		 * skills without cycles (Mining, Fishing) and in every older event.
+		 */
+		private java.util.List<SkillCycle> cycles;
+		/**
+		 * ADDED (Skills Phase 4). Part of {@code produced} that a tool
+		 * transformed the moment it was produced, so it never reached the
+		 * inventory and can never be banked. Always a SUBSET of produced,
+		 * never extra production. Null when none and in every older event.
+		 */
+		private java.util.List<ProducedItem> autoTransformed;
+		/**
+		 * ADDED (Skills Phase 4). Contextual occurrences since the previous
+		 * update that are neither production nor cycles (contextual events the
+		 * player took part in, per kind key -> count). Null when none and in
+		 * every older event.
+		 */
+		private java.util.Map<String, Long> occurrences;
+		/**
+		 * ADDED (Skills Phase 5). Session-owned INPUTS a transformation used
+		 * up since the previous update (e.g. essence crafted into runes),
+		 * never production. Null when none and in every older event.
+		 */
+		private java.util.List<ProducedItem> consumed;
+	}
+
+	/**
+	 * One method's completed cycles in a skill companion update (Agility: a
+	 * course's laps): how many valid, fully observed cycles, their summed and
+	 * best duration, and reliably-evidenced failures. Bounded: one entry per
+	 * method per update, never one per lap.
+	 */
+	@Data
+	public static class SkillCycle
+	{
+		private final String method;
+		private final long completed;
+		private final long totalMillis;
+		private final long bestMillis;
+		private final long failures;
 	}
 }

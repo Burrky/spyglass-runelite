@@ -270,7 +270,16 @@ public final class CurrentSessionSnapshot
 			sessionSnapshot.getActivityStats(),
 			buildProducedItemViews(sessionSnapshot.getProducedItems()));
 		built.slayerCurrentTask = buildSlayerCurrentTask(sessionSnapshot, durationMillis);
+		built.skillStats = sessionSnapshot.getSkillStats();
 		return built;
+	}
+
+	/** Skill companion stats (banked, method time) of this session, a private copy; null when none. */
+	private com.osrstelemetry.plugin.session.SessionAggregates.SkillSessionStats skillStats;
+
+	public com.osrstelemetry.plugin.session.SessionAggregates.SkillSessionStats getSkillStats()
+	{
+		return skillStats;
 	}
 
 	/** Smart Slayer CURRENT TASK facts; null for a non-Slayer / ledger-less session. Not part of equality. */
@@ -302,12 +311,30 @@ public final class CurrentSessionSnapshot
 		SessionAggregates.SlayerAssignmentRecord r = ledger.get(ledger.size() - 1);
 		Integer remaining = r.getLatestRemaining();
 		Long active = taskActiveMillis(r, sessionDurationMillis);
-		Integer kills = r.observedKills();
-		return new SlayerCurrentTaskView(r.getTaskName(), remaining,
+		// ACTUAL kills (owned encounter deaths, floored by the unit-derived kills) -- never task units.
+		Integer kills = toInt(r.actualKills());
+		SlayerCurrentTaskView view = new SlayerCurrentTaskView(r.getTaskName(), remaining,
 			SlayerDashboard.progressPercent(remaining, SlayerDashboard.assignmentSize(r)),
 			kills, active == null ? null : SlayerDashboard.perHour(kills, active),
 			r.getSlaughterProcs(), r.getExpeditiousProcs(), r.getMasterId(),
 			aggregateLootEntries(r.getItems()), SlayerDashboard.looksLikeTuraelBoosting(ledger));
+		view.superiorsThisTask = r.superiorKills();
+		Long session = null;
+		for (SessionAggregates.SlayerAssignmentRecord a : ledger)
+		{
+			Long n = a.superiorKills();
+			if (n != null)
+			{
+				session = (session == null ? 0L : session) + n;
+			}
+		}
+		view.superiorsThisSession = session;
+		return view;
+	}
+
+	private static Integer toInt(Long v)
+	{
+		return v == null ? null : (int) Math.min(Integer.MAX_VALUE, v);
 	}
 
 	/**
@@ -326,6 +353,19 @@ public final class CurrentSessionSnapshot
 		private final Integer masterId;
 		private final List<LootEntry> lootEntries;
 		private final boolean turaelBoosting;
+		/** Superior creatures killed on this task / in the whole Slayer session; null = not tracked. */
+		private Long superiorsThisTask;
+		private Long superiorsThisSession;
+
+		public Long getSuperiorsThisTask()
+		{
+			return superiorsThisTask;
+		}
+
+		public Long getSuperiorsThisSession()
+		{
+			return superiorsThisSession;
+		}
 
 		SlayerCurrentTaskView(String taskName, Integer remaining, Integer progressPercent, Integer kills, Long killsPerHour,
 			Integer slaughterProcs, Integer expeditiousProcs, Integer masterId, List<LootEntry> lootEntries, boolean turaelBoosting)
@@ -363,7 +403,7 @@ public final class CurrentSessionSnapshot
 			return progressPercent;
 		}
 
-		/** Observed kills (see SlayerAssignmentRecord#observedKills); null when not trustworthy. */
+		/** ACTUAL kills (see SlayerAssignmentRecord#actualKills -- never task units); null when not known. */
 		public Integer getKills()
 		{
 			return kills;
@@ -490,6 +530,18 @@ public final class CurrentSessionSnapshot
 		return activityStats == null ? 0L : activityStats.getCurrencyGained();
 	}
 
+	/** In-game round time this session (Pest Control: island time only, so lobby waiting never counts). */
+	public long getRoundMillis()
+	{
+		return activityStats == null ? 0L : activityStats.getRoundMillis();
+	}
+
+	/** Rounds whose time is in {@link #getRoundMillis()}. */
+	public int getRoundsTimed()
+	{
+		return activityStats == null ? 0 : activityStats.getRoundsTimed();
+	}
+
 	/** Completed games with a trusted final score (the Avg/Best population). */
 	public int getScoredGames()
 	{
@@ -506,6 +558,30 @@ public final class CurrentSessionSnapshot
 	public Integer getBestScore()
 	{
 		return activityStats == null ? null : activityStats.getBestScore();
+	}
+
+	/** Sum of the trusted final scores (Wintertodt: points of subdued rounds). */
+	public long getScoreTotal()
+	{
+		return activityStats == null ? 0L : activityStats.getScoreTotal();
+	}
+
+	/** Rounds seen from start to end this session, and their total time (Avg Round). */
+	public int getCompleteRounds()
+	{
+		return activityStats == null ? 0 : activityStats.getCompleteRounds();
+	}
+
+	public long getCompleteRoundMillis()
+	{
+		return activityStats == null ? 0L : activityStats.getCompleteRoundMillis();
+	}
+
+	/** Counted actions this session (action key -> total); empty when none. */
+	public java.util.Map<String, Long> getActionCounts()
+	{
+		return activityStats == null || activityStats.getActionCounts() == null
+			? java.util.Collections.<String, Long>emptyMap() : activityStats.getActionCounts();
 	}
 
 	/**
@@ -855,7 +931,10 @@ public final class CurrentSessionSnapshot
 			SlayerAssignmentView view = new SlayerAssignmentView(a.getOrdinal(), a.getTaskName(), a.getLatestRemaining(),
 				i == ledger.size() - 1, aggregateLootEntries(a.getItems()),
 				a.observedUnitsCompleted(), a.getInitialAmount(), a.getEndReason(), a.isBootstrapped());
-			view.kills = a.observedKills();
+			view.kills = toInt(a.actualKills());
+			view.killsByNpc = a.getKillsByNpc();
+			view.superiorsByNpc = a.getSuperiorsByNpc();
+			view.breakdownComplete = a.breakdownComplete();
 			view.masterId = a.getMasterId();
 			view.activeMillis = a.getActiveDurationStartMillis() != null && a.getActiveDurationEndMillis() != null
 				? Math.max(0L, a.getActiveDurationEndMillis() - a.getActiveDurationStartMillis()) : null;
@@ -889,11 +968,32 @@ public final class CurrentSessionSnapshot
 		private Integer kills;
 		private Integer masterId;
 		private Long activeMillis;
+		private Map<String, Long> killsByNpc;
+		private Map<String, Long> superiorsByNpc;
+		private boolean breakdownComplete;
 
-		/** Observed kills for this instance; null when not trustworthy (see SlayerAssignmentRecord#observedKills). */
+		/** ACTUAL kills for this instance (never task units); null when not known (see SlayerAssignmentRecord#actualKills). */
 		public Integer getKills()
 		{
 			return kills;
+		}
+
+		/** Owned encounter deaths by exact NPC; null = not tracked (older record). */
+		public Map<String, Long> getKillsByNpc()
+		{
+			return killsByNpc;
+		}
+
+		/** Superior creatures by exact NPC; null = not tracked. */
+		public Map<String, Long> getSuperiorsByNpc()
+		{
+			return superiorsByNpc;
+		}
+
+		/** The per-NPC breakdown accounts for every actual kill. */
+		public boolean isBreakdownComplete()
+		{
+			return breakdownComplete;
 		}
 
 		public Integer getMasterId()

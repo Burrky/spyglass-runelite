@@ -129,11 +129,24 @@ public final class StructuredActivityRegistry
 	{
 		private final StructuredActivityDefinition definition;
 		private final Integer count;
+		private final Integer amount;
 
 		ChatCompletion(StructuredActivityDefinition definition, Integer count)
 		{
+			this(definition, count, null);
+		}
+
+		ChatCompletion(StructuredActivityDefinition definition, Integer count, Integer amount)
+		{
 			this.definition = definition;
 			this.count = count;
+			this.amount = amount;
+		}
+
+		/** The currency award the same message carries (named group {@code amount}), or null. */
+		public Integer getAmount()
+		{
+			return amount;
 		}
 
 		public StructuredActivityDefinition getDefinition()
@@ -150,27 +163,66 @@ public final class StructuredActivityRegistry
 	/** Runs each activity's own isolated completion pattern against a tag-free game message. */
 	public ChatCompletion matchCompletionChat(String message)
 	{
+		return matchCompletion(message, false);
+	}
+
+	/**
+	 * The same, for an NPC dialogue line (ChatMessageType.DIALOG, "Name|text"
+	 * with the speaker already removed): only activities that declare
+	 * {@code completionInDialogue} are considered.
+	 */
+	public ChatCompletion matchCompletionDialogue(String text)
+	{
+		return matchCompletion(text, true);
+	}
+
+	private ChatCompletion matchCompletion(String message, boolean dialogue)
+	{
 		if (message == null)
 		{
 			return null;
 		}
 		for (StructuredActivityDefinition d : definitions)
 		{
-			if (d.getCompletionChatPattern() == null)
+			if (d.getCompletionChatPattern() == null || (dialogue && !d.isCompletionInDialogue()))
 			{
 				continue;
 			}
 			Matcher m = d.getCompletionChatPattern().matcher(message);
 			if (m.find())
 			{
+				String regex = d.getCompletionChatPattern().pattern();
+				boolean namedCount = regex.contains("(?<count>");
+				boolean namedAmount = regex.contains("(?<amount>");
 				Integer count = null;
-				if (m.groupCount() >= 1 && m.group(1) != null)
+				if (namedCount)
 				{
-					count = Integer.parseInt(m.group(1).replace(",", ""));
+					count = parseNumber(m.group("count"));
 				}
-				return new ChatCompletion(d, count);
+				else if (!namedAmount && m.groupCount() >= 1)
+				{
+					count = parseNumber(m.group(1));
+				}
+				Integer amount = namedAmount ? parseNumber(m.group("amount")) : null;
+				return new ChatCompletion(d, count, amount);
 			}
 		}
 		return null;
+	}
+
+	private static Integer parseNumber(String digits)
+	{
+		if (digits == null)
+		{
+			return null;
+		}
+		try
+		{
+			return Integer.parseInt(digits.replace(",", ""));
+		}
+		catch (NumberFormatException e)
+		{
+			return null;
+		}
 	}
 }

@@ -339,6 +339,42 @@ final class HistoryView extends JPanel
 		{
 			statsLine.fact(CompletionMetricText.countText(completionLabel, entry.getActivityCompletionCount()));
 		}
+		com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill = entry.getActivityIdentity().getActivityType()
+			== com.osrstelemetry.plugin.session.ActivityType.SKILLING
+			? com.osrstelemetry.plugin.skills.SkillCompanions.forSkillKey(entry.getActivityIdentity().getActivityKey()) : null;
+		if (skill != null && entry.getSkillRowFacts() != null)
+		{
+			// Phase 6: the skill's own facts ("<method> • 358 actions • 1,086 units"); XP stays generic below.
+			for (String fact : entry.getSkillRowFacts())
+			{
+				statsLine.fact(fact);
+			}
+		}
+		else if (skill != null)
+		{
+			// Skill companion: the main method, then what it produced.
+			String method = skill.methodLabel(entry.getSkillPrimaryMethod());
+			if (method != null)
+			{
+				statsLine.fact(method);
+			}
+			if (skill.cycleNoun(true) != null)
+			{
+				// Cycle skills (Agility): full laps, never the reward count.
+				if (entry.getSkillCycleTotal() > 0)
+				{
+					statsLine.fact(formatNumber(entry.getSkillCycleTotal()) + " " + skill.cycleNoun(entry.getSkillCycleTotal() != 1));
+				}
+				if (skill.historyShowsProducedWithCycles() && entry.getSkillProducedTotal() > 0)
+				{
+					statsLine.fact(formatNumber(entry.getSkillProducedTotal()) + " " + skill.producedVerb());
+				}
+			}
+			else if (entry.getSkillProducedTotal() > 0)
+			{
+				statsLine.fact(formatNumber(entry.getSkillProducedTotal()) + " " + skill.producedVerb());
+			}
+		}
 		if (entry.getTotalXpGained() > 0)
 		{
 			statsLine.fact(formatNumber(entry.getTotalXpGained()) + " XP");

@@ -162,6 +162,11 @@ final class SessionEventMapper
 					observedAt, p.getTaskName(), p.getTaskLocation(), p.getTaskUnitsConsumed(), p.getCurrentRemaining(),
 					p.getInitialAmount() > 0 ? p.getInitialAmount() : null, p.getMasterId() > 0 ? p.getMasterId() : null);
 			}
+			case SLAYER_ENCOUNTER_KILL:
+			{
+				EventPayloads.SlayerEncounterKill p = (EventPayloads.SlayerEncounterKill) payload;
+				return SessionSignal.slayerEncounterKill(observedAt, p.getNpcName(), p.getRole());
+			}
 			case SLAYER_BRACELET_EFFECT:
 			{
 				EventPayloads.SlayerBraceletEffect p = (EventPayloads.SlayerBraceletEffect) payload;
@@ -231,6 +236,34 @@ final class SessionEventMapper
 				return p.getGained() > 0
 					? SessionSignal.structuredActivityCurrency(observedAt, p.getActivityKey(), p.getCurrency(), p.getGained())
 					: null;
+			}
+			case STRUCTURED_ACTIVITY_ROUND_TIME:
+			{
+				EventPayloads.StructuredActivityRoundTime p = (EventPayloads.StructuredActivityRoundTime) payload;
+				return p.getRoundMillis() > 0
+					? SessionSignal.structuredActivityRoundTime(observedAt, p.getActivityKey(), p.getRoundMillis(),
+						Boolean.TRUE.equals(p.getCompleteRound()), p.getPlaystyle())
+					: null;
+			}
+			case STRUCTURED_ACTIVITY_ACTION:
+			{
+				EventPayloads.StructuredActivityAction p = (EventPayloads.StructuredActivityAction) payload;
+				return p.getCount() > 0 && p.getAction() != null
+					? SessionSignal.structuredActivityAction(observedAt, p.getActivityKey(), p.getAction(), p.getCount())
+					: null;
+			}
+			case SKILL_PRODUCTION:
+			{
+				EventPayloads.SkillProduction p = (EventPayloads.SkillProduction) payload;
+				if (p.getSkill() == null)
+				{
+					return null;
+				}
+				SkillProductionUpdate update = new SkillProductionUpdate(p.getSkill(), p.getMethod(), lootDrops(p.getProduced()),
+					lootDrops(p.getBanked()), p.getMethodMillis()).withCycles(cycles(p.getCycles()))
+					.withExtras(lootDrops(p.getAutoTransformed()), occurrences(p.getOccurrences()))
+					.withConsumed(lootDrops(p.getConsumed()));
+				return update.isEmpty() ? null : SessionSignal.skillProduction(observedAt, update);
 			}
 			case STRUCTURED_ACTIVITY_PRODUCTION:
 			{
@@ -320,5 +353,64 @@ final class SessionEventMapper
 		{
 			return null;
 		}
+	}
+
+	/** Positive-quantity items as LootDrops; an id of -1 or less is a resource with no game-stated identity (id null). */
+	private static List<SessionSignal.LootDrop> lootDrops(List<EventPayloads.ProducedItem> items)
+	{
+		List<SessionSignal.LootDrop> out = new ArrayList<>();
+		if (items == null)
+		{
+			return out;
+		}
+		for (EventPayloads.ProducedItem item : items)
+		{
+			if (item != null && item.getQuantity() > 0 && item.getItemName() != null)
+			{
+				out.add(new SessionSignal.LootDrop(item.getItemId() < 0 ? null : item.getItemId(), item.getItemName(), item.getQuantity()));
+			}
+		}
+		return out;
+	}
+
+	/** SKILL_PRODUCTION's contextual occurrences; null keys and non-positive counts ignored. */
+	static java.util.Map<String, Long> occurrences(java.util.Map<String, Long> map)
+	{
+		java.util.Map<String, Long> out = new java.util.LinkedHashMap<>();
+		if (map != null)
+		{
+			for (java.util.Map.Entry<String, Long> e : map.entrySet())
+			{
+				if (e.getKey() != null && e.getValue() != null && e.getValue() > 0)
+				{
+					out.put(e.getKey(), e.getValue());
+				}
+			}
+		}
+		return out;
+	}
+
+	/** SKILL_PRODUCTION's completed cycles per method (Agility laps); null / empty entries ignored. */
+	static java.util.Map<String, SessionAggregates.CycleAggregate> cycles(List<EventPayloads.SkillCycle> list)
+	{
+		java.util.Map<String, SessionAggregates.CycleAggregate> out = new java.util.LinkedHashMap<>();
+		if (list == null)
+		{
+			return out;
+		}
+		for (EventPayloads.SkillCycle c : list)
+		{
+			if (c == null || c.getMethod() == null || (c.getCompleted() <= 0 && c.getFailures() <= 0))
+			{
+				continue;
+			}
+			SessionAggregates.CycleAggregate a = new SessionAggregates.CycleAggregate();
+			a.setCount(Math.max(0L, c.getCompleted()));
+			a.setTotalMillis(Math.max(0L, c.getTotalMillis()));
+			a.setBestMillis(Math.max(0L, c.getBestMillis()));
+			a.setFailures(Math.max(0L, c.getFailures()));
+			out.put(c.getMethod(), a);
+		}
+		return out;
 	}
 }

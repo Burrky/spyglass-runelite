@@ -168,6 +168,17 @@ public final class ActivitySignalClassifier
 				return classifyRawCombatXpObserved(signal, current, context);
 			case SLAYER_TASK_PROGRESS:
 				return classifySlayerTaskProgress(signal, current, context);
+			case SLAYER_ENCOUNTER_KILL:
+				// An ACTUAL kill of the current Slayer assignment's encounter: an annotation only (never
+				// lifecycle evidence, never a task unit, never credited to a non-Slayer session).
+				if (current != null && current.getState() != SessionState.FINALIZED
+					&& current.getActivityIdentity().getActivityType() == ActivityType.SLAYER
+					&& signal.getEncounterKillNpc() != null && signal.getEncounterKillRole() != null)
+				{
+					return SignalClassification.metricOnly(MetricUpdate.slayerEncounterKill(signal.getEncounterKillNpc(),
+						signal.getEncounterKillRole()).withReferenceTime(signal.getObservedAt()));
+				}
+				return SignalClassification.ignore();
 			case SLAYER_BRACELET_EFFECT:
 				// Annotation of the current Slayer assignment only: never lifecycle
 				// evidence, never credited to a non-Slayer session.
@@ -214,6 +225,14 @@ public final class ActivitySignalClassifier
 				return SignalClassification.ignore();
 			case STORAGE_SNAPSHOT:
 				return SignalClassification.ignore();
+			case SKILL_PRODUCTION:
+				// Skill companion production / banked / method time: metric-only, and
+				// SessionRuntimeCoordinator.applyMetrics() lets it reach ONLY the
+				// SKILLING session of the same skill. Never lifecycle evidence --
+				// the skill's own XP stays the only thing that starts or keeps it.
+				return signal.getSkillProduction() == null
+					? SignalClassification.ignore()
+					: SignalClassification.metricOnly(MetricUpdate.skillProduction(signal.getSkillProduction()));
 			default:
 				return SignalClassification.ignore();
 		}

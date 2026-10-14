@@ -11,6 +11,7 @@ import com.osrstelemetry.plugin.collectors.KnownBossRegistry;
 import com.osrstelemetry.plugin.collectors.LoadoutArchiveCollector;
 import com.osrstelemetry.plugin.collectors.LootCollector;
 import com.osrstelemetry.plugin.collectors.NpcDeathCollector;
+import com.osrstelemetry.plugin.collectors.SlayerEncounterKillCollector;
 import com.osrstelemetry.plugin.collectors.NpcInteractionTargetCollector;
 import com.osrstelemetry.plugin.collectors.PotionStorageCollector;
 import com.osrstelemetry.plugin.collectors.QuestCollector;
@@ -23,7 +24,27 @@ import com.osrstelemetry.plugin.events.EventLedger;
 import com.osrstelemetry.plugin.history.HistoryCoordinator;
 import com.osrstelemetry.plugin.loottracker.LootTrackerCoordinator;
 import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
+import com.osrstelemetry.plugin.pestcontrol.PestControlGoal;
+import com.osrstelemetry.plugin.pestcontrol.PestControlGoalPreferences;
+import com.osrstelemetry.plugin.pestcontrol.PestControlPanelSource;
+import com.osrstelemetry.plugin.pestcontrol.VoidOwnership;
+import com.osrstelemetry.plugin.wintertodt.WintertodtGoal;
+import com.osrstelemetry.plugin.wintertodt.WintertodtPanelSource;
+import com.osrstelemetry.plugin.wintertodt.WintertodtPlaystyle;
+import com.osrstelemetry.plugin.wintertodt.WintertodtPreferences;
 import com.osrstelemetry.plugin.session.SessionRuntimeCoordinator;
+import com.osrstelemetry.plugin.skills.SkillCompanionDefinition;
+import com.osrstelemetry.plugin.skills.SkillCompanionPanelSource;
+import com.osrstelemetry.plugin.skills.SkillCompanionView;
+import com.osrstelemetry.plugin.skills.SkillGoal;
+import com.osrstelemetry.plugin.skills.SkillGoalPreferences;
+import com.osrstelemetry.plugin.skills.SkillCompanionCollector;
+import com.osrstelemetry.plugin.skills.agility.AgilityCompanionCollector;
+import com.osrstelemetry.plugin.skills.woodcutting.WoodcuttingCompanionCollector;
+import com.osrstelemetry.plugin.skills.runecraft.RunecraftCompanionCollector;
+import com.osrstelemetry.plugin.skills.herblore.HerbloreCompanionCollector;
+import com.osrstelemetry.plugin.skills.fishing.FishingCompanionCollector;
+import com.osrstelemetry.plugin.skills.mining.MiningCompanionCollector;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
 import com.osrstelemetry.plugin.storage.TelemetryPaths;
 import com.osrstelemetry.plugin.ui.OsrsTelemetryPanel;
@@ -174,6 +195,11 @@ public class OsrsTelemetryPlugin extends Plugin
 	@Inject
 	private NpcDeathCollector npcDeathCollector;
 
+	// Smart Slayer ACTUAL kills: owned deaths of the active task's encounter (targets, subordinates,
+	// superiors) -- never task units. See SlayerEncounterKillCollector.
+	@Inject
+	private SlayerEncounterKillCollector slayerEncounterKillCollector;
+
 	// ADDED (Task 5 — generic first-boss encounter context pass). See
 	// EventType.BOSS_ACTIVITY_CONTEXT's and BossActivityContextCollector's
 	// own class javadoc.
@@ -229,6 +255,54 @@ public class OsrsTelemetryPlugin extends Plugin
 	// split.
 	@Inject
 	private LootTrackerPreferences lootTrackerPreferences;
+
+	// Pest Control goal planner: account-scoped PLANNING state (the selected
+	// goal and the last stated commendation balance), loaded per account in
+	// handleLogin(). Never telemetry -- see its class javadoc.
+	@Inject
+	private PestControlGoalPreferences pestControlGoalPreferences;
+
+	// Wintertodt companion: account-scoped PLANNING state (playstyle + goal),
+	// loaded per account in handleLogin(). Never telemetry.
+	@Inject
+	private WintertodtPreferences wintertodtPreferences;
+
+	// Skill companions (first: Mining). The collector turns native Mining
+	// signals into causal production / banked / method telemetry for the
+	// SKILLING/mining session; the preferences hold the account-scoped
+	// TARGET (planning state, never telemetry), loaded per account in
+	// handleLogin().
+	@Inject
+	private MiningCompanionCollector miningCompanionCollector;
+
+	// ADDED (Skills Phase 2: Fishing). The second companion on the SAME
+	// shared chassis (SkillCompanionCollector): SKILLING/fishing only.
+	@Inject
+	private FishingCompanionCollector fishingCompanionCollector;
+
+	// ADDED (Skills Phase 3: Agility). Courses, laps and course rewards on the
+	// same shared chassis: SKILLING/agility only.
+	@Inject
+	private AgilityCompanionCollector agilityCompanionCollector;
+
+	// ADDED (Skills Phase 4: Woodcutting). Trees, logs (infernal auto-burns
+	// included), the log basket, bird nests, anima-infused bark, leaves and
+	// Forestry events as context of the SKILLING/woodcutting session.
+	@Inject
+	private WoodcuttingCompanionCollector woodcuttingCompanionCollector;
+
+	// ADDED (Skills Phase 5: Runecraft). Essence in, runes out, trips and
+	// pouches on the same shared chassis: SKILLING/runecraft only (never GotR).
+	@Inject
+	private RunecraftCompanionCollector runecraftCompanionCollector;
+
+	// Herblore companion (Skills Phase 6: Herblore). Recipes, doses and Potion Storage on
+	// the same shared chassis: SKILLING/herblore only (never Mastering Mixology).
+	@Inject
+	private HerbloreCompanionCollector herbloreCompanionCollector;
+
+	@Inject
+	private SkillGoalPreferences skillGoalPreferences;
 
 	// ADDED (Spyglass History implementation pass, Checkpoint 3). Own
 	// start()/shutdown()/ensureAccountLoaded() lifecycle, mirroring
@@ -358,6 +432,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		eventBus.register(serverNpcLootCollector);
 		eventBus.register(potionStorageCollector);
 		eventBus.register(npcDeathCollector);
+		eventBus.register(slayerEncounterKillCollector);
 		eventBus.register(bossActivityContextCollector);
 		eventBus.register(npcInteractionTargetCollector);
 		// The collector survives a disable/enable: a reward claim armed
@@ -366,6 +441,18 @@ public class OsrsTelemetryPlugin extends Plugin
 		// leaving an activity while disabled still produces the exit event.)
 		structuredActivityCollector.disarmPendingClaim();
 		eventBus.register(structuredActivityCollector);
+		miningCompanionCollector.startUp();
+		eventBus.register(miningCompanionCollector);
+		fishingCompanionCollector.startUp();
+		eventBus.register(fishingCompanionCollector);
+		agilityCompanionCollector.startUp();
+		eventBus.register(agilityCompanionCollector);
+		woodcuttingCompanionCollector.startUp();
+		eventBus.register(woodcuttingCompanionCollector);
+		runecraftCompanionCollector.startUp();
+		herbloreCompanionCollector.startUp();
+		eventBus.register(runecraftCompanionCollector);
+		eventBus.register(herbloreCompanionCollector);
 		eventBus.register(sessionRuntimeCoordinator);
 
 		// ADDED (live session-runtime wiring pass). Paired with
@@ -434,7 +521,128 @@ public class OsrsTelemetryPlugin extends Plugin
 		// GotR Points · XP: an in-panel choice remembered under its own key (never a Settings item).
 		panel.attachGotrStrategy(() -> configManager.getConfiguration("osrstelemetry", "gotrStrategy", com.osrstelemetry.plugin.GotrStrategy.class),
 			strategy -> configManager.setConfiguration("osrstelemetry", "gotrStrategy", strategy));
+		panel.attachPestControl(new PestControlPanelSource()
+		{
+			@Override
+			public com.osrstelemetry.plugin.activity.PestControlGameState game()
+			{
+				return structuredActivityCollector.getPestControlGame();
+			}
+
+			@Override
+			public Integer balance()
+			{
+				return structuredActivityCollector.getPestBalance();
+			}
+
+			@Override
+			public VoidOwnership.Snapshot ownership()
+			{
+				return structuredActivityCollector.getVoidOwnership().getSnapshot();
+			}
+
+			@Override
+			public Integer skillXp(net.runelite.api.Skill skill)
+			{
+				return structuredActivityCollector.pestSkillXp(skill);
+			}
+
+			@Override
+			public PestControlGoal goal()
+			{
+				return pestControlGoalPreferences.getGoal();
+			}
+
+			@Override
+			public void setGoal(PestControlGoal goal)
+			{
+				pestControlGoalPreferences.setGoal(goal);
+			}
+		});
+		structuredActivityCollector.setPestBalanceListener(pestControlGoalPreferences::onBalanceStated);
+		structuredActivityCollector.setWintertodtPlaystyleLabel(() -> WintertodtPlaystyle.label(wintertodtPreferences.getMethod(),
+			wintertodtPreferences.getFocus()));
+		panel.attachWintertodt(new WintertodtPanelSource()
+		{
+			@Override
+			public com.osrstelemetry.plugin.activity.WintertodtState state()
+			{
+				return structuredActivityCollector.getWintertodtState();
+			}
+
+			@Override
+			public Integer skillXp(net.runelite.api.Skill skill)
+			{
+				return structuredActivityCollector.wintertodtSkillXp(skill);
+			}
+
+			@Override
+			public java.util.Set<com.osrstelemetry.plugin.wintertodt.WintertodtTools> tools()
+			{
+				return structuredActivityCollector.getWintertodtTools();
+			}
+
+			@Override
+			public Location location()
+			{
+				return structuredActivityCollector.getWintertodtLocation();
+			}
+
+			@Override
+			public Integer cartRewards()
+			{
+				return structuredActivityCollector.getWintertodtCartRewards();
+			}
+
+			@Override
+			public WintertodtGoal goal()
+			{
+				return wintertodtPreferences.getGoal();
+			}
+
+			@Override
+			public void setGoal(WintertodtGoal goal)
+			{
+				wintertodtPreferences.setGoal(goal);
+			}
+
+			@Override
+			public WintertodtPlaystyle.Method method()
+			{
+				return wintertodtPreferences.getMethod();
+			}
+
+			@Override
+			public WintertodtPlaystyle.Focus focus()
+			{
+				return wintertodtPreferences.getFocus();
+			}
+
+			@Override
+			public void setMethod(WintertodtPlaystyle.Method method)
+			{
+				wintertodtPreferences.setMethod(method);
+			}
+
+			@Override
+			public void setFocus(WintertodtPlaystyle.Focus focus)
+			{
+				wintertodtPreferences.setFocus(focus);
+			}
+
+			@Override
+			public void resolveAuto(WintertodtPlaystyle.Method method, WintertodtPlaystyle.Focus focus)
+			{
+				wintertodtPreferences.resolveAuto(method, focus);
+			}
+		});
 		structuredActivityCollector.setProgressListener(panel::onActivityProgressChanged);
+		attachSkillCompanion(miningCompanionCollector);
+		attachSkillCompanion(fishingCompanionCollector);
+		attachSkillCompanion(agilityCompanionCollector);
+		attachSkillCompanion(woodcuttingCompanionCollector);
+		attachSkillCompanion(runecraftCompanionCollector);
+		attachSkillCompanion(herbloreCompanionCollector);
 
 		// REPLACED (approved spyglass sidebar icon pass). The approved
 		// gold/blue spyglass artwork the user supplied, cropped to its own
@@ -458,6 +666,61 @@ public class OsrsTelemetryPlugin extends Plugin
 		clientToolbar.addNavigation(navButton);
 	}
 
+	/**
+	 * One skill companion (Mining, Fishing) in Current Session: its live view,
+	 * its own skill's TARGET (planning state, per skill), its XP and the bank
+	 * view -- the same wiring for every companion.
+	 */
+	private void attachSkillCompanion(SkillCompanionCollector collector)
+	{
+		String skillKey = collector.getDefinition().getSkillKey();
+		panel.attachSkillCompanion(new SkillCompanionPanelSource()
+		{
+			@Override
+			public SkillCompanionDefinition definition()
+			{
+				return collector.getDefinition();
+			}
+
+			@Override
+			public SkillCompanionView view()
+			{
+				return collector.getView();
+			}
+
+			@Override
+			public SkillGoal goal()
+			{
+				return skillGoalPreferences.getGoal(skillKey);
+			}
+
+			@Override
+			public void setGoal(SkillGoal goal)
+			{
+				skillGoalPreferences.setGoal(skillKey, goal);
+			}
+
+			@Override
+			public Integer skillXp()
+			{
+				return collector.currentXp();
+			}
+
+			@Override
+			public Long bankQuantity(int itemId)
+			{
+				return collector.bankQuantity(itemId);
+			}
+
+			@Override
+			public com.osrstelemetry.plugin.skills.SkillExternalStock externalStock(com.osrstelemetry.plugin.skills.SkillResource resource)
+			{
+				return collector.externalStock(resource);
+			}
+		});
+		collector.setProgressListener(panel::onActivityProgressChanged);
+	}
+
 	@Override
 	protected void shutDown()
 	{
@@ -476,9 +739,24 @@ public class OsrsTelemetryPlugin extends Plugin
 		eventBus.unregister(serverNpcLootCollector);
 		eventBus.unregister(potionStorageCollector);
 		eventBus.unregister(npcDeathCollector);
+		eventBus.unregister(slayerEncounterKillCollector);
 		eventBus.unregister(bossActivityContextCollector);
 		eventBus.unregister(npcInteractionTargetCollector);
 		eventBus.unregister(structuredActivityCollector);
+		eventBus.unregister(miningCompanionCollector);
+		eventBus.unregister(fishingCompanionCollector);
+		eventBus.unregister(agilityCompanionCollector);
+		eventBus.unregister(woodcuttingCompanionCollector);
+		eventBus.unregister(runecraftCompanionCollector);
+		eventBus.unregister(herbloreCompanionCollector);
+		// Whatever the skill companions have not sent yet reaches the session
+		// before the session runtime flushes and shuts down below.
+		miningCompanionCollector.shutDown();
+		fishingCompanionCollector.shutDown();
+		agilityCompanionCollector.shutDown();
+		woodcuttingCompanionCollector.shutDown();
+		runecraftCompanionCollector.shutDown();
+		herbloreCompanionCollector.shutDown();
 		// sessionRuntimeCoordinator is deliberately NOT unregistered here
 		// -- see the comment at its actual unregistration point below,
 		// right before store.shutdown()/eventLedger.shutdown(), for why.
@@ -570,6 +848,14 @@ public class OsrsTelemetryPlugin extends Plugin
 		// Swing/RuneLite-UI calls -- no ClientThread marshalling needed,
 		// unlike the Client-touching work above.
 		structuredActivityCollector.setProgressListener(null);
+		structuredActivityCollector.setPestBalanceListener(null);
+		structuredActivityCollector.setWintertodtPlaystyleLabel(null);
+		miningCompanionCollector.setProgressListener(null);
+		fishingCompanionCollector.setProgressListener(null);
+		agilityCompanionCollector.setProgressListener(null);
+		woodcuttingCompanionCollector.setProgressListener(null);
+		runecraftCompanionCollector.setProgressListener(null);
+		herbloreCompanionCollector.setProgressListener(null);
 		if (panel != null)
 		{
 			panel.shutdown();
@@ -598,6 +884,15 @@ public class OsrsTelemetryPlugin extends Plugin
 			// safe (unchanged from before this pass).
 			startupHydrationGate.supersede();
 			handleLogin();
+		}
+	}
+
+	/** The bank's Void pieces from Spyglass's own bank.json, unless the bank was already seen this login. */
+	private void seedVoidBankOwnership(long accountHash)
+	{
+		if (!structuredActivityCollector.getVoidOwnership().getSnapshot().isBankKnown())
+		{
+			structuredActivityCollector.seedBankOwnership(VoidOwnership.savedBankItems(store, accountHash));
 		}
 	}
 
@@ -665,6 +960,12 @@ public class OsrsTelemetryPlugin extends Plugin
 			bossActivityContextCollector.resetForAccountSwitch(previousAccountHash);
 			npcInteractionTargetCollector.resetForAccountSwitch(previousAccountHash);
 			structuredActivityCollector.resetForAccountSwitch();
+			miningCompanionCollector.resetForAccountSwitch();
+			fishingCompanionCollector.resetForAccountSwitch();
+			agilityCompanionCollector.resetForAccountSwitch();
+			woodcuttingCompanionCollector.resetForAccountSwitch();
+			runecraftCompanionCollector.resetForAccountSwitch();
+			herbloreCompanionCollector.resetForAccountSwitch();
 			eventLedger.startNewSession();
 		}
 
@@ -692,6 +993,16 @@ public class OsrsTelemetryPlugin extends Plugin
 		// scoped to Slayer only; the other collectors' account-switch-only
 		// resets above are unaffected.
 		slayerCollector.resetForAccountSwitch();
+
+		// Pest Control planning state for this account (after the real-switch
+		// reset above): the goal, the last stated commendation balance until the
+		// game states it again, and the bank's Void pieces as Spyglass last saw
+		// it until the bank is opened. One small read per account change.
+		pestControlGoalPreferences.loadForAccount(newAccountHash);
+		wintertodtPreferences.loadForAccount(newAccountHash);
+		skillGoalPreferences.loadForAccount(newAccountHash);
+		structuredActivityCollector.seedPestBalance(pestControlGoalPreferences.getBalance());
+		seedVoidBankOwnership(newAccountHash);
 
 		// Restart both periodic settle windows on EVERY LOGGED_IN
 		// transition — a fresh plugin start, a real account switch, AND

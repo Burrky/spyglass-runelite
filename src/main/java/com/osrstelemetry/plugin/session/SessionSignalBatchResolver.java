@@ -146,6 +146,7 @@ final class SessionSignalBatchResolver
 		// SLAYER_TASK_PROGRESS classification in place.
 		applyBossSelfConsumptionCorroboration(batch, classifications, current, context);
 		applyBossOnTaskSlayerOwnership(classifications, current);
+		applySkillContextOwnership(batch, classifications, current, context);
 
 		// Group lifecycle-carrying classifications by their resulting
 		// identity, remembering every originating signal's observedAt
@@ -165,7 +166,8 @@ final class SessionSignalBatchResolver
 			}
 		}
 
-		ActivityIdentity winner = byIdentity.isEmpty() ? null : resolveOutcome(byIdentity.keySet(), current);
+		ActivityIdentity winner = byIdentity.isEmpty() ? null
+			: resolveOutcome(byIdentity.keySet(), current, methodBackedSkilling(batch, classifications, context));
 
 		// LOOT-OWNERSHIP-AT-A-SLAYER-TASK-PROGRESS-DRIVEN-SWITCH (see class
 		// javadoc for the full rationale). True only when this batch
@@ -601,12 +603,128 @@ final class SessionSignalBatchResolver
 	}
 
 	/**
+	 * SKILL-CONTEXT XP OWNERSHIP (Skills Phase 4). Another skill's XP that a
+	 * skill companion PROVED is part of its own activity right now -- XP the
+	 * same action also grants (a tool that trains a second skill as it
+	 * consumes the product), or XP a contextual event inside the activity
+	 * hands out while the player takes part in it --
+	 * is kept as a METRIC of that activity instead of proposing a session of
+	 * its own. It applies ONLY when the owning skill's session is the
+	 * pre-batch current one (not finalized) or is itself proposed by this
+	 * same batch, and only while the companion's evidence lies inside that
+	 * XP's own window (ClassifierContext#hasFreshSkillContextEvidence).
+	 * Without such evidence nothing changes: the other skill trained on its
+	 * own (after the owning activity stopped, or away from any event)
+	 * proposes its own session exactly as before, and a cold-start tie
+	 * without evidence stays ambiguous.
+	 */
+	static void applySkillContextOwnership(List<SessionSignal> batch, List<SignalClassification> classifications, Session current,
+		ClassifierContext context)
+	{
+		if (context == null)
+		{
+			return;
+		}
+		java.util.Set<String> owners = new java.util.LinkedHashSet<>();
+		if (current != null && current.getState() != SessionState.FINALIZED
+			&& current.getActivityIdentity().getActivityType() == ActivityType.SKILLING)
+		{
+			owners.add(current.getActivityIdentity().getActivityKey());
+		}
+		for (SignalClassification c : classifications)
+		{
+			if (c.getDecisionKind() == SignalDecisionKind.START_OR_HEARTBEAT && c.getIdentity() != null
+				&& c.getIdentity().getActivityType() == ActivityType.SKILLING)
+			{
+				owners.add(c.getIdentity().getActivityKey());
+			}
+		}
+		if (owners.isEmpty())
+		{
+			return;
+		}
+		for (int i = 0; i < batch.size(); i++)
+		{
+			SessionSignal s = batch.get(i);
+			SignalClassification c = classifications.get(i);
+			if (s.getKind() != SignalKind.XP_CHANGE || s.getSkill() == null || c.getDecisionKind() != SignalDecisionKind.START_OR_HEARTBEAT
+				|| c.getIdentity() == null || c.getIdentity().getActivityType() != ActivityType.SKILLING)
+			{
+				continue;
+			}
+			for (String owner : owners)
+			{
+				if (owner != null && !owner.equals(c.getIdentity().getActivityKey())
+					&& context.hasFreshSkillContextEvidence(owner, s.getSkill(), s.getXpWindowStart(), s.getObservedAt()))
+				{
+					classifications.set(i, SignalClassification.metricOnly(c.getMetricUpdates()));
+					break;
+				}
+			}
+		}
+	}
+
+	/**
 	 * Returns the single identity this batch honestly resolves to, or
 	 * null if the batch is genuinely ambiguous. See class javadoc for
 	 * the full step-by-step rule -- no lexicographic comparison
 	 * anywhere in this method.
 	 */
 	private static ActivityIdentity resolveOutcome(java.util.Set<ActivityIdentity> distinctIdentities, Session current)
+	{
+		return resolveOutcome(distinctIdentities, current, Collections.<ActivityIdentity>emptySet());
+	}
+
+	/**
+	 * SKILL-METHOD EVIDENCE (Skills Phase 2: Fishing): the Skilling
+	 * identities this batch proposed from XP whose skill ALSO has fresh,
+	 * method-specific evidence from its own companion (ClassifierContext) --
+	 * e.g. Fishing XP while barbarian fishing was just proven by a catch or a
+	 * "Use-rod" click. Empty without such evidence, which leaves every rule
+	 * below exactly as it was.
+	 */
+	static java.util.Set<ActivityIdentity> methodBackedSkilling(List<SessionSignal> batch, List<SignalClassification> classifications,
+		ClassifierContext context)
+	{
+		java.util.Set<ActivityIdentity> out = new java.util.HashSet<>();
+		if (context == null)
+		{
+			return out;
+		}
+		for (int i = 0; i < batch.size(); i++)
+		{
+			SessionSignal s = batch.get(i);
+			SignalClassification c = classifications.get(i);
+			if (s.getKind() == SignalKind.XP_CHANGE && c.getDecisionKind() == SignalDecisionKind.START_OR_HEARTBEAT
+				&& c.getIdentity() != null && c.getIdentity().getActivityType() == ActivityType.SKILLING
+				&& context.hasFreshSkillMethodEvidence(c.getIdentity().getActivityKey(), s.getXpWindowStart(), s.getObservedAt()))
+			{
+				out.add(c.getIdentity());
+			}
+		}
+		return out;
+	}
+
+	/** The one Skilling candidate backed by fresh method-specific evidence, or null (none, or more than one). */
+	private static ActivityIdentity uniqueMethodBacked(List<ActivityIdentity> candidates, java.util.Set<ActivityIdentity> methodBacked)
+	{
+		ActivityIdentity found = null;
+		for (ActivityIdentity id : candidates)
+		{
+			if (methodBacked.contains(id))
+			{
+				if (found != null)
+				{
+					return null;
+				}
+				found = id;
+			}
+		}
+		return found;
+	}
+
+	private static ActivityIdentity resolveOutcome(java.util.Set<ActivityIdentity> distinctIdentities, Session current,
+		java.util.Set<ActivityIdentity> methodBacked)
 	{
 		if (distinctIdentities.size() == 1)
 		{
@@ -692,6 +810,17 @@ final class SessionSignalBatchResolver
 				return top.get(0);
 			}
 			return stickyMatchOrNull(top, current);
+		}
+
+		// SKILL-METHOD EVIDENCE: a tie that involves Skilling identities is
+		// broken by the ONE of them whose own companion just proved its
+		// method (barbarian fishing: Fishing + Agility + Strength on the same
+		// catch). XP alone never decides this -- without such evidence the
+		// conservative rules below apply unchanged.
+		ActivityIdentity backed = skilling.isEmpty() ? null : uniqueMethodBacked(skilling, methodBacked);
+		if (backed != null)
+		{
+			return backed;
 		}
 
 		if (!skilling.isEmpty() && combatBranch.isEmpty())
