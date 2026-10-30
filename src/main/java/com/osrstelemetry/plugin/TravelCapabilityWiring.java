@@ -56,6 +56,8 @@ public class TravelCapabilityWiring
 	{
 		this.client = client;
 		this.gson = gson;
+		// The bundled route table is read with the client's Gson (Plugin Hub rule), installed before anything routes.
+		com.osrstelemetry.plugin.navigation.RouteTable.useGson(gson);
 		this.account = account;
 		this.farming = farming;
 		this.developerMode = developerMode;

@@ -32,6 +32,11 @@ import org.junit.Test;
 /** Pass 29: bird house preparation from what each space shows (supplies, levels, the tier, the journey). */
 public class BirdhousePlanTest
 {
+	static
+	{
+		com.osrstelemetry.plugin.navigation.TestRoutes.install(); // the client's Gson in the plugin
+	}
+
 	static ItemNeed need(BirdhousePlan p, String key)
 	{
 		for (ItemNeed n : p.getRequest().getNeeds())

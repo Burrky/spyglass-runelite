@@ -56,6 +56,7 @@ public final class TransportCatalog
 	/** Loads every catalogue file; throws when a file is missing, unparsable or invalid (a build-time defect). */
 	public static TransportCatalog load(Gson gson)
 	{
+		com.osrstelemetry.plugin.navigation.RouteTable.useGson(gson);
 		List<TransportDef> all = loadBase(gson);
 		all.addAll(networkJourneys(gson, all, loadNodes(gson, all), com.osrstelemetry.plugin.navigation.RouteTable.bundled()));
 		TransportCatalog catalog = new TransportCatalog(all);

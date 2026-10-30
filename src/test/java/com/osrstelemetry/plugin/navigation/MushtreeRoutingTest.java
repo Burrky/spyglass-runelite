@@ -18,6 +18,11 @@ import org.junit.Test;
  */
 public class MushtreeRoutingTest
 {
+	static
+	{
+		com.osrstelemetry.plugin.navigation.TestRoutes.install(); // the client's Gson in the plugin
+	}
+
 	static List<Transition> mushtrees()
 	{
 		List<Transition> out = new java.util.ArrayList<>();

@@ -36,6 +36,11 @@ import org.junit.Test;
 /** Pass 29: the Recurring page's groups and the bird house page's stages (start, prepare, run, complete), with their controls. */
 public class RecurringPagesTest
 {
+	static
+	{
+		com.osrstelemetry.plugin.navigation.TestRoutes.install(); // the client's Gson in the plugin
+	}
+
 	static final long NOW = 1_800_000_000_000L;
 
 	static List<Component> all(Container c)

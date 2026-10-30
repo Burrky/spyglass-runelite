@@ -26,6 +26,11 @@ import org.junit.Test;
  */
 public class NavigationModelTest
 {
+	static
+	{
+		com.osrstelemetry.plugin.navigation.TestRoutes.install(); // the client's Gson in the plugin
+	}
+
 	/**
 	 * Two tall walls (x=10 and x=20) with a gap only at the top (y=39). S (9,2) and G (21,2) sit at the bottom. Wall 1 has a
 	 * 70 Agility shortcut at the bottom; wall 2 a door that needs Dragon Slayer I. Worked by hand (8-way moves; a diagonal

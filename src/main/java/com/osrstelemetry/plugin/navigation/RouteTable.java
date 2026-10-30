@@ -103,6 +103,17 @@ public final class RouteTable
 	}
 
 	private static volatile RouteTable shared;
+	/** The client's Gson, installed at startup (Plugin Hub: never a fresh instance), used to read the bundled table. */
+	private static volatile Gson gson;
+
+	/** Installs the Gson the bundled table is read with: the client's injected instance (tests pass their own). */
+	public static void useGson(Gson clientGson)
+	{
+		if (clientGson != null)
+		{
+			gson = clientGson;
+		}
+	}
 
 	/** The bundled table; throws when it is missing or was generated from different transition data (a build defect). */
 	public static RouteTable bundled()
@@ -115,7 +126,12 @@ public final class RouteTable
 				t = shared;
 				if (t == null)
 				{
-					t = load(new Gson(), TransitionCatalog.bundled());
+					Gson g = gson;
+					if (g == null)
+					{
+						throw new IllegalStateException("RouteTable.useGson must be called with the client's Gson before the table is read");
+					}
+					t = load(g, TransitionCatalog.bundled());
 					shared = t;
 				}
 			}

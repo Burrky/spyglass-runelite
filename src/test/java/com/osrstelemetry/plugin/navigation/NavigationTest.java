@@ -29,6 +29,11 @@ import org.junit.Test;
  */
 public class NavigationTest
 {
+	static
+	{
+		com.osrstelemetry.plugin.navigation.TestRoutes.install(); // the client's Gson in the plugin
+	}
+
 	private static final Pathfinder PF = Pathfinder.bundled();
 	private static final RouteTable ROUTES = RouteTable.bundled();
 
