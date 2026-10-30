@@ -259,7 +259,6 @@ public class HerbloreCompanionCollectorTest
 		{
 			tick++;
 			now += 600;
-			hc.onHerbloreTick(new GameTick());
 			hc.onGameTick(new GameTick());
 		}
 	}
@@ -284,7 +283,6 @@ public class HerbloreCompanionCollectorTest
 		WidgetLoaded e = new WidgetLoaded();
 		e.setGroupId(InterfaceID.BANKMAIN);
 		hc.onWidgetLoaded(e);
-		hc.onHerbloreWidget(e);
 		pushBank();
 		ticks(1);
 	}
@@ -403,13 +401,13 @@ public class HerbloreCompanionCollectorTest
 		VarbitChanged v = new VarbitChanged();
 		v.setVarpId(VarPlayerID.POTIONSTORE_SUPER_RESTORE_POTION);
 		v.setVarbitId(-1);
-		hc.onHerbloreVarbit(v);
+		hc.onVarbitChanged(v);
 		ticks(1);
 		assertEquals(Long.valueOf(140), hc.externalStock(superRestore()).getQuantity());
 		closeBank();
 		int runs = scriptRuns;
 		storedDoses.put(SR_ENUM, 0);
-		hc.onHerbloreVarbit(v);
+		hc.onVarbitChanged(v);
 		ticks(3);
 		assertEquals("no read with the bank closed", runs, scriptRuns);
 		assertEquals(Long.valueOf(140), hc.externalStock(superRestore()).getQuantity());
@@ -464,7 +462,7 @@ public class HerbloreCompanionCollectorTest
 		VarbitChanged v = new VarbitChanged();
 		v.setVarpId(VarPlayerID.POTIONSTORE_SUPER_RESTORE_POTION);
 		v.setVarbitId(-1);
-		hc.onHerbloreVarbit(v);
+		hc.onVarbitChanged(v);
 		ticks(6);
 		long banked = 0;
 		for (EventPayloads.SkillProduction p : updates())

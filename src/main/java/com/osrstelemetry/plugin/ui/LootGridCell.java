@@ -6,7 +6,6 @@ import java.awt.Graphics;
 import java.awt.GridLayout;
 import javax.swing.BorderFactory;
 import javax.swing.JPanel;
-import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.AsyncBufferedImage;
 import net.runelite.client.util.QuantityFormatter;
 
@@ -87,7 +86,7 @@ final class LootGridCell extends JPanel
 		}
 		if (quantityText != null)
 		{
-			g.setFont(FontManager.getRunescapeSmallFont());
+			g.setFont(SpyglassFonts.small());
 			g.setColor(Color.BLACK);
 			// Four-offset outline (not one) -- legible over any sprite,
 			// even a bright/busy backdrop that would wash out a single

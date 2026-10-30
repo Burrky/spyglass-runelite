@@ -5,10 +5,11 @@ import com.osrstelemetry.plugin.skills.fishing.FishingCompanionDefinition;
 import com.osrstelemetry.plugin.skills.herblore.HerbloreCompanionDefinition;
 import com.osrstelemetry.plugin.skills.mining.MiningCompanionDefinition;
 import com.osrstelemetry.plugin.skills.runecraft.RunecraftCompanionDefinition;
+import com.osrstelemetry.plugin.skills.smithing.SmithingCompanionDefinition;
 import com.osrstelemetry.plugin.skills.woodcutting.WoodcuttingCompanionDefinition;
 
 /**
- * The skills that have a companion (Mining, Fishing, Agility, Woodcutting, Runecraft, Herblore). Every other skill keeps
+ * The skills that have a companion (Mining, Fishing, Agility, Woodcutting, Runecraft, Herblore, Smithing). Every other skill keeps
  * the plain generic SKILLING session exactly as before.
  */
 public final class SkillCompanions
@@ -22,7 +23,7 @@ public final class SkillCompanions
 	{
 		return java.util.Arrays.asList(MiningCompanionDefinition.INSTANCE, FishingCompanionDefinition.INSTANCE,
 			AgilityCompanionDefinition.INSTANCE, WoodcuttingCompanionDefinition.INSTANCE, RunecraftCompanionDefinition.INSTANCE,
-			HerbloreCompanionDefinition.INSTANCE);
+			HerbloreCompanionDefinition.INSTANCE, SmithingCompanionDefinition.INSTANCE);
 	}
 
 	/** The companion definition for a SKILLING session key ("mining"), or null when the skill has none. */
@@ -51,6 +52,10 @@ public final class SkillCompanions
 		if (HerbloreCompanionDefinition.SKILL_KEY.equals(skillKey))
 		{
 			return HerbloreCompanionDefinition.INSTANCE;
+		}
+		if (SmithingCompanionDefinition.SKILL_KEY.equals(skillKey))
+		{
+			return SmithingCompanionDefinition.INSTANCE;
 		}
 		return null;
 	}

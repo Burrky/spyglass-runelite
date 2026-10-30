@@ -211,12 +211,11 @@ public class MiningPresentationTest
 		Session session = mining("ACTIVE", IRON_SESSION, item(IRON, "Iron ore", 742), "'iron':3600000", "iron");
 		CurrentSessionView v = render(s, session);
 		assertEquals("Iron", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("6", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_SPACE_LEFT_CELL));
+		assertNull("no SPACE LEFT beside EST. FULL", named(v, SlayerStatGrid.CELL_PREFIX + "SPACE LEFT"));
 		assertEquals("~0:21", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_EST_FULL_CELL));
-		assertEquals("1,103", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "IRON MINED"));
-		assertEquals("742", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, CurrentSessionView.SC_BANKED_CELL));
+		assertEquals("one resource: its sprite row says mined and banked", "MINED|BANKED;" + IRON + ":1,103|742", SkillItems.production(v));
+		assertNull("no blended cell repeating the row", named(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME));
 		assertEquals("1,103 ore/hr", text(v, CurrentSessionView.SC_RATE_NAME));
-		assertNull("one resource: no breakdown line", named(v, CurrentSessionView.SC_BREAKDOWN_NAME));
 		assertNotNull(named(v, CurrentSessionView.SC_TARGET_GRID_NAME));
 		fitsEveryWidth(v, "generic ore");
 	}
@@ -227,9 +226,8 @@ public class MiningPresentationTest
 		Source s = new Source();
 		s.view = view("iron", trip(12, null), null, null);
 		CurrentSessionView v = render(s, mining("ACTIVE", item(IRON, "Iron ore", 1_000), null, "'iron':3600000", "iron"));
-		assertEquals("1,000", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "IRON MINED"));
-		assertEquals("0", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, CurrentSessionView.SC_BANKED_CELL));
-		assertEquals("no rate is ever assumed", "-", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_EST_FULL_CELL));
+		assertEquals("dropped ore stays mined, never banked", "MINED|BANKED;" + IRON + ":1,000|0", SkillItems.production(v));
+		assertNull("no rate is ever assumed: no EST. FULL placeholder, so no trip block", named(v, CurrentSessionView.SC_TRIP_NAME));
 		assertNull("no Held / Dropped clutter", named(v, "skillHeld"));
 		fitsEveryWidth(v, "powermining");
 	}
@@ -242,7 +240,7 @@ public class MiningPresentationTest
 		pending.put(IRON, 7L);
 		s.view = view("iron", trip(21, null), null, pending);
 		CurrentSessionView v = render(s, mining("ACTIVE", item(IRON, "Iron ore", 100), null, "'iron':3600000", "iron"));
-		assertEquals("107", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "IRON MINED"));
+		assertEquals("MINED|BANKED;" + IRON + ":107|0", SkillItems.production(v));
 	}
 
 	@Test
@@ -255,8 +253,10 @@ public class MiningPresentationTest
 			+ item(ItemID.UNCUT_DIAMOND, "Uncut diamond", 6);
 		CurrentSessionView v = render(s, mining("ACTIVE", produced, null, "'iron':2400000,'coal':1200000", "coal"));
 		assertEquals("never 1,284 read as iron", "1,197", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "TOTAL"));
-		assertEquals("Iron 1,103 • Coal 94", text(v, CurrentSessionView.SC_BREAKDOWN_NAME));
-		assertEquals("Gems: Sapphire 41 • Emerald 26 • Ruby 14 • Diamond 6", text(v, CurrentSessionView.SC_BYPRODUCT_PREFIX + 0));
+		assertEquals("MINED|BANKED;" + IRON + ":1,103|0;" + COAL + ":94|0", SkillItems.production(v));
+		assertEquals("Gems", SkillItems.title(v, CurrentSessionView.SC_BYPRODUCT_PREFIX, 0));
+		assertEquals("MINED|BANKED;" + ItemID.UNCUT_SAPPHIRE + ":41|0;" + ItemID.UNCUT_EMERALD + ":26|0;" + ItemID.UNCUT_RUBY + ":14|0;"
+			+ ItemID.UNCUT_DIAMOND + ":6|0", SkillItems.byproduct(v, 0));
 		fitsEveryWidth(v, "mixed");
 	}
 
@@ -298,8 +298,8 @@ public class MiningPresentationTest
 		CurrentSessionView v = render(s, mining("ACTIVE", produced, null, "'calcified':3600000", "calcified"));
 		assertEquals("Calcified rocks", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertNull("stackable shards: inventory space is not a decision", named(v, CurrentSessionView.SC_TRIP_NAME));
-		assertEquals("2,340", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "BONE SHARDS"));
-		assertEquals("Deposits 12", text(v, CurrentSessionView.SC_BYPRODUCT_PREFIX + 0));
+		assertEquals("MINED|BANKED;" + ItemID.BLESSED_BONE_SHARD + ":2,340|0", SkillItems.production(v));
+		assertEquals("MINED|BANKED;" + ItemID.CALCIFIED_DEPOSIT + ":12|0", SkillItems.byproduct(v, 0));
 		assertEquals("2,340 shards/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		assertEquals("Water flowing: +15% success", text(v, CurrentSessionView.SC_CONTEXT_PREFIX + 0));
 		fitsEveryWidth(v, "calcified");
@@ -316,7 +316,10 @@ public class MiningPresentationTest
 		CurrentSessionView v = render(s, mining("ACTIVE", produced, null, "'gem_rocks':3600000", "gem_rocks"));
 		assertEquals("Gem rocks", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("59", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "GEMS MINED"));
-		assertEquals("Opal 31 • Jade 14 • Red topaz 8 • Sapphire 4 • +1 more", text(v, CurrentSessionView.SC_BREAKDOWN_NAME));
+		String gems = SkillItems.production(v);
+		assertTrue("every gem, exact, never '+N more': " + gems, gems.startsWith("MINED|BANKED;" + ItemID.UNCUT_OPAL + ":31|0;"
+			+ ItemID.UNCUT_JADE + ":14|0;" + ItemID.UNCUT_RED_TOPAZ + ":8|0;" + ItemID.UNCUT_SAPPHIRE + ":4|0"));
+		assertEquals(5, gems.split(";").length - 1);
 		assertEquals("Gem bag +12 this trip", text(v, CurrentSessionView.SC_STORAGE_NAME));
 		assertEquals("59 gems/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		fitsEveryWidth(v, "gem rocks");
@@ -339,7 +342,7 @@ public class MiningPresentationTest
 		assertEquals(String.format("%,d", left), cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_XP_LEFT_CELL));
 		String eta = cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_ETA_CELL);
 		assertTrue(eta, eta.startsWith("~"));
-		assertEquals("Lvl 92", ((JLabel) named(v, CurrentSessionView.SC_TARGET_LEVEL_NAME)).getText());
+		assertEquals("92", ((javax.swing.JTextField) named(v, CurrentSessionView.SC_TARGET_LEVEL_NAME)).getText());
 		fitsEveryWidth(v, "level target");
 	}
 
@@ -378,8 +381,7 @@ public class MiningPresentationTest
 		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(AMETHYST).withTargetQuantity(5_000);
 		CurrentSessionView v = render(s, mining("ACTIVE", item(AMETHYST, "Amethyst", 428), item(AMETHYST, "Amethyst", 400),
 			"'amethyst':3600000", "amethyst"));
-		assertEquals("428", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "AMETHYST"));
-		assertEquals("400", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, CurrentSessionView.SC_BANKED_CELL));
+		assertEquals("MINED|BANKED;" + AMETHYST + ":428|400", SkillItems.production(v));
 		assertEquals("the account's bank, not today's session", "2,242",
 			cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_IN_BANK_CELL));
 		assertEquals("2,758", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
@@ -388,7 +390,7 @@ public class MiningPresentationTest
 		@SuppressWarnings("unchecked")
 		JComboBox<Object> combo = (JComboBox<Object>) named(v, CurrentSessionView.SC_TARGET_RESOURCE_NAME);
 		assertEquals("method-aware: amethyst only", 1, combo.getItemCount());
-		assertEquals("5,000", ((JLabel) named(v, CurrentSessionView.SC_TARGET_QUANTITY_NAME)).getText());
+		assertEquals("5000", ((javax.swing.JTextField) named(v, CurrentSessionView.SC_TARGET_QUANTITY_NAME)).getText());
 		fitsEveryWidth(v, "stockpile");
 	}
 
@@ -417,12 +419,41 @@ public class MiningPresentationTest
 	}
 
 	@Test
-	public void parseSkillNumber()
+	public void clampSkillNumber_clampsToTheLegalRange_nonNumbersChangeNothing()
 	{
-		assertEquals(Integer.valueOf(5_000), CurrentSessionView.parseSkillNumber("5,000", 1, 10_000_000));
-		assertEquals(Integer.valueOf(92), CurrentSessionView.parseSkillNumber(" 92 ", 2, 99));
-		assertNull(CurrentSessionView.parseSkillNumber("100", 2, 99));
-		assertNull(CurrentSessionView.parseSkillNumber("abc", 1, 10));
+		assertEquals(Integer.valueOf(5_000), CurrentSessionView.clampSkillNumber("5,000", 1, 10_000_000));
+		assertEquals(Integer.valueOf(92), CurrentSessionView.clampSkillNumber(" 92 ", 2, 99));
+		assertEquals("above the range: the highest level", Integer.valueOf(99), CurrentSessionView.clampSkillNumber("100", 2, 99));
+		assertEquals("below the range: the lowest level", Integer.valueOf(2), CurrentSessionView.clampSkillNumber("0", 2, 99));
+		assertNull(CurrentSessionView.clampSkillNumber("abc", 1, 10));
+		assertNull(CurrentSessionView.clampSkillNumber("", 1, 10));
+	}
+
+	@Test
+	public void levelTarget_isADirectNumberField_enterCommits_clamped_noDialog()
+	{
+		Source s = new Source();
+		s.view = view("iron", trip(6, null), null, null);
+		CurrentSessionView v = render(s, mining("ACTIVE", IRON_SESSION, null, "'iron':3600000", "iron"));
+		javax.swing.JTextField field = (javax.swing.JTextField) named(v, CurrentSessionView.SC_TARGET_LEVEL_NAME);
+		assertEquals("99", field.getText());
+		field.setText("85");
+		field.postActionEvent();
+		assertEquals("Enter commits the typed level", 85, s.goal.getTargetLevel());
+		assertEquals(1, s.writes);
+		field = (javax.swing.JTextField) named(v, CurrentSessionView.SC_TARGET_LEVEL_NAME);
+		assertEquals("85", field.getText());
+		long left = Experience.getXpForLevel(85) - s.xp;
+		assertEquals(String.format("%,d", left), cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_XP_LEFT_CELL));
+		field.setText("150");
+		field.postActionEvent();
+		assertEquals("clamped to the highest level", 99, s.goal.getTargetLevel());
+		field = (javax.swing.JTextField) named(v, CurrentSessionView.SC_TARGET_LEVEL_NAME);
+		field.setText("nope");
+		field.postActionEvent();
+		assertEquals("not a number: the saved target stays", 99, s.goal.getTargetLevel());
+		assertEquals(2, s.writes);
+		fitsEveryWidth(v, "level field");
 	}
 
 	// ---- History ------------------------------------------------------------------------------------

@@ -22,6 +22,23 @@ final class LootTrackerEvents
 
 	static LootTrackerRecord fromServerNpcLoot(String eventId, EventPayloads.ServerNpcLoot loot, Instant observedAt)
 	{
+		// Older events recorded an independent reward as NPC loot ("Konar quo Maten" for the Brimstone chest): read back under
+		// the reward's own source, so the Loot Tracker keeps one record per claim under the right name.
+		StructuredRewardSource independent = StructuredActivityRegistry.defaults()
+			.rewardForServerNpcLoot(loot.getSourceId() == null ? -1 : loot.getSourceId(), loot.getSourceName());
+		if (independent != null)
+		{
+			List<LootTrackerItem> moved = new ArrayList<>();
+			if (loot.getItems() != null)
+			{
+				for (EventPayloads.ServerNpcLootItem item : loot.getItems())
+				{
+					moved.add(new LootTrackerItem(item.getItemId(), item.getItemName(), item.getQuantity()));
+				}
+			}
+			return moved.isEmpty() ? null : new LootTrackerRecord(eventId, independent.getDisplayName(), null, observedAt, moved,
+				LootTrackerIndex.structuredSourceKey(independent.getKey()));
+		}
 		List<LootTrackerItem> items = new ArrayList<>();
 		if (loot.getItems() != null)
 		{

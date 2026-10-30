@@ -306,14 +306,6 @@ public final class RunecraftCompanionDefinition implements SkillCompanionDefinit
 		return YIELDS;
 	}
 
-	/** Ourania's live mix reads as shares of what it crafted; History keeps every exact count. */
-	@Override
-	public boolean breakdownAsShares(String methodKey)
-	{
-		RunecraftMethod m = RunecraftMethod.fromKey(methodKey);
-		return m != null && m.isMixed();
-	}
-
 	/** A binding method: how many binds held, from the crafts where input and output prove it ("Bound 412 / 448 (92%)"). */
 	@Override
 	public List<String> occurrenceLines(String methodKey, Map<String, Long> occurrences)

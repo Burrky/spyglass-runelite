@@ -1421,6 +1421,41 @@ public final class SessionRuntimeCoordinator implements TelemetryEventListener
 		classifierContext.noteSkillContextEvidence(ownerSkillKey, xpSkill, observedAt);
 	}
 
+	/** The skill whose XP window should close now (a takeover is waiting on it); null = none. */
+	private String earlyXpWindowSkill;
+
+	/**
+	 * ADDED (live-QA takeover tuning). A skill companion recorded a CAUSALLY
+	 * CONFIRMED success of its skill (the skill's own XP and the matching
+	 * items changed together). In-memory and transient: it lets that skill's
+	 * XP from the same window dislodge a SUSPENDED different session at once
+	 * (SessionSignalBatchResolver#applySkillProductionTakeover). When such a
+	 * takeover is actually waiting -- the current session is a SUSPENDED
+	 * SKILLING session of another skill -- the skill's XP window is also asked to close now
+	 * (drainEarlyXpWindowSkill) instead of up to ~30 s later. Never a session
+	 * by itself, never a metric, never persisted, and never anything while the
+	 * current session is ACTIVE (its hysteresis is untouched).
+	 */
+	public synchronized void noteSkillProductionEvidence(String skillKey, Instant observedAt)
+	{
+		classifierContext.noteSkillProductionEvidence(skillKey, observedAt);
+		Session current = engine.getCurrentSession();
+		if (skillKey != null && current != null && current.getState() == SessionState.SUSPENDED
+			&& current.getActivityIdentity().getActivityType() == ActivityType.SKILLING
+			&& !skillKey.equals(current.getActivityIdentity().getActivityKey()))
+		{
+			earlyXpWindowSkill = skillKey;
+		}
+	}
+
+	/** The skill whose XP window should close now for a waiting takeover (cleared by the call); null = none. */
+	public synchronized String drainEarlyXpWindowSkill()
+	{
+		String skill = earlyXpWindowSkill;
+		earlyXpWindowSkill = null;
+		return skill;
+	}
+
 	/** Bypasses onEvent()'s account filter and Client-dependent gameTick
 	 * tagging -- tests build already-tick-tagged SessionSignal instances
 	 * directly via its public static factories + withGameTick(). */

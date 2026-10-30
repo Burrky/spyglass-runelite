@@ -41,7 +41,7 @@ public class HistoryViewDetailIntegrityTest
 	{
 		return GSON.fromJson(("{'sessionId':'" + id + "','activityIdentity':{'activityType':'SKILLING','activityKey':'mining','displayName':'Mining'},"
 			+ "'state':'FINALIZED','startedAt':'" + at.minusSeconds(600) + "','lastActiveAt':'" + at.minusSeconds(60)
-			+ "','finalizedAt':'" + at + "','accumulatedActiveDurationMillis':60000,'aggregates':{'xpGainedBySkill':{'MINING':100},"
+			+ "','finalizedAt':'" + at + "','accumulatedActiveDurationMillis':180000,'aggregates':{'xpGainedBySkill':{'MINING':100},"
 			+ "'lootDrops':[{'sourceName':'Rocks','observedAt':'" + at.minusSeconds(120) + "','items':[{'itemId':440,'itemName':'Iron ore','quantity':3}]}]}}")
 			.replace('\'', '"'), Session.class);
 	}

@@ -1,6 +1,7 @@
 package com.osrstelemetry.plugin.ui;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -37,12 +38,12 @@ import org.junit.Test;
 /**
  * The Herblore companion as the player sees it, rendered by the shared
  * Current Session / History code at 150 / 180 / 213 / 260 px with real layout
- * passes: RECIPE, CURRENT BATCH (limiting ingredient), SESSION (mixes /
- * cleaned), PRODUCTION in doses with its exact 4-dose equivalence, INPUTS
- * USED with actual saved secondaries, bonus doses, LEVEL and dose-normalized
- * STOCKPILE targets over bank + Potion Storage (known / unknown), herb
- * cleaning / unfinished / upgrade layouts, recipe switches, Mastering
- * Mixology, and History. No clipping, no horizontal scroll, no dead sections.
+ * passes: RECIPE, CURRENT BATCH (limiting ingredient), SESSION-wide POTIONS
+ * CREATED / HERBS CLEANED, PRODUCTION as a one-dose sprite + doses, IN BANK
+ * (sprites, Bank can make, Potential XP; unknown is a dash), the Level-only
+ * target, herb cleaning / unfinished / upgrade layouts, recipe switches,
+ * Mastering Mixology, and History. No clipping, no horizontal scroll, no
+ * dead sections.
  */
 public class HerblorePresentationTest
 {
@@ -276,17 +277,17 @@ public class HerblorePresentationTest
 		assertEquals("Super restore", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("142", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "UNFINISHED"));
 		assertEquals("188", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "SECONDARY"));
-		assertEquals("142", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
+		assertNull("CAN MAKE would repeat the limiting input", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
 		assertNull("no batch name / timer line", named(v, CurrentSessionView.SC_EVENT_TITLE_NAME));
-		assertEquals("358", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "MIXES"));
-		assertEquals("358", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "MIXES / HR"));
-		assertEquals("1,092 doses", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "SUPER RESTORE"));
-		assertEquals("(273 × 4-dose)", text(v, CurrentSessionView.SC_UNITS_NAME));
+		assertEquals("358", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "POTIONS CREATED"));
+		assertEquals("358", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "POTIONS / HR"));
+		assertEquals("the 1-dose sprite carries the doses (no vial-by-vial prose)", ";" + ItemID._1DOSE2RESTORE + ":1,092 doses",
+			SkillItems.production(v));
 		assertEquals("1,092 doses/hr", text(v, CurrentSessionView.SC_RATE_NAME));
-		assertEquals("+18 bonus doses", text(v, CurrentSessionView.SC_OCCURRENCE_LINE_PREFIX + 0));
-		assertEquals("358", cell(v, CurrentSessionView.SC_INPUTS_GRID_NAME, "UNFINISHED"));
-		assertEquals("actual, never the theoretical 358", "324", cell(v, CurrentSessionView.SC_INPUTS_GRID_NAME, "SECONDARY"));
-		assertEquals("34 secondaries saved", text(v, CurrentSessionView.SC_INPUTS_LINE_PREFIX + 0));
+		assertEquals("no '+N bonus doses' prose: the doses are the number", "34 secondaries saved",
+			text(v, CurrentSessionView.SC_OCCURRENCE_LINE_PREFIX + 0));
+		assertNull(named(v, CurrentSessionView.SC_OCCURRENCE_LINE_PREFIX + 1));
+		assertNull("INPUTS USED is gone (IN BANK replaces it)", named(v, CurrentSessionView.SC_INPUTS_NAME));
 		assertNull("no generic consumed line", named(v, CurrentSessionView.SC_CONSUMED_NAME));
 		assertNotNull(named(v, CurrentSessionView.SC_TARGET_GRID_NAME));
 		assertEquals(String.format("%,d", Experience.getXpForLevel(90) - s.xp),
@@ -301,70 +302,100 @@ public class HerblorePresentationTest
 		s.view = view("super_restore", batch(carried(SNAP_UNF, 30, EGGS, 5), SNAP_UNF, -1, EGGS, -1, SR3, 1));
 		CurrentSessionView v = render(active(item(SR3, "Super restore(3)", 1), "'super_restore':60000", null,
 			"'mix:super_restore':1,'units:super_restore':3", "super_restore"), s);
-		assertEquals("3", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
-		assertEquals("3 doses", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "SUPER RESTORE"));
-		assertNull("below one 4-dose: no equivalence line", named(v, CurrentSessionView.SC_UNITS_NAME));
-		assertEquals("rate only after 5 minutes", "-", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "MIXES / HR"));
+		assertEquals("the secondary limits the batch", "3", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "SECONDARY"));
+		assertNull("CAN MAKE would repeat it", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
+		assertEquals(";" + ItemID._1DOSE2RESTORE + ":3 doses", SkillItems.production(v));
+		assertEquals("rate only after 5 minutes", "-", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "POTIONS / HR"));
 		fitsEveryWidth(v, "low");
 	}
 
-	@Test
-	public void stockpile_dosesOverBankVariantsPlusPotionStorage_etaFromTheStoredRate()
+	/** IN BANK exactly as the real tracker builds it: one mix observed (twice, for the XP), then the bank seen. */
+	private static SkillCompanionView.EventView inBank(Map<Integer, Long> bank)
 	{
-		Source s = new Source();
-		Map<Integer, SkillGoalPlanner.BankingSample> banking = new HashMap<>();
-		banking.put(SR3, new SkillGoalPlanner.BankingSample(300, 3, 3_000_000L));
-		s.view = view("super_restore", null, Collections.<SkillCompanionView.ContextLine>emptyList(), banking);
-		s.bank = new HashMap<>();
-		s.bank.put(SR4, 600L);
-		s.bank.put(SR3, 20L);
-		s.bank.put(SR1, 4L);
-		s.storage = SkillExternalStock.known("Potion Storage", 280L, null);
-		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(1_000);
-		CurrentSessionView v = render(active(RESTORES, "'super_restore':3600000", RESTORE_INPUTS, RESTORE_OCC, "super_restore"), s);
-		// Bank 600x4 + 20x3 + 4x1 = 2,464 doses + 280 stored = 2,744 doses = 686 x 4-dose.
-		assertEquals("686 × 4-dose", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, "OWNED"));
-		// 4,000 - 2,744 = 1,256 doses left = 314 x 4-dose.
-		assertEquals("314 × 4-dose", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
-		assertEquals("1,000 × 4-dose", text(v, CurrentSessionView.SC_TARGET_QUANTITY_NAME));
-		assertEquals("Bank + Potion Storage", text(v, CurrentSessionView.SC_OWNERSHIP_NAME));
-		// 300 (3) stored in 50 min = 1,080 doses/hr -> 1,256 left in ~1h 10m (never the 1,092 doses/hr produced).
-		assertEquals("ETA ~1h 10m", text(v, CurrentSessionView.SC_ETA_LINE_NAME));
-		@SuppressWarnings("unchecked")
-		JComboBox<Object> combo = (JComboBox<Object>) named(v, CurrentSessionView.SC_TARGET_RESOURCE_NAME);
-		assertEquals("this recipe's family only, never every potion", 1, combo.getItemCount());
-		fitsEveryWidth(v, "stockpile");
+		HerbloreCompanionTracker t = new HerbloreCompanionTracker();
+		int tick = 10;
+		long now = 1_000_000L;
+		Map<Integer, Long> inv = carried(SNAP_UNF, 10, EGGS, 10);
+		t.onInventory(tick, now, new HashMap<>(inv), inv.size());
+		for (int i = 0; i < 2; i++)
+		{
+			t.onSkillXp(tick, 142, now);
+			inv.merge(SNAP_UNF, -1L, Long::sum);
+			inv.merge(EGGS, -1L, Long::sum);
+			inv.merge(SR3, 1L, Long::sum);
+			t.onInventory(tick, now, new HashMap<>(inv), inv.size());
+			for (int k = 0; k < 4; k++)
+			{
+				tick++;
+				now += 600;
+				t.onTick(tick, now, 0);
+			}
+		}
+		if (bank != null)
+		{
+			t.onBank(tick, now, bank);
+		}
+		return t.stock(now);
 	}
 
 	@Test
-	public void stockpile_unknownPotionStorage_isABound_neverZero_noEta()
+	public void inBank_spritesPerInput_bankCanMake_potentialXp_noAccountPotential()
 	{
 		Source s = new Source();
-		Map<Integer, SkillGoalPlanner.BankingSample> banking = new HashMap<>();
-		banking.put(SR3, new SkillGoalPlanner.BankingSample(300, 3, 3_000_000L));
-		s.view = view("super_restore", null, Collections.<SkillCompanionView.ContextLine>emptyList(), banking);
-		s.bank = new HashMap<>();
-		s.bank.put(SR4, 616L);
-		s.storage = SkillExternalStock.unknown("Potion Storage");
-		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(1_000);
+		s.view = view("super_restore", batch(carried(SNAP_UNF, 144, EGGS, 190), SNAP_UNF, -1, EGGS, -1, SR3, 1))
+			.withStock(inBank(carried(SNAP_UNF, 1_240, EGGS, 980)));
 		CurrentSessionView v = render(active(RESTORES, "'super_restore':3600000", RESTORE_INPUTS, RESTORE_OCC, "super_restore"), s);
-		assertEquals("≥ 616 × 4-dose", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, "OWNED"));
-		assertEquals("≤ 384 × 4-dose", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
-		assertEquals("Potion Storage not seen yet: open your bank", text(v, CurrentSessionView.SC_OWNERSHIP_NAME));
-		assertEquals("ETA -", text(v, CurrentSessionView.SC_ETA_LINE_NAME));
-		fitsEveryWidth(v, "unknown storage");
+		assertEquals("IN BANK", text(v, CurrentSessionView.SC_STOCK_NAME));
+		assertEquals(";" + SNAP_UNF + ":UNFINISHED  1,240;" + EGGS + ":SECONDARY  980",
+			SkillItems.grid(v, CurrentSessionView.SC_STOCK_ITEMS_PREFIX + 0));
+		assertEquals("Bank can make: 980", text(v, CurrentSessionView.SC_STOCK_LINE_PREFIX + 0));
+		assertEquals("Potential XP: 139,160", text(v, CurrentSessionView.SC_STOCK_LINE_PREFIX + 1));
+		for (Component c : all(v))
+		{
+			if (c instanceof JLabel && ((JLabel) c).getText() != null)
+			{
+				assertFalse(((JLabel) c).getText(), ((JLabel) c).getText().contains("Account potential"));
+			}
+		}
+		fitsEveryWidth(v, "in bank");
 	}
 
 	@Test
-	public void stockpile_bankNeverSeen_isUnknown()
+	public void inBank_bankNotSeen_dashNeverZero()
+	{
+		Source s = new Source();
+		s.view = view("super_restore", null).withStock(inBank(null));
+		CurrentSessionView v = render(active(RESTORES, "'super_restore':3600000", RESTORE_INPUTS, RESTORE_OCC, "super_restore"), s);
+		assertEquals(";" + SNAP_UNF + ":UNFINISHED  \u2014;" + EGGS + ":SECONDARY  \u2014",
+			SkillItems.grid(v, CurrentSessionView.SC_STOCK_ITEMS_PREFIX + 0));
+		assertEquals("Open your bank to count your supplies", text(v, CurrentSessionView.SC_STOCK_LINE_PREFIX + 0));
+		fitsEveryWidth(v, "in bank unknown");
+	}
+
+	@Test
+	public void noStockpileTarget_levelOnly_savedStockpileReadsAsLevel()
 	{
 		Source s = new Source();
 		s.view = view("super_restore", null);
-		s.storage = SkillExternalStock.known("Potion Storage", 280L, "2026-10-12T10:00:00Z");
-		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(1_000);
+		s.bank = new HashMap<>();
+		s.goal = SkillGoal.DEFAULT.withTargetLevel(92).withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(1_000);
 		CurrentSessionView v = render(active(RESTORES, "'super_restore':3600000", RESTORE_INPUTS, RESTORE_OCC, "super_restore"), s);
-		assertEquals("-", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, "OWNED"));
-		fitsEveryWidth(v, "bank unknown");
+		Component family = named(v, CurrentSessionView.SC_TARGET_FAMILY_NAME);
+		assertTrue("a plain label, no one-choice dropdown", family instanceof JLabel);
+		assertEquals("Level", ((JLabel) family).getText());
+		assertNull("no resource picker", named(v, CurrentSessionView.SC_TARGET_RESOURCE_NAME));
+		assertNull(named(v, CurrentSessionView.SC_TARGET_QUANTITY_NAME));
+		assertEquals("92", ((javax.swing.JTextField) named(v, CurrentSessionView.SC_TARGET_LEVEL_NAME)).getText());
+		assertEquals(String.format("%,d", Experience.getXpForLevel(92) - s.xp),
+			cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_XP_LEFT_CELL));
+		for (Component c : all(v))
+		{
+			if (c instanceof JLabel && ((JLabel) c).getText() != null)
+			{
+				assertFalse(((JLabel) c).getText(), ((JLabel) c).getText().contains("Stockpile"));
+			}
+		}
+		fitsEveryWidth(v, "level only");
 	}
 
 	@Test
@@ -376,12 +407,11 @@ public class HerblorePresentationTest
 			item(ItemID.UNIDENTIFIED_RANARR, "Grimy ranarr weed", 482), "'mix:clean_ranarr':482,'units:clean_ranarr':482,"
 				+ "'in:clean_ranarr:" + ItemID.UNIDENTIFIED_RANARR + "':482", "clean_ranarr"), s);
 		assertEquals("Clean ranarr", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("482", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "CLEANED"));
-		assertEquals("1,928", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "CLEANED / HR"));
+		assertEquals("482", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "HERBS CLEANED"));
+		assertEquals("1,928", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "HERBS / HR"));
 		assertEquals("482", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "RANARR WEED"));
 		assertNull(named(v, CurrentSessionView.SC_EVENT_NAME));
 		assertNull(named(v, CurrentSessionView.SC_INPUTS_NAME));
-		assertNull(named(v, CurrentSessionView.SC_UNITS_NAME));
 		fitsEveryWidth(v, "cleaning");
 	}
 
@@ -398,10 +428,10 @@ public class HerblorePresentationTest
 		assertEquals("Ranarr potion (unf)", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("142", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "RANARR"));
 		assertEquals("188", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "VIALS"));
-		assertEquals("142", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
+		assertNull("CAN MAKE would repeat the limiting input", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
 		assertEquals("142", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "RANARR POTION (UNF)"));
-		assertEquals("142", cell(v, CurrentSessionView.SC_INPUTS_GRID_NAME, "VIALS"));
-		assertNull("the count IS the production", named(v, CurrentSessionView.SC_ACTIONS_NAME));
+		assertNull(named(v, CurrentSessionView.SC_INPUTS_NAME));
+		assertNull("unfinished potions are not potions created: the count IS the production", named(v, CurrentSessionView.SC_ACTIONS_NAME));
 		fitsEveryWidth(v, "unfinished");
 	}
 
@@ -418,9 +448,9 @@ public class HerblorePresentationTest
 		assertEquals("Extended antifire", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("152", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "ANTIFIRE DOSES"));
 		assertEquals("152 doses", cell(v, CurrentSessionView.SC_EVENT_GRID_NAME, "CAN MAKE"));
-		assertEquals("400 doses", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "EXTENDED ANTIFIRE"));
-		assertEquals("400", cell(v, CurrentSessionView.SC_INPUTS_GRID_NAME, "ANTIFIRE DOSES"));
-		assertEquals("400", cell(v, CurrentSessionView.SC_INPUTS_GRID_NAME, "SECONDARY"));
+		assertEquals("one-dose sprite + doses", ";" + ItemID._1DOSE2ANTIDRAGON + ":400 doses", SkillItems.production(v));
+		assertNull(named(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME));
+		assertNull(named(v, CurrentSessionView.SC_INPUTS_NAME));
 		fitsEveryWidth(v, "upgrade");
 	}
 
@@ -431,8 +461,12 @@ public class HerblorePresentationTest
 		s.view = view("super_restore", null);
 		CurrentSessionView v = render(active(RESTORES + "," + item(ItemID._3DOSEPRAYERRESTORE, "Prayer potion(3)", 120),
 			"'prayer':1200000,'super_restore':2400000", RESTORE_INPUTS, RESTORE_OCC + ",'mix:prayer':120,'units:prayer':360", "super_restore"), s);
-		assertEquals("1,092 doses", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "SUPER RESTORE"));
-		assertEquals("Also: Prayer potion 360 doses", text(v, CurrentSessionView.SC_BYPRODUCT_PREFIX + 0));
+		assertEquals(";" + SR1 + ":1,092 doses", SkillItems.production(v));
+		assertEquals("Also made", SkillItems.title(v, CurrentSessionView.SC_BYPRODUCT_PREFIX, 0));
+		assertEquals(";" + ItemID._1DOSEPRAYERRESTORE + ":360", SkillItems.byproduct(v, 0));
+		assertEquals("POTIONS CREATED spans the whole session: 358 + 120, never reset by the switch", "478",
+			cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "POTIONS CREATED"));
+		assertEquals("478 in 60 minutes of potion making", "478", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "POTIONS / HR"));
 		fitsEveryWidth(v, "switch");
 	}
 
@@ -442,16 +476,14 @@ public class HerblorePresentationTest
 		Source s = new Source();
 		s.view = view("divine_super_combat", batch(carried(ItemID._4DOSE2COMBAT, 9_999, ItemID.PRIF_CRYSTAL_SHARD_CRUSHED, 99_999),
 			ItemID._4DOSE2COMBAT, -1, ItemID.PRIF_CRYSTAL_SHARD_CRUSHED, -4, ItemID._4DOSEDIVINECOMBAT, 1));
-		s.bank = new HashMap<>();
-		s.storage = SkillExternalStock.unknown("Potion Storage");
-		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(ItemID._4DOSEDIVINECOMBAT).withTargetQuantity(9_999_999);
+		s.goal = SkillGoal.DEFAULT.withTargetLevel(99);
 		CurrentSessionView v = render(active(item(ItemID._4DOSEDIVINECOMBAT, "Divine super combat potion(4)", 1_234_567),
 			"'divine_super_combat':36000000", item(ItemID._4DOSE2COMBAT, "Super combat potion(4)", 1_234_567),
 			"'mix:divine_super_combat':1234567,'units:divine_super_combat':4938268,'in:divine_super_combat:" + ItemID._4DOSE2COMBAT
 				+ "':1234567", "divine_super_combat"), s);
 		assertEquals("Divine super combat potion", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("4,938,268 doses", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "DIVINE SUPER COMBAT"));
-		assertEquals("\u2264 9,999,999", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
+		assertEquals(";" + ItemID._1DOSEDIVINECOMBAT + ":4,938,268 doses", SkillItems.production(v));
+		assertEquals("1,234,567", cell(v, CurrentSessionView.SC_ACTIONS_GRID_NAME, "POTIONS CREATED"));
 		fitsEveryWidth(v, "long names");
 	}
 
@@ -511,6 +543,9 @@ public class HerblorePresentationTest
 			stats.text());
 		HistoryDetailView d = new HistoryDetailView(null, null, null, CONFIG, null);
 		d.render(HistoryDetailModel.from(done));
+		// Pass 28: a resource's breakdown rows sit behind "Details" until asked for.
+		assertNull(named(d, HistoryDetailView.SKILL_OWN_ROW_PREFIX + 1));
+		((DisclosureToggle) named(d, HistoryDetailView.SKILL_DETAILS_TOGGLE_NAME)).toggle();
 		assertEquals("Super restore", text(d, HistoryDetailView.SKILL_OWN_ROW_PREFIX + 0));
 		assertEquals("Made", text(d, HistoryDetailView.SKILL_OWN_ROW_PREFIX + 1));
 		assertEquals("Banked / stored", text(d, HistoryDetailView.SKILL_OWN_ROW_PREFIX + 2));
@@ -573,5 +608,23 @@ public class HerblorePresentationTest
 		HistoryDetailView d = new HistoryDetailView(null, null, null, CONFIG, null);
 		d.render(HistoryDetailModel.from(old));
 		assertNull(named(d, HistoryDetailView.SKILL_BLOCK_NAME));
+	}
+
+	@Test
+	public void history_cleanedHerbs_unfinished_andPotions_neverShareOneGrid()
+	{
+		java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView> items = java.util.Arrays.asList(
+			new com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView(SR3, "Super restore(3)", 340),
+			new com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView(ItemID.RANARR_WEED, "Ranarr weed", 482),
+			new com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView(ItemID.RANARRVIAL, "Ranarr potion (unf)", 120),
+			new com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView(SR4, "Super restore(4)", 18));
+		java.util.Map<String, java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView>> groups =
+			HistoryDetailView.producedGroups(com.osrstelemetry.plugin.skills.herblore.HerbloreCompanionDefinition.INSTANCE, items);
+		assertEquals(java.util.Arrays.asList("Potions", "Herbs cleaned", "Unfinished potions"), new java.util.ArrayList<>(groups.keySet()));
+		assertEquals(2, groups.get("Potions").size());
+		assertEquals(ItemID.RANARR_WEED, (int) groups.get("Herbs cleaned").get(0).getItemId());
+		// A skill without groups keeps its one grid.
+		assertEquals(java.util.Collections.singleton(null), HistoryDetailView.producedGroups(
+			com.osrstelemetry.plugin.skills.mining.MiningCompanionDefinition.INSTANCE, items).keySet());
 	}
 }

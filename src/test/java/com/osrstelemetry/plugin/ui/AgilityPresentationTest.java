@@ -276,7 +276,8 @@ public class AgilityPresentationTest
 		s.bank.put(ItemID.PRIF_CRYSTAL_SHARD, 438L);
 		Map<Integer, SkillGoalPlanner.BankingSample> banking = new HashMap<>();
 		banking.put(ItemID.PRIF_CRYSTAL_SHARD, new SkillGoalPlanner.BankingSample(40, 2, 3_000_000L));
-		s.view = view("prifddinas", new SkillCompanionView.CycleView("prifddinas", 4, 12, 38_000L, true), banking);
+		s.view = view("prifddinas", new SkillCompanionView.CycleView("prifddinas", 4, 12, 38_000L, true), banking)
+			.withCarried(Collections.singletonMap(ItemID.PRIF_CRYSTAL_SHARD, 12L));
 		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(ItemID.PRIF_CRYSTAL_SHARD).withTargetQuantity(1_000);
 		CurrentSessionView v = render(agility("ACTIVE", item(ItemID.PRIF_CRYSTAL_SHARD, "Crystal shard", 27), null, "'prifddinas':2292000",
 			laps("prifddinas", 31, 31 * 74_000L, 65_000, 0), "prifddinas"), s);
@@ -285,12 +286,17 @@ public class AgilityPresentationTest
 		assertEquals("27", cell(v, CurrentSessionView.SC_REWARDS_GRID_NAME, "CRYSTAL SHARDS"));
 		assertEquals("42.4", cell(v, CurrentSessionView.SC_REWARDS_GRID_NAME, "SHARDS / HR"));
 		assertNull("no marks on Prifddinas", cell(v, CurrentSessionView.SC_REWARDS_GRID_NAME, "MARKS"));
-		assertEquals("438", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_IN_BANK_CELL));
-		assertEquals("562", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
-		assertTrue(text(v, CurrentSessionView.SC_ETA_LINE_NAME).startsWith("ETA "));
+		// OWNED = 12 carried + 438 in the bank; never "Stockpile".
+		assertEquals(";" + ItemID.PRIF_CRYSTAL_SHARD + ":450 owned", SkillItems.grid(v, CurrentSessionView.SC_TARGET_SPRITE_NAME));
+		assertEquals("550", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
+		// 27 shards in 38m 12s of this course: 550 more at that observed rate (never the banked rate, never a wiki rate).
+		assertEquals(SkillGoalPlanner.etaText((long) Math.ceil(550 * 2_292_000d / 27)),
+			cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_ETA_CELL));
 		@SuppressWarnings("unchecked")
-		JComboBox<Object> combo = (JComboBox<Object>) named(v, CurrentSessionView.SC_TARGET_RESOURCE_NAME);
-		assertEquals("Prifddinas: crystal shards only", 1, combo.getItemCount());
+		JComboBox<Object> family = (JComboBox<Object>) named(v, CurrentSessionView.SC_TARGET_FAMILY_NAME);
+		assertEquals("Crystal shards", family.getSelectedItem().toString());
+		assertEquals("Level", family.getItemAt(0).toString());
+		assertNull("one reward: no resource dropdown", named(v, CurrentSessionView.SC_TARGET_RESOURCE_NAME));
 		fitsEveryWidth(v, "prif");
 	}
 
@@ -302,8 +308,13 @@ public class AgilityPresentationTest
 		s.goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(ItemID.GRACE).withTargetQuantity(260);
 		CurrentSessionView v = render(agility("ACTIVE", item(ItemID.GRACE, "Mark of grace", 3), null, "'ardougne':600000",
 			laps("ardougne", 9, 9 * 66_000L, 60_000, 0), "ardougne"), s);
-		assertEquals("-", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_IN_BANK_CELL));
-		assertEquals("ETA -", text(v, CurrentSessionView.SC_ETA_LINE_NAME));
+		assertEquals("bank never seen: unknown, never zero", ";" + ItemID.GRACE + ":\u2014 owned",
+			SkillItems.grid(v, CurrentSessionView.SC_TARGET_SPRITE_NAME));
+		assertEquals("-", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_REMAINING_CELL));
+		assertEquals("-", cell(v, CurrentSessionView.SC_TARGET_GRID_NAME, CurrentSessionView.SC_ETA_CELL));
+		@SuppressWarnings("unchecked")
+		JComboBox<Object> family = (JComboBox<Object>) named(v, CurrentSessionView.SC_TARGET_FAMILY_NAME);
+		assertEquals("Marks of grace", family.getSelectedItem().toString());
 		fitsEveryWidth(v, "target without ETA");
 	}
 

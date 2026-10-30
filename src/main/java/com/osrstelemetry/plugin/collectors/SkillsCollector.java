@@ -433,12 +433,36 @@ public class SkillsCollector
 		closeXpWindowsFor(client.getAccountHash());
 	}
 
+	/**
+	 * ADDED (live-QA takeover tuning). Closes ONE skill's XP window now
+	 * (exactly as the slow cadence would, never a second baseline rule): a
+	 * skill companion's confirmed success is waiting to take over a SUSPENDED
+	 * different session (SessionRuntimeCoordinator#drainEarlyXpWindowSkill).
+	 * {@code skillKey} matches the skill name case-insensitively.
+	 */
+	public void closeXpWindowNow(String skillKey)
+	{
+		if (skillKey != null)
+		{
+			closeXpWindowsFor(client.getAccountHash(), skillKey);
+		}
+	}
+
 	private void closeXpWindowsFor(long accountHash)
+	{
+		closeXpWindowsFor(accountHash, null);
+	}
+
+	private void closeXpWindowsFor(long accountHash, String onlySkill)
 	{
 		String now = Instant.now().toString();
 		for (Map.Entry<String, SkillsState.SkillEntry> entry : state.getSkills().entrySet())
 		{
 			String skillName = entry.getKey();
+			if (onlySkill != null && !onlySkill.equalsIgnoreCase(skillName))
+			{
+				continue;
+			}
 			int currentXp = entry.getValue().getXp();
 
 			Integer existingBaseline = windowBaselineXp.containsKey(skillName) ? windowBaselineXp.get(skillName) : null;

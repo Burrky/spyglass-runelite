@@ -38,7 +38,9 @@ public final class SkillCompanionView
 		{
 			NORMAL,
 			ALERT,
-			QUIET
+			QUIET,
+			/** Something that will cost the player (an iron bar that may fail to smelt): red. */
+			DANGER
 		}
 
 		private final String text;
@@ -65,6 +67,97 @@ public final class SkillCompanionView
 		public String getTooltip()
 		{
 			return tooltip;
+		}
+	}
+
+	/**
+	 * Item + number, shown as the item's own sprite with its number: one value
+	 * per column (null = unknown, shown as a dash -- never zero), or a short
+	 * text beside the sprite ("54 loaded"). The tooltip carries the exact
+	 * name and numbers.
+	 */
+	public static final class ItemStat
+	{
+		private final int itemId;
+		private final String name;
+		private final List<Long> values;
+		private final String text;
+		private final String tooltip;
+
+		public ItemStat(int itemId, String name, List<Long> values, String text, String tooltip)
+		{
+			this.itemId = itemId;
+			this.name = name;
+			this.values = values == null ? Collections.<Long>emptyList() : Collections.unmodifiableList(new java.util.ArrayList<>(values));
+			this.text = text;
+			this.tooltip = tooltip;
+		}
+
+		/** One number (a tile). */
+		public static ItemStat of(int itemId, String name, Long value, String tooltip)
+		{
+			return new ItemStat(itemId, name, Collections.singletonList(value), null, tooltip);
+		}
+
+		/** A sprite with a short text beside it. */
+		public static ItemStat line(int itemId, String name, String text, String tooltip)
+		{
+			return new ItemStat(itemId, name, Collections.<Long>emptyList(), text, tooltip);
+		}
+
+		public int getItemId()
+		{
+			return itemId;
+		}
+
+		public String getName()
+		{
+			return name;
+		}
+
+		public List<Long> getValues()
+		{
+			return values;
+		}
+
+		public String getText()
+		{
+			return text;
+		}
+
+		public String getTooltip()
+		{
+			return tooltip;
+		}
+	}
+
+	/** A titled set of item stats (title null = none): tiles, rows under column captions, or sprite lines. */
+	public static final class ItemGroup
+	{
+		private final String title;
+		private final List<String> captions;
+		private final List<ItemStat> items;
+
+		public ItemGroup(String title, List<String> captions, List<ItemStat> items)
+		{
+			this.title = title;
+			this.captions = captions == null ? Collections.<String>emptyList() : Collections.unmodifiableList(new java.util.ArrayList<>(captions));
+			this.items = items == null ? Collections.<ItemStat>emptyList() : Collections.unmodifiableList(new java.util.ArrayList<>(items));
+		}
+
+		public String getTitle()
+		{
+			return title;
+		}
+
+		public List<String> getCaptions()
+		{
+			return captions;
+		}
+
+		public List<ItemStat> getItems()
+		{
+			return items;
 		}
 	}
 
@@ -223,6 +316,22 @@ public final class SkillCompanionView
 		{
 			return runwayMillis;
 		}
+
+		/** The supply's own item (its sprite); -1 = none known. */
+		private int itemId = -1;
+
+		/** The same reading shown with the supply item's sprite. */
+		public SupplyView withItem(int supplyItemId)
+		{
+			SupplyView copy = new SupplyView(name, count, runwayMillis);
+			copy.itemId = supplyItemId;
+			return copy;
+		}
+
+		public int getItemId()
+		{
+			return itemId;
+		}
 	}
 
 	private SupplyView supply;
@@ -249,6 +358,8 @@ public final class SkillCompanionView
 		copy.pendingOccurrences = pendingOccurrences;
 		copy.focus = focus;
 		copy.event = event;
+		copy.stock = stock;
+		copy.carried = carried;
 		copy.flushedConsumed = flushedConsumed;
 		copy.pendingConsumed = pendingConsumed;
 		return copy;
@@ -312,6 +423,29 @@ public final class SkillCompanionView
 		{
 			return elapsedMillis;
 		}
+
+		/** A short quiet line under the numbers ("Last tree: 4 logs"); null = none. */
+		private String note;
+		private String noteTooltip;
+
+		/** The same focus with a quiet line under its numbers. */
+		public FocusView withNote(String text, String tooltip)
+		{
+			FocusView copy = new FocusView(label, produced, elapsedMillis);
+			copy.note = text;
+			copy.noteTooltip = tooltip;
+			return copy;
+		}
+
+		public String getNote()
+		{
+			return note;
+		}
+
+		public String getNoteTooltip()
+		{
+			return noteTooltip;
+		}
 	}
 
 	/**
@@ -358,13 +492,41 @@ public final class SkillCompanionView
 		private final List<ContextLine> lines;
 		/** Section title overriding the definition's eventTitle(); null = the definition's. */
 		private String title;
+		/** Item sprites with their numbers, after the fields (none by default). */
+		private List<ItemGroup> itemGroups = Collections.emptyList();
 
 		/** The same event under its own section title (e.g. a phase of the method rather than an event). */
 		public EventView withTitle(String sectionTitle)
 		{
 			EventView copy = new EventView(key, name, elapsedMillis, fields, lines);
 			copy.title = sectionTitle;
+			copy.itemGroups = itemGroups;
 			return copy;
+		}
+
+		/** The same event with item groups shown as sprites + numbers (empty groups are dropped). */
+		public EventView withItemGroups(List<ItemGroup> groups)
+		{
+			EventView copy = new EventView(key, name, elapsedMillis, fields, lines);
+			copy.title = title;
+			List<ItemGroup> kept = new java.util.ArrayList<>();
+			if (groups != null)
+			{
+				for (ItemGroup g : groups)
+				{
+					if (g != null && !g.getItems().isEmpty())
+					{
+						kept.add(g);
+					}
+				}
+			}
+			copy.itemGroups = Collections.unmodifiableList(kept);
+			return copy;
+		}
+
+		public List<ItemGroup> getItemGroups()
+		{
+			return itemGroups;
 		}
 
 		public String getTitle()
@@ -458,6 +620,36 @@ public final class SkillCompanionView
 	public EventView getEvent()
 	{
 		return event;
+	}
+
+	/** ADDED (live-QA polish): what the account holds for the current method outside the inventory; null = none. */
+	private EventView stock;
+
+	public SkillCompanionView withStock(EventView accountStock)
+	{
+		SkillCompanionView copy = copy();
+		copy.stock = accountStock;
+		return copy;
+	}
+
+	public EventView getStock()
+	{
+		return stock;
+	}
+
+	/** ADDED (live-QA polish): what the inventory holds of the target resources; null = unknown. */
+	private Map<Integer, Long> carried;
+
+	public SkillCompanionView withCarried(Map<Integer, Long> inventory)
+	{
+		SkillCompanionView copy = copy();
+		copy.carried = inventory;
+		return copy;
+	}
+
+	public Map<Integer, Long> getCarried()
+	{
+		return carried;
 	}
 
 	/**

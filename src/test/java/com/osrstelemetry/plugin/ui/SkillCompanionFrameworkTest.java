@@ -76,6 +76,7 @@ public class SkillCompanionFrameworkTest
 		{"woodcutting", WoodcuttingMethod.NORMAL.getKey(), ItemID.LOGS, "Logs"},
 		{"runecraft", RunecraftMethod.NATURE.getKey(), ItemID.NATURERUNE, "Nature rune"},
 		{"herblore", "super_restore", ItemID._3DOSE2RESTORE, "Super restore(3)"},
+		{"smithing", "smelt_steel", ItemID.STEEL_BAR, "Steel bar"},
 	};
 
 	/** Each skill's own signature words: they may appear in that skill's text only. */
@@ -89,6 +90,7 @@ public class SkillCompanionFrameworkTest
 		VOCABULARY.put("woodcutting", words("tree", "trees", "log", "logs", "axe", "forestry"));
 		VOCABULARY.put("runecraft", words("essence", "rune", "runes", "altar", "pouch", "pouches", "crafting"));
 		VOCABULARY.put("herblore", words("potion", "potions", "dose", "doses", "herb", "herbs", "mixology", "vial"));
+		VOCABULARY.put("smithing", words("anvil", "furnace", "smelt", "smelted", "bar", "bars", "cannonball", "cannonballs", "foundry"));
 	}
 
 	private static Pattern words(String... w)
@@ -206,7 +208,8 @@ public class SkillCompanionFrameworkTest
 			SkillResource resource = def.resource(itemId);
 			assertNotNull(key + ": the fixture item is this skill's production", resource);
 			Session session = session("ACTIVE", key, (String) s[1], item(itemId, (String) s[3], 120), "'" + s[1] + "':3600000");
-			Source source = new Source(def, SkillCompanionView.EMPTY);
+			// The inventory read too (a reward target counts what you carry).
+			Source source = new Source(def, SkillCompanionView.EMPTY.withCarried(new HashMap<Integer, Long>()));
 			source.bank = new HashMap<>();
 			source.bank.put(itemId, 500L);
 
@@ -224,6 +227,21 @@ public class SkillCompanionFrameworkTest
 			assertNotNull(key + ": bank known -> a number, never '-'", firstValue((Container) grid));
 			fitsEveryWidth(stock, key + " stockpile");
 		}
+	}
+
+	@Test
+	public void everySkill_resourceTargetIsNamedByItsResource_neverStockpile()
+	{
+		for (Object[] s : SKILLS)
+		{
+			SkillCompanionDefinition def = SkillCompanions.forSkillKey((String) s[0]);
+			String label = CurrentSessionView.resourceTargetLabel(def, (String) s[1]);
+			assertFalse(s[0] + ": " + label, label.contains("Stockpile"));
+		}
+		assertEquals("Iron ore", CurrentSessionView.resourceTargetLabel(SkillCompanions.forSkillKey("mining"), MiningMethod.IRON.getKey()));
+		assertEquals("Marks of grace", CurrentSessionView.resourceTargetLabel(SkillCompanions.forSkillKey("agility"), "ardougne"));
+		assertEquals("Crystal shards", CurrentSessionView.resourceTargetLabel(SkillCompanions.forSkillKey("agility"), "prifddinas"));
+		assertEquals("Termites", CurrentSessionView.resourceTargetLabel(SkillCompanions.forSkillKey("agility"), "colossal_wyrm_basic"));
 	}
 
 	// ---- backward compatibility matrix ------------------------------------------------------------

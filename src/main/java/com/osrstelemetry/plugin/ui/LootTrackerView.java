@@ -33,7 +33,6 @@ import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
-import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.QuantityFormatter;
 
 /**
@@ -341,7 +340,7 @@ final class LootTrackerView extends JPanel
 		// ALWAYS the full tracked total -- see class javadoc/computeRenderKey's
 		// own note on why this never goes stale on the Favorites tab or
 		// while searching. Placed above All/Favorites.
-		globalTotalHeader.setFont(FontManager.getRunescapeBoldFont());
+		globalTotalHeader.setFont(SpyglassFonts.bold());
 		globalTotalHeader.setForeground(SpyglassTheme.ACCENT_GOLD);
 		// Same X alignment as every other toolbar row, stretched to the full
 		// row: BoxLayout places a LEFT-aligned child among CENTER-aligned
@@ -366,7 +365,7 @@ final class LootTrackerView extends JPanel
 		JPanel searchRow = new JPanel(new BorderLayout(4, 0));
 		searchRow.setOpaque(false);
 		searchField = new JTextField();
-		searchField.setFont(FontManager.getRunescapeSmallFont());
+		searchField.setFont(SpyglassFonts.small());
 		searchField.setToolTipText("Search loot by item name");
 		searchField.setBackground(SpyglassTheme.BACKGROUND_PANEL);
 		searchField.setForeground(SpyglassTheme.TEXT_PRIMARY);
@@ -378,7 +377,7 @@ final class LootTrackerView extends JPanel
 		searchRow.add(searchField, BorderLayout.CENTER);
 
 		viewModeButton = new JButton();
-		viewModeButton.setFont(FontManager.getRunescapeSmallFont());
+		viewModeButton.setFont(SpyglassFonts.small());
 		viewModeButton.setFocusPainted(false);
 		viewModeButton.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		viewModeButton.setBackground(SpyglassTheme.BACKGROUND_PANEL);
@@ -395,7 +394,7 @@ final class LootTrackerView extends JPanel
 		JPanel optionsRow = new JPanel(new BorderLayout(4, 0));
 		optionsRow.setOpaque(false);
 		showHiddenCheckbox = new JCheckBox("Show hidden");
-		showHiddenCheckbox.setFont(FontManager.getRunescapeSmallFont());
+		showHiddenCheckbox.setFont(SpyglassFonts.small());
 		showHiddenCheckbox.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		showHiddenCheckbox.setOpaque(false);
 		showHiddenCheckbox.setFocusPainted(false);
@@ -429,7 +428,7 @@ final class LootTrackerView extends JPanel
 		// Session already relies on) is what scrolls it.
 		add(content, BorderLayout.CENTER);
 
-		totalsFooter.setFont(FontManager.getRunescapeBoldFont());
+		totalsFooter.setFont(SpyglassFonts.bold());
 		totalsFooter.setForeground(SpyglassTheme.ACCENT_GOLD);
 		totalsFooter.setBorder(BorderFactory.createEmptyBorder(4, 6, 6, 6));
 		add(totalsFooter, BorderLayout.SOUTH);
@@ -442,7 +441,7 @@ final class LootTrackerView extends JPanel
 	private static JButton bulkButton(String text, String tooltip)
 	{
 		JButton button = new JButton(text);
-		button.setFont(FontManager.getRunescapeSmallFont());
+		button.setFont(SpyglassFonts.small());
 		button.setFocusPainted(false);
 		button.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		button.setBackground(SpyglassTheme.BACKGROUND_PANEL);
@@ -477,7 +476,7 @@ final class LootTrackerView extends JPanel
 	private JButton subTabButton(String text)
 	{
 		JButton button = new JButton(text);
-		button.setFont(FontManager.getRunescapeSmallFont());
+		button.setFont(SpyglassFonts.small());
 		button.setFocusPainted(false);
 		// Paints a thin border -- see styleSubTabButton().
 		button.setBorderPainted(true);
@@ -851,12 +850,12 @@ final class LootTrackerView extends JPanel
 		footer.setOpaque(false);
 		footer.setAlignmentX(Component.LEFT_ALIGNMENT);
 		JLabel note = new JLabel("Showing most recent " + shown + " of " + total + " drops");
-		note.setFont(FontManager.getRunescapeSmallFont());
+		note.setFont(SpyglassFonts.small());
 		note.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		note.setAlignmentX(Component.LEFT_ALIGNMENT);
 		footer.add(note);
 		JButton loadMore = new JButton("Load more");
-		loadMore.setFont(FontManager.getRunescapeSmallFont());
+		loadMore.setFont(SpyglassFonts.small());
 		loadMore.setFocusPainted(false);
 		loadMore.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		loadMore.setBackground(SpyglassTheme.BACKGROUND_PANEL);
@@ -1037,19 +1036,17 @@ final class LootTrackerView extends JPanel
 			JPanel header = new JPanel(new BorderLayout(4, 0));
 			header.setOpaque(false);
 			header.setAlignmentX(Component.LEFT_ALIGNMENT);
-			JLabel title = new JLabel(truncateSourceName(record.source.getSourceName()));
+			JLabel title = new WrappingHtmlLabel(record.source.getSourceName(), false);
 			title.setName(RECORD_SOURCE_NAME);
-			title.setFont(FontManager.getRunescapeBoldFont());
+			title.setFont(SpyglassFonts.bold());
 			title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 			title.setToolTipText(record.source.getSourceName() + " -- " + recordTimeText(record.record.getObservedAt()));
-			title.setMinimumSize(new Dimension(0, title.getPreferredSize().height));
-			header.add(title, BorderLayout.CENTER);
+			header.add(FarmingRunPage.cell(title), BorderLayout.CENTER);
 			JLabel value = new JLabel(QuantityFormatter.quantityToStackSize(LootPricing.sumTotalValue(rows)) + " gp");
-			value.setFont(FontManager.getRunescapeSmallFont());
+			value.setFont(SpyglassFonts.small());
 			value.setForeground(SpyglassTheme.ACCENT_GOLD);
 			header.add(value, BorderLayout.EAST);
-			header.setMaximumSize(new Dimension(Integer.MAX_VALUE, header.getPreferredSize().height));
-			card.add(header);
+			card.add(HomeDetailPage.growing(header)); // its height follows the wrapped name
 			card.add(Box.createVerticalStrut(3));
 			card.add(gridOf(rows, modeLabel, record.source));
 		}
@@ -1454,7 +1451,7 @@ final class LootTrackerView extends JPanel
 		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
 		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
 		JLabel label = new WrappingHtmlLabel(message, true);
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		label.setHorizontalAlignment(JLabel.CENTER);
 		label.setBorder(BorderFactory.createEmptyBorder(16, 0, 0, 0));
@@ -1497,7 +1494,7 @@ final class LootTrackerView extends JPanel
 				BorderFactory.createLineBorder(SpyglassTheme.BORDER_SOFT),
 				BorderFactory.createEmptyBorder(5, 7, 5, 7)));
 			card.setComponentPopupMenu(buildResetContextMenu(() -> entry));
-			indicator.setFont(FontManager.getRunescapeSmallFont());
+			indicator.setFont(SpyglassFonts.small());
 			indicator.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			indicator.addMouseListener(new ClickListener(() -> toggleCard(this)));
 			shell.add(card);
@@ -1574,7 +1571,7 @@ final class LootTrackerView extends JPanel
 		if (source.getKillCount() > 0)
 		{
 			JLabel subtitle = new JLabel(buildHeaderSubtitleText(sourceTotal, source.getKillCount(), source.isStructuredReward()));
-			subtitle.setFont(FontManager.getRunescapeSmallFont());
+			subtitle.setFont(SpyglassFonts.small());
 			subtitle.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			subtitle.setAlignmentX(Component.LEFT_ALIGNMENT);
 			subtitle.setBorder(BorderFactory.createEmptyBorder(1, 4, 0, 0));
@@ -1653,7 +1650,7 @@ final class LootTrackerView extends JPanel
 		leftGroup.setOpaque(false);
 
 		JLabel star = new JLabel(source.isFavorite() ? "★" : "☆");
-		star.setFont(FontManager.getRunescapeBoldFont());
+		star.setFont(SpyglassFonts.bold());
 		star.setForeground(source.isFavorite() ? SpyglassTheme.ACCENT_GOLD : SpyglassTheme.TEXT_SECONDARY);
 		star.setToolTipText(source.isFavorite() ? "Unfavorite" : "Favorite");
 		star.addMouseListener(new ClickListener(() ->
@@ -1667,25 +1664,27 @@ final class LootTrackerView extends JPanel
 			requestRefresh();
 		}));
 		star.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 4));
-		leftGroup.add(star, BorderLayout.WEST);
+		JPanel starCell = new JPanel(new BorderLayout());
+		starCell.setOpaque(false);
+		starCell.add(star, BorderLayout.NORTH); // beside the name's first line when the name wraps
+		leftGroup.add(starCell, BorderLayout.WEST);
 
-		JLabel title = new JLabel(truncateSourceName(source.getSourceName()));
+		// The whole name, wrapping at its own cell's width (pass 30: never cut short at any text size; the tooltip repeats it).
+		JLabel title = new WrappingHtmlLabel(source.getSourceName(), false);
 		title.setName(SOURCE_TITLE_NAME);
-		title.setFont(FontManager.getRunescapeBoldFont());
+		title.setFont(SpyglassFonts.bold());
 		title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		title.setToolTipText(source.getSourceName());
 		title.addMouseListener(new ClickListener(() -> toggleCard(card)));
-		// May shrink to nothing; JLabel draws the ellipsis itself.
-		title.setMinimumSize(new Dimension(0, title.getPreferredSize().height));
-		leftGroup.add(title, BorderLayout.CENTER);
+		leftGroup.add(FarmingRunPage.cell(title), BorderLayout.CENTER);
 
 		JPanel trailing = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
 		trailing.setOpaque(false);
 		if (source.getKillCount() > 0)
 		{
-			JLabel count = new JLabel("×" + source.getKillCount());
+			JLabel count = new JLabel("×" + String.format("%,d", source.getKillCount()));
 			count.setName(SOURCE_COUNT_NAME);
-			count.setFont(FontManager.getRunescapeBoldFont());
+			count.setFont(SpyglassFonts.bold());
 			count.setForeground(SpyglassTheme.TEXT_PRIMARY);
 			count.addMouseListener(new ClickListener(() -> toggleCard(card)));
 			trailing.add(count);

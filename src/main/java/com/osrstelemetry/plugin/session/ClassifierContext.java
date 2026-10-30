@@ -572,6 +572,7 @@ public final class ClassifierContext
 		// Ownership evidence is the previous account's: it must never break a tie for the next one.
 		this.skillMethodEvidence.clear();
 		this.skillContextEvidence.clear();
+		this.skillProductionEvidence.clear();
 	}
 
 	// ---- SKILL-METHOD EVIDENCE (Skills Phase 2: Fishing) ------------------------------------
@@ -683,6 +684,59 @@ public final class ClassifierContext
 	 * activity's last evidence (the other skill trained on its own afterwards)
 	 * is never covered.
 	 */
+	// ---- SKILL PRODUCTION EVIDENCE (live-QA takeover tuning) --------------------------------
+
+	/**
+	 * Latest CAUSALLY CONFIRMED production per SKILLING key, reported by that
+	 * skill's companion: a success it recorded because the skill's own XP and
+	 * the matching items changed together (an input became the product, or
+	 * the gathered item reached the inventory). Never
+	 * XP alone, never a click, never another skill's XP. Used only to let that
+	 * skill's own XP dislodge a SUSPENDED different session at once
+	 * (SessionSignalBatchResolver#applySkillProductionTakeover); never a
+	 * metric, never persisted.
+	 */
+	private final Map<String, Instant> skillProductionEvidence = new HashMap<>();
+
+	void noteSkillProductionEvidence(String skillKey, Instant at)
+	{
+		if (skillKey == null || at == null)
+		{
+			return;
+		}
+		Instant previous = skillProductionEvidence.get(skillKey);
+		if (previous == null || at.isAfter(previous))
+		{
+			skillProductionEvidence.put(skillKey, at);
+		}
+	}
+
+	/**
+	 * Whether {@code skillKey} XP observed at {@code observedAt} (its window
+	 * began at {@code windowStart}, may be null) is backed by confirmed
+	 * production of that same skill from INSIDE that window -- the same
+	 * strict freshness as context evidence: a window that began after the
+	 * skill's last confirmed success is never covered.
+	 */
+	boolean hasFreshSkillProductionEvidence(String skillKey, Instant windowStart, Instant observedAt)
+	{
+		Instant at = skillKey == null || observedAt == null ? null : skillProductionEvidence.get(skillKey);
+		if (at == null)
+		{
+			return false;
+		}
+		Instant earliest = observedAt.minus(SKILL_CONTEXT_EVIDENCE_MAX_AGE);
+		if (windowStart != null)
+		{
+			Instant fromWindow = windowStart.minus(SKILL_CONTEXT_EVIDENCE_LEAD);
+			if (fromWindow.isAfter(earliest))
+			{
+				earliest = fromWindow;
+			}
+		}
+		return !at.isBefore(earliest) && !at.isAfter(observedAt.plus(SKILL_METHOD_EVIDENCE_SLACK));
+	}
+
 	boolean hasFreshSkillContextEvidence(String ownerSkillKey, String xpSkill, Instant windowStart, Instant observedAt)
 	{
 		if (ownerSkillKey == null || xpSkill == null || observedAt == null)

@@ -194,6 +194,36 @@ public final class TelemetryPaths
 	 * logging on write failure) -- this is purely defensive, not a new
 	 * failure mode.
 	 */
+	/**
+	 * A RuneScape-profile-scoped folder inside the account folder:
+	 * {@code {accountHash}/profiles/{profileKey}/}. New in the Home / Farming
+	 * era: only new data lives here (Farming, later POH), and only the
+	 * "standard" profile is used. Existing account-level data is untouched
+	 * (canonical architecture §22, ARCH-DEBT-PROFILE).
+	 */
+	public static Filepath profileDir(long accountHash, String profileKey)
+	{
+		Filepath dir = accountDir(accountHash).joinSegment("profiles").joinSegment(profileKey);
+		createDirectoriesQuietly(dir);
+		return dir;
+	}
+
+	/** {@code {accountHash}/profiles/{profileKey}/farming/}: patches.json, observations.jsonl, calibration.json. */
+	public static Filepath farmingDir(long accountHash, String profileKey)
+	{
+		Filepath dir = profileDir(accountHash, profileKey).joinSegment("farming");
+		createDirectoriesQuietly(dir);
+		return dir;
+	}
+
+	/** {@code {accountHash}/profiles/{profileKey}/account/}: storages.json (Phase F account capability evidence). */
+	public static Filepath accountCapabilityDir(long accountHash, String profileKey)
+	{
+		Filepath dir = profileDir(accountHash, profileKey).joinSegment("account");
+		createDirectoriesQuietly(dir);
+		return dir;
+	}
+
 	private static void createDirectoriesQuietly(Filepath dir)
 	{
 		try

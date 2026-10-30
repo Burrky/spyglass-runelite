@@ -709,6 +709,32 @@ public class FishingCompanionTrackerTest
 	}
 
 	@Test
+	public void sharkLures_spriteCountAndObservedUse_timeLeftOnlyAfterRealEvidence()
+	{
+		login(ItemID.SHARK_LURE, 60);
+		fish(ItemID.RAW_SHARK, ItemID.SHARK_LURE);
+		settle();
+		assertEquals("shark", t.getMethodKey());
+		SkillCompanionView.SupplyView s = t.supply(now);
+		assertNotNull(s);
+		assertEquals("Shark lures", s.getName());
+		assertEquals(ItemID.SHARK_LURE, s.getItemId());
+		assertEquals(59L, s.getCount());
+		assertNull("one lure is no rate", s.getRunwayMillis());
+		// Only what actually disappeared counts: every other catch uses a lure here (never one per catch assumed).
+		for (int i = 0; i < 30; i++)
+		{
+			fish(ItemID.RAW_SHARK, i % 2 == 0 ? ItemID.SHARK_LURE : null);
+			steps(8);
+		}
+		settle();
+		s = t.supply(now);
+		assertEquals(44L, s.getCount());
+		assertEquals(16L, t.getSupply().getConsumed());
+		assertNotNull("enough real use seen: an estimate", s.getRunwayMillis());
+	}
+
+	@Test
 	public void supplies_depositsWithdrawalsAndDrops_areNeverConsumption()
 	{
 		login(FEATHER, 100);

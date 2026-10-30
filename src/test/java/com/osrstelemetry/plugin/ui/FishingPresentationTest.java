@@ -1,6 +1,7 @@
 package com.osrstelemetry.plugin.ui;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -36,7 +37,7 @@ import org.junit.Test;
  * The Fishing companion as the player sees it, rendered by the SAME
  * Current Session / History code as Mining (no Fishing-specific panel):
  * natural captions, FISH CAUGHT with a breakdown line, the fish barrel line,
- * SUPPLIES with RUNWAY, stackable methods without a trip, targets -- at 150 /
+ * SUPPLIES with TIME LEFT, stackable methods without a trip, targets -- at 150 /
  * 180 / 213 / 260 px -- and History's compact row, FISHING block and CAUGHT
  * grid. Mining and Fishing companions registered side by side never mix.
  */
@@ -232,10 +233,9 @@ public class FishingPresentationTest
 		CurrentSessionView v = render(fishing("ACTIVE", item(LOBSTER, "Raw lobster", 412), item(LOBSTER, "Raw lobster", 364),
 			"'lobster':3600000", "lobster"), s);
 		assertEquals("Lobster", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("9", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_SPACE_LEFT_CELL));
+		assertNull("no SPACE LEFT", named(v, SlayerStatGrid.CELL_PREFIX + "SPACE LEFT"));
 		assertEquals("~1:35", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_EST_FULL_CELL));
-		assertEquals("412", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "LOBSTERS"));
-		assertEquals("364", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, CurrentSessionView.SC_BANKED_CELL));
+		assertEquals("CAUGHT|BANKED;" + LOBSTER + ":412|364", SkillItems.production(v));
 		assertEquals("412 lobsters/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		assertNull("no supplies for cages", named(v, CurrentSessionView.SC_SUPPLY_NAME));
 		fitsEveryWidth(v, "lobsters");
@@ -250,10 +250,10 @@ public class FishingPresentationTest
 			"'fly':3600000", "fly"), s);
 		assertEquals("Fly fishing", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("1,012", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "FISH CAUGHT"));
-		assertEquals("Trout 700 • Salmon 312", text(v, CurrentSessionView.SC_BREAKDOWN_NAME));
+		assertEquals("each fish its own sprite row", "CAUGHT|BANKED;" + TROUT + ":700|0;" + SALMON + ":312|0", SkillItems.production(v));
 		assertEquals("one multi-output method: its own rate", "1,012 fish/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		assertEquals("1,240", cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, "FEATHERS"));
-		assertEquals(SkillGoalPlanner.etaText(31L * 60_000L), cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_RUNWAY_CELL));
+		assertEquals(SkillGoalPlanner.etaText(31L * 60_000L), cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_TIME_LEFT_CELL));
 		fitsEveryWidth(v, "fly fishing");
 	}
 
@@ -263,11 +263,31 @@ public class FishingPresentationTest
 		Source s = new Source();
 		s.view = view("karambwan", trip(20, 240_000L)).withSupply(new SkillCompanionView.SupplyView("Karambwanji", 300L, null));
 		CurrentSessionView v = render(fishing("ACTIVE", item(KARAMBWAN, "Raw karambwan", 180), null, "'karambwan':3600000", "karambwan"), s);
-		assertEquals("180", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "KARAMBWAN"));
+		assertEquals("CAUGHT|BANKED;" + KARAMBWAN + ":180|0", SkillItems.production(v));
 		assertEquals("300", cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, "KARAMBWANJI"));
-		String runway = cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_RUNWAY_CELL);
+		String runway = cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_TIME_LEFT_CELL);
 		assertTrue("no runway before the evidence: " + runway, runway == null || "-".equals(runway));
 		fitsEveryWidth(v, "karambwan");
+	}
+
+	@Test
+	public void sharkLures_spriteWithCount_timeLeft_neverRunway()
+	{
+		Source s = new Source();
+		s.view = view("shark", trip(20, null)).withSupply(new SkillCompanionView.SupplyView("Shark lures", 412L, 52L * 60_000L)
+			.withItem(ItemID.SHARK_LURE));
+		CurrentSessionView v = render(fishing("ACTIVE", item(ItemID.RAW_SHARK, "Raw shark", 96), null, "'shark':3600000", "shark"), s);
+		assertEquals(";" + ItemID.SHARK_LURE + ":412 carried", SkillItems.grid(v, CurrentSessionView.SC_SUPPLY_ITEMS_NAME));
+		assertEquals(SkillGoalPlanner.etaText(52L * 60_000L), cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_TIME_LEFT_CELL));
+		assertNull("the sprite carries the count", cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, "SHARK LURES"));
+		for (Component c : all(v))
+		{
+			if (c instanceof JLabel && ((JLabel) c).getText() != null)
+			{
+				assertFalse(((JLabel) c).getText(), ((JLabel) c).getText().toUpperCase(java.util.Locale.ROOT).contains("RUNWAY"));
+			}
+		}
+		fitsEveryWidth(v, "shark lures");
 	}
 
 	@Test
@@ -276,7 +296,7 @@ public class FishingPresentationTest
 		Source s = new Source();
 		s.view = view("karambwan", trip(20, null)).withSupply(new SkillCompanionView.SupplyView("Karambwanji", 0L, 0L));
 		CurrentSessionView v = render(fishing("ACTIVE", item(KARAMBWAN, "Raw karambwan", 18), null, "'karambwan':600000", "karambwan"), s);
-		assertEquals("Out", cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_RUNWAY_CELL));
+		assertEquals("Out", cell(v, CurrentSessionView.SC_SUPPLY_GRID_NAME, CurrentSessionView.SC_TIME_LEFT_CELL));
 	}
 
 	@Test
@@ -286,7 +306,7 @@ public class FishingPresentationTest
 		s.view = view("lobster", new SkillCompanionView.TripView(20, null, "Fish barrel", null, 28, 12, true));
 		CurrentSessionView v = render(fishing("ACTIVE", item(LOBSTER, "Raw lobster", 20), null, "'lobster':600000", "lobster"), s);
 		assertEquals("Fish barrel +12 this trip", text(v, CurrentSessionView.SC_STORAGE_NAME));
-		assertEquals("-", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_EST_FULL_CELL));
+		assertNull("no EST. FULL placeholder while unknown: only the barrel line", named(v, CurrentSessionView.SC_TRIP_GRID_NAME));
 		fitsEveryWidth(v, "barrel unknown");
 
 		s.view = view("lobster", new SkillCompanionView.TripView(20, 300_000L, "Fish barrel", 8, 28, 8, true).withEstIncludingStorage());
@@ -304,7 +324,7 @@ public class FishingPresentationTest
 			"Flying fish eating your minnows", SkillCompanionView.ContextLine.Tone.ALERT, "tip")));
 		CurrentSessionView v = render(fishing("ACTIVE", item(MINNOW, "Minnow", 2_412), null, "'minnows':3600000", "minnows"), s);
 		assertNull("stackable: inventory space is never the limit", named(v, CurrentSessionView.SC_TRIP_NAME));
-		assertEquals("2,412", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "MINNOWS"));
+		assertEquals("CAUGHT|BANKED;" + ItemID.MINNOW + ":2,412|0", SkillItems.production(v));
 		assertEquals("Flying fish eating your minnows", text(v, CurrentSessionView.SC_CONTEXT_PREFIX + 0));
 		fitsEveryWidth(v, "minnows");
 	}
@@ -315,7 +335,7 @@ public class FishingPresentationTest
 		Source s = new Source();
 		CurrentSessionView v = render(fishing("ACTIVE", item(LOBSTER, "Raw lobster", 3), null, null, null), s);
 		assertNull(named(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("3", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "LOBSTERS"));
+		assertEquals("CAUGHT|BANKED;" + LOBSTER + ":3|0", SkillItems.production(v));
 		fitsEveryWidth(v, "unknown method");
 	}
 
@@ -370,12 +390,11 @@ public class FishingPresentationTest
 
 		CurrentSessionView v = render(fishing("ACTIVE", item(LOBSTER, "Raw lobster", 12), null, "'lobster':600000", "lobster"), mine, fish);
 		assertEquals("Lobster", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("9", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_SPACE_LEFT_CELL));
+		assertEquals("CAUGHT|BANKED;" + LOBSTER + ":12|0", SkillItems.production(v));
 
 		v = render(mining(), mine, fish);
 		assertEquals("Iron", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("4", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_SPACE_LEFT_CELL));
-		assertEquals("900", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "IRON MINED"));
+		assertEquals("MINED|BANKED;" + ItemID.IRON_ORE + ":900|0", SkillItems.production(v));
 	}
 
 	@Test

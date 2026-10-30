@@ -14,6 +14,15 @@ import java.util.regex.Matcher;
  */
 public final class StructuredActivityRegistry
 {
+	/**
+	 * Rewards that belong to no activity, reported by the game's own loot tracker as NPC loot from an NPC that is never killed
+	 * for it. The Brimstone chest (Mount Karuulm, opened with a brimstone key from Konar's tasks): the game reports its reward as
+	 * loot from Konar quo Maten (npc 8623, gameval {@code SLAYER_MASTER_8}; seen in Josh's own events, 2026-09-27: a chest of
+	 * 5,095 noted pure essence during a Bloodveld task). Konar has no combat and drops nothing, so loot named for her is the chest.
+	 */
+	private static final List<StructuredRewardSource> INDEPENDENT = Collections.singletonList(
+		StructuredRewardSource.serverNpcLoot("brimstone_chest", "Brimstone chest", 8623, Collections.singleton("Konar quo Maten")));
+
 	private static final StructuredActivityRegistry DEFAULTS = new StructuredActivityRegistry(StructuredActivityCatalog.definitions());
 
 	private final List<StructuredActivityDefinition> definitions;
@@ -57,6 +66,29 @@ public final class StructuredActivityRegistry
 				}
 			}
 		}
+		for (StructuredRewardSource reward : INDEPENDENT)
+		{
+			indexReward(reward.getKey(), reward);
+			for (String alias : reward.getAliases())
+			{
+				indexReward(alias, reward);
+			}
+			rewardByServerNpc.put(reward.getNpcId(), reward);
+		}
+	}
+
+	private final Map<Integer, StructuredRewardSource> rewardByServerNpc = new HashMap<>();
+
+	/** The independent reward the game's loot tracker reports as loot from this NPC (id first, else its name), or null. */
+	public StructuredRewardSource rewardForServerNpcLoot(int npcId, String npcName)
+	{
+		StructuredRewardSource byId = npcId > 0 ? rewardByServerNpc.get(npcId) : null;
+		if (byId != null)
+		{
+			return byId;
+		}
+		StructuredRewardSource byName = rewardSource(npcName);
+		return byName != null && byName.isIndependent() ? byName : null;
 	}
 
 	public static StructuredActivityRegistry defaults()

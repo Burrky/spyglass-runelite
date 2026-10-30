@@ -21,6 +21,8 @@ import com.osrstelemetry.plugin.collectors.SlayerCollector;
 import com.osrstelemetry.plugin.collectors.SlayerCommittedTask;
 import com.osrstelemetry.plugin.collectors.StructuredActivityCollector;
 import com.osrstelemetry.plugin.events.EventLedger;
+import com.osrstelemetry.plugin.account.AccountCapabilityAdapter;
+import com.osrstelemetry.plugin.farming.FarmingCaptureAdapter;
 import com.osrstelemetry.plugin.history.HistoryCoordinator;
 import com.osrstelemetry.plugin.loottracker.LootTrackerCoordinator;
 import com.osrstelemetry.plugin.loottracker.LootTrackerPreferences;
@@ -43,6 +45,7 @@ import com.osrstelemetry.plugin.skills.agility.AgilityCompanionCollector;
 import com.osrstelemetry.plugin.skills.woodcutting.WoodcuttingCompanionCollector;
 import com.osrstelemetry.plugin.skills.runecraft.RunecraftCompanionCollector;
 import com.osrstelemetry.plugin.skills.herblore.HerbloreCompanionCollector;
+import com.osrstelemetry.plugin.skills.smithing.SmithingCompanionCollector;
 import com.osrstelemetry.plugin.skills.fishing.FishingCompanionCollector;
 import com.osrstelemetry.plugin.skills.mining.MiningCompanionCollector;
 import com.osrstelemetry.plugin.storage.LocalStateStore;
@@ -127,6 +130,63 @@ public class OsrsTelemetryPlugin extends Plugin
 
 	@Inject
 	private LocalStateStore store;
+
+	// Phase B: native Farming capture (STANDARD profile only). start() touches no
+	// player file; its own executors are drained in shutDown() before store.shutdown().
+	@Inject
+	private FarmingCaptureAdapter farmingCaptureAdapter;
+
+	// Phase F: generic account capability (STANDARD profile only) and the
+	// transport catalogue / developer diagnostic. No player UI.
+	@Inject
+	private AccountCapabilityAdapter accountCapabilityAdapter;
+
+	@Inject
+	private TravelCapabilityWiring travelCapabilityWiring;
+
+	// Phase H: Bank Preparation (Tier 1): the run's needs, the in-bank highlight
+	// overlay (drawing only) and the bank-search assist. Advisory only.
+	@Inject
+	private FarmingPreparationService farmingPreparationService;
+
+	// Farming correction pass: the player-clicked "Run items" bank filter (no other plugin needed).
+	@Inject
+	private BankRunFilter bankRunFilter;
+
+	// Farming correction pass 2: the profile's Farming preferences (tree clearing, protection, fruit first, allotments / flowers).
+	@Inject
+	private FarmingPreferenceStore farmingPreferenceStore;
+
+	// Phase G: the player's observed house (facilities from the scene; own house confirmed by building mode).
+	@Inject
+	private PohObserver pohObserver;
+
+
+	// Phases I/J: farm-run guidance (resolver, overlays, on-screen box). Display only.
+	@Inject
+	private GuidanceService guidanceService;
+
+	@Inject
+	private FarmingPlanWorker farmingPlanWorker;
+
+	@Inject
+	private ChargeObserver chargeObserver;
+
+	@Inject
+	private com.osrstelemetry.plugin.home.HomeObserver homeObserver;
+
+	@Inject
+	private BirdhouseService birdhouseService;
+	private SidebarAppearanceListener appearanceListener;
+
+	@Inject
+	private FarmingTutorialStore farmingTutorialStore;
+
+	@Inject
+	private net.runelite.client.ui.overlay.OverlayManager overlayManager;
+
+	private com.osrstelemetry.plugin.prep.PreparationBankOverlay preparationBankOverlay;
+	private com.osrstelemetry.plugin.home.KingdomOverlay kingdomOverlay;
 
 	@Inject
 	private EventLedger eventLedger;
@@ -301,6 +361,12 @@ public class OsrsTelemetryPlugin extends Plugin
 	@Inject
 	private HerbloreCompanionCollector herbloreCompanionCollector;
 
+	// Smithing companion (Skills Phase 7: Smithing). Furnace, anvil, moulds, Superheat and the
+	// Blast Furnace (production = bars collected) on the same shared chassis: SKILLING/smithing
+	// only (never Giants' Foundry).
+	@Inject
+	private SmithingCompanionCollector smithingCompanionCollector;
+
 	@Inject
 	private SkillGoalPreferences skillGoalPreferences;
 
@@ -421,6 +487,51 @@ public class OsrsTelemetryPlugin extends Plugin
 		// polling the sessions directory.
 		sessionRuntimeCoordinator.setFinalizedSessionListener(historyCoordinator::requestRefresh);
 
+		farmingCaptureAdapter.start();
+		eventBus.register(farmingCaptureAdapter);
+		accountCapabilityAdapter.start();
+		travelCapabilityWiring.start();
+		eventBus.register(accountCapabilityAdapter);
+		eventBus.register(travelCapabilityWiring);
+		farmingPlanWorker.start();
+		farmingPreparationService.reset();
+		eventBus.register(farmingPreparationService);
+		farmingPreferenceStore.load();
+		pohObserver.load();
+		eventBus.register(pohObserver);
+		chargeObserver.load();
+		eventBus.register(chargeObserver);
+		homeObserver.load();
+		eventBus.register(homeObserver);
+		birdhouseService.load();
+		birdhouseService.start();
+		eventBus.register(birdhouseService);
+		farmingTutorialStore.load();
+		eventBus.register(farmingTutorialStore);
+		accountCapabilityAdapter.setChargeSource(chargeObserver::knowledge);
+		travelCapabilityWiring.attachHouse(pohObserver::knowledge);
+		guidanceService.start();
+		eventBus.register(guidanceService);
+		eventBus.register(farmingPreferenceStore);
+		bankRunFilter.reset();
+		// One preparation is open at a time (a Farming run's, else a bird house run's): the bank filter and outlines follow it.
+		bankRunFilter.attach(() -> farmingPreparationService.view() != null ? farmingPreparationService.filterItems() : birdhouseService.filterItems(),
+			itemManager::canonicalize);
+		eventBus.register(bankRunFilter);
+		preparationBankOverlay = new com.osrstelemetry.plugin.prep.PreparationBankOverlay(
+			() -> farmingPreparationService.view() != null ? farmingPreparationService.highlights() : birdhouseService.highlights(),
+			() -> farmingPreparationService.view() != null ? farmingPreparationService.focus() : birdhouseService.focusItems())
+			.withOutlines(itemManager::getItemOutline);
+		overlayManager.add(preparationBankOverlay);
+		kingdomOverlay = new com.osrstelemetry.plugin.home.KingdomOverlay(homeObserver::kingdom, config::kingdomOverlay, () -> {
+			if (client.getGameState() != net.runelite.api.GameState.LOGGED_IN || client.getLocalPlayer() == null)
+			{
+				return false;
+			}
+			net.runelite.api.coords.WorldPoint wp = client.getLocalPlayer().getWorldLocation();
+			return wp != null && com.osrstelemetry.plugin.home.HomeObserver.isKingdomRegion(wp.getRegionID());
+		}, homeObserver::isOnIslands, quantity -> itemManager.getImage(net.runelite.api.gameval.ItemID.COINS, quantity, false));
+		overlayManager.add(kingdomOverlay);
 		eventBus.register(skillsCollector);
 		eventBus.register(containerCollector);
 		eventBus.register(loadoutArchiveCollector);
@@ -451,8 +562,17 @@ public class OsrsTelemetryPlugin extends Plugin
 		eventBus.register(woodcuttingCompanionCollector);
 		runecraftCompanionCollector.startUp();
 		herbloreCompanionCollector.startUp();
+		smithingCompanionCollector.startUp();
 		eventBus.register(runecraftCompanionCollector);
 		eventBus.register(herbloreCompanionCollector);
+		eventBus.register(smithingCompanionCollector);
+		// A companion's confirmed success lets its skill take over a SUSPENDED different session at once.
+		for (SkillCompanionCollector companion : new SkillCompanionCollector[]{miningCompanionCollector, fishingCompanionCollector,
+			agilityCompanionCollector, woodcuttingCompanionCollector, runecraftCompanionCollector, herbloreCompanionCollector,
+			smithingCompanionCollector})
+		{
+			companion.setProductionEvidenceSink(sessionRuntimeCoordinator::noteSkillProductionEvidence);
+		}
 		eventBus.register(sessionRuntimeCoordinator);
 
 		// ADDED (live session-runtime wiring pass). Paired with
@@ -506,8 +626,66 @@ public class OsrsTelemetryPlugin extends Plugin
 		// historyCoordinator through to the panel so its third (History) tab
 		// can actually read recent entries / load detail -- see
 		// OsrsTelemetryPanel's own updated constructor and class javadoc.
+		// The sidebar's text size and contrast (pass 30) are set before the panel is built, so it is built with them.
+		OsrsTelemetryPanel.applyAppearanceRoles(config.textSize(), config.textContrast());
 		panel = new OsrsTelemetryPanel(sessionRuntimeCoordinator, lootTrackerCoordinator, lootTrackerPreferences,
 			historyCoordinator, skillIconManager, itemManager, clientThread, npcInteractionTargetCollector, config);
+		// Where the panel was (e.g. "HOME/FARMING"): a hidden navigation value, never a
+		// Settings item and not per account. Restored now, rewritten on every route change.
+		panel.attachAppearanceConfig(config::textSize, config::textContrast, (size, contrast) ->
+		{
+			configManager.setConfiguration("osrstelemetry", "textSize", size);
+			configManager.setConfiguration("osrstelemetry", "textContrast", contrast);
+		});
+		// Text size or contrast changed in RuneLite's settings: the sidebar follows at once (presentation only, its own listener).
+		appearanceListener = new SidebarAppearanceListener(() -> panel);
+		eventBus.register(appearanceListener);
+		panel.attachNavigationStore(() -> configManager.getConfiguration("osrstelemetry", "navRoute"),
+			route -> configManager.setConfiguration("osrstelemetry", "navRoute", route));
+		// Farming Browse / Preview: the capture adapter's owner-safe snapshot, and the last selected
+		// preview (a hidden navigation value like the route; never a Settings item, not per account).
+		panel.attachFarming(farmingCaptureAdapter::uiSnapshot, () -> configManager.getConfiguration("osrstelemetry", "farmingPreview"),
+			preview -> configManager.setConfiguration("osrstelemetry", "farmingPreview", preview));
+		// Start Run and the run page (Phase E): the player runs it, Spyglass tracks it.
+		panel.attachFarmingRuns(farmingCaptureAdapter);
+		panel.attachBinPictures(new com.osrstelemetry.plugin.ui.CompostBinPictures(client, clientThread));
+		panel.attachFarmingPreparation(farmingPreparationService::view, farmingPreparationService::focus);
+		panel.attachFarmingFacts(travelCapabilityWiring::farmingFacts);
+		panel.attachFarmingPreferences(farmingPreferenceStore::get, farmingPreferenceStore::set);
+		panel.attachCharges(chargeObserver::knowledge);
+		panel.attachHome(homeObserver);
+		panel.attachBirdhouses(birdhouseService);
+		panel.attachFarmingTutorial(farmingTutorialStore::get, farmingTutorialStore::set, () ->
+		{
+			com.osrstelemetry.plugin.account.AccountCapability cap = accountCapabilityAdapter.capability();
+			return new boolean[]{cap != null && cap.getBank() != null, cap != null && cap.getSeedVault() != null,
+				pohObserver.knowledge() != null && pohObserver.knowledge().isConfirmed()};
+		}, farmingCaptureAdapter::ranFarmingBefore);
+		panel.attachGuidance(guidanceService::model);
+		// History: a Farming session lists the finished runs it overlaps (this account's outcome files only).
+		panel.attachFarmingHistory(session ->
+		{
+			long hash = client.getAccountHash();
+			if (hash == -1 || session.getStartedAt() == null)
+			{
+				return java.util.Collections.emptyList();
+			}
+			long from = java.time.Instant.parse(session.getStartedAt()).toEpochMilli();
+			long to = session.getFinalizedAt() == null ? Long.MAX_VALUE : java.time.Instant.parse(session.getFinalizedAt()).toEpochMilli();
+			java.util.List<long[]> windows = new java.util.ArrayList<>();
+			for (com.osrstelemetry.plugin.history.HistoryEntry e : historyCoordinator.getRecentEntries())
+			{
+				if (e.getActivityIdentity() != null && e.getActivityIdentity().getActivityType() == com.osrstelemetry.plugin.session.ActivityType.SKILLING
+					&& "farming".equals(e.getActivityIdentity().getActivityKey()) && e.getStartedAt() != null)
+				{
+					windows.add(new long[]{java.time.Instant.parse(e.getStartedAt()).toEpochMilli(),
+						e.getFinalizedAt() == null ? Long.MAX_VALUE : java.time.Instant.parse(e.getFinalizedAt()).toEpochMilli()});
+				}
+			}
+			return com.osrstelemetry.plugin.farming.FarmingRunHistory.find(store, com.osrstelemetry.plugin.storage.TelemetryPaths.accountDir(hash), hash, from,
+				to, windows);
+		});
+		panel.attachBankFilter(() -> bankRunFilter.isActive() ? 2 : bankRunFilter.isAvailable() ? 1 : 0, bankRunFilter::toggle);
 		// Barrows current run (game varbits, presentation only).
 		panel.attachBarrowsProgress(structuredActivityCollector::getBarrowsProgress);
 		// Tempoross current game (HUD widgets + points varbit, presentation only).
@@ -517,6 +695,8 @@ public class OsrsTelemetryPlugin extends Plugin
 		// Smart Slayer: native status (master/points/streak/location/modifier) and
 		// the in-session Current Task / All Tasks XP selector's persistence.
 		panel.attachSlayerStatus(slayerCommittedTask::getStatus);
+		panel.attachXpMetric(() -> configManager.getConfiguration("osrstelemetry", "xpSecondMetric"),
+			v -> configManager.setConfiguration("osrstelemetry", "xpSecondMetric", v));
 		panel.attachSlayerXpScopeWriter(scope -> configManager.setConfiguration("osrstelemetry", "slayerXpScope", scope));
 		// GotR Points · XP: an in-panel choice remembered under its own key (never a Settings item).
 		panel.attachGotrStrategy(() -> configManager.getConfiguration("osrstelemetry", "gotrStrategy", com.osrstelemetry.plugin.GotrStrategy.class),
@@ -643,6 +823,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		attachSkillCompanion(woodcuttingCompanionCollector);
 		attachSkillCompanion(runecraftCompanionCollector);
 		attachSkillCompanion(herbloreCompanionCollector);
+		attachSkillCompanion(smithingCompanionCollector);
 
 		// REPLACED (approved spyglass sidebar icon pass). The approved
 		// gold/blue spyglass artwork the user supplied, cropped to its own
@@ -728,6 +909,38 @@ public class OsrsTelemetryPlugin extends Plugin
 		// the coordinators this method is about to stop (it would record the
 		// account as loaded while leaving it empty until an account switch).
 		startupHydrationGate.supersede();
+		eventBus.unregister(farmingCaptureAdapter);
+		eventBus.unregister(accountCapabilityAdapter);
+		eventBus.unregister(travelCapabilityWiring);
+		eventBus.unregister(farmingPreparationService);
+		eventBus.unregister(bankRunFilter);
+		eventBus.unregister(farmingPreferenceStore);
+		eventBus.unregister(pohObserver);
+		eventBus.unregister(chargeObserver);
+		eventBus.unregister(homeObserver);
+		if (appearanceListener != null)
+		{
+			eventBus.unregister(appearanceListener);
+			appearanceListener = null;
+		}
+		eventBus.unregister(birdhouseService);
+		birdhouseService.stop();
+		eventBus.unregister(farmingTutorialStore);
+		eventBus.unregister(guidanceService);
+		guidanceService.stop();
+		farmingPlanWorker.stop();
+		bankRunFilter.reset();
+		if (preparationBankOverlay != null)
+		{
+			overlayManager.remove(preparationBankOverlay);
+			preparationBankOverlay = null;
+		}
+		if (kingdomOverlay != null)
+		{
+			overlayManager.remove(kingdomOverlay);
+			kingdomOverlay = null;
+		}
+		farmingPreparationService.reset();
 		eventBus.unregister(skillsCollector);
 		eventBus.unregister(containerCollector);
 		eventBus.unregister(loadoutArchiveCollector);
@@ -749,6 +962,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		eventBus.unregister(woodcuttingCompanionCollector);
 		eventBus.unregister(runecraftCompanionCollector);
 		eventBus.unregister(herbloreCompanionCollector);
+		eventBus.unregister(smithingCompanionCollector);
 		// Whatever the skill companions have not sent yet reaches the session
 		// before the session runtime flushes and shuts down below.
 		miningCompanionCollector.shutDown();
@@ -757,6 +971,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		woodcuttingCompanionCollector.shutDown();
 		runecraftCompanionCollector.shutDown();
 		herbloreCompanionCollector.shutDown();
+		smithingCompanionCollector.shutDown();
 		// sessionRuntimeCoordinator is deliberately NOT unregistered here
 		// -- see the comment at its actual unregistration point below,
 		// right before store.shutdown()/eventLedger.shutdown(), for why.
@@ -856,6 +1071,7 @@ public class OsrsTelemetryPlugin extends Plugin
 		woodcuttingCompanionCollector.setProgressListener(null);
 		runecraftCompanionCollector.setProgressListener(null);
 		herbloreCompanionCollector.setProgressListener(null);
+		smithingCompanionCollector.setProgressListener(null);
 		if (panel != null)
 		{
 			panel.shutdown();
@@ -866,6 +1082,11 @@ public class OsrsTelemetryPlugin extends Plugin
 			clientToolbar.removeNavigation(navButton);
 			navButton = null;
 		}
+
+		// Farming's final owner-scoped write must be queued while the store still
+		// accepts writes; its own log executor drains here (bounded).
+		farmingCaptureAdapter.shutDown();
+		accountCapabilityAdapter.shutDown();
 
 		// Graceful drain — see LocalStateStore/EventLedger javadoc.
 		store.shutdown();
@@ -966,6 +1187,7 @@ public class OsrsTelemetryPlugin extends Plugin
 			woodcuttingCompanionCollector.resetForAccountSwitch();
 			runecraftCompanionCollector.resetForAccountSwitch();
 			herbloreCompanionCollector.resetForAccountSwitch();
+			smithingCompanionCollector.resetForAccountSwitch();
 			eventLedger.startNewSession();
 		}
 
@@ -1096,6 +1318,15 @@ public class OsrsTelemetryPlugin extends Plugin
 		{
 			xpFlushTickCounter = 0;
 			skillsCollector.closeXpWindowsIfDue();
+		}
+		else
+		{
+			// A skill's confirmed success is waiting to take over a SUSPENDED different session: its XP window closes now.
+			String takeover = sessionRuntimeCoordinator.drainEarlyXpWindowSkill();
+			if (takeover != null)
+			{
+				skillsCollector.closeXpWindowNow(takeover);
+			}
 		}
 
 		questCheckTickCounter++;

@@ -214,20 +214,41 @@ public class WoodcuttingPresentationTest
 			item(REDWOOD, "Redwood logs", 265), "'forestry:rising_roots':3,'forestry:poachers':1", "redwood",
 			"'WOODCUTTING':86300,'FIREMAKING':9500"), s);
 		assertEquals("Redwood", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("REDWOOD LOGS cell counts every log, burned ones included", "4,824",
-			cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "REDWOOD LOGS"));
-		assertEquals("4,300", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, CurrentSessionView.SC_BANKED_CELL));
+		assertEquals("one sprite row: every log cut (burned ones included) and what reached the bank",
+			"CUT|BANKED;" + REDWOOD + ":4,824|4,300", SkillItems.production(v));
+		assertNull("one resource: no duplicate total cell", named(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME));
 		assertEquals("265 auto-burned", text(v, CurrentSessionView.SC_AUTO_TRANSFORMED_NAME));
 		assertEquals("4,824 logs/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		assertNull("nests / bark / leaves are never by-product lines under the logs", named(v, CurrentSessionView.SC_BYPRODUCT_PREFIX + 0));
 		assertEquals("Redwood tree", text(v, CurrentSessionView.SC_FOCUS_LABEL_NAME));
 		assertEquals("34", cell(v, CurrentSessionView.SC_FOCUS_GRID_NAME, "LOGS"));
 		assertEquals("1:12", cell(v, CurrentSessionView.SC_FOCUS_GRID_NAME, "TREE TIME"));
-		assertEquals("17", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_SPACE_LEFT_CELL));
 		assertEquals("~1:35", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_EST_FULL_CELL));
+		assertFalse("pass 28: one compact line, not a framed cell", named(v, CurrentSessionView.SC_TRIP_GRID_NAME) instanceof SlayerStatGrid);
 		assertNull("no event running: no FORESTRY EVENT section", named(v, CurrentSessionView.SC_EVENT_NAME));
 		assertNotNull(named(v, CurrentSessionView.SC_TARGET_GRID_NAME));
 		fitsEveryWidth(v, "redwood");
+	}
+
+	@Test
+	public void currentTree_lastTreeNote_underTheNumbers_neverASeparateFellLine()
+	{
+		Source s = new Source();
+		s.view = view("yew", null, new SkillCompanionView.FocusView("Yew tree", 1, 4_000L)
+			.withNote("Last tree: 4 logs", "Yew tree fell: 4 logs in 0:42"), null,
+			Collections.<Integer, SkillGoalPlanner.BankingSample>emptyMap());
+		CurrentSessionView v = render(woodcutting("ACTIVE", item(YEW, "Yew logs", 5), item(YEW, "Yew logs", 0), "'yew':60000",
+			"", "", "yew", "'WOODCUTTING':875"), s);
+		assertEquals("Yew tree", text(v, CurrentSessionView.SC_FOCUS_LABEL_NAME));
+		assertEquals("Last tree: 4 logs", text(v, CurrentSessionView.SC_FOCUS_NOTE_NAME));
+		for (Component c : all(v))
+		{
+			if (c instanceof JLabel && ((JLabel) c).getText() != null)
+			{
+				assertFalse(((JLabel) c).getText(), ((JLabel) c).getText().contains(" fell:"));
+			}
+		}
+		fitsEveryWidth(v, "last tree");
 	}
 
 	@Test
@@ -241,9 +262,10 @@ public class WoodcuttingPresentationTest
 		assertEquals("10.0", cell(v, CurrentSessionView.SC_SECONDARY_GRID_NAME, "NESTS / HR"));
 		assertEquals("1,240", cell(v, CurrentSessionView.SC_SECONDARY_GRID_NAME, "BARK EARNED"));
 		assertEquals("1,240", cell(v, CurrentSessionView.SC_SECONDARY_GRID_NAME, "BARK / HR"));
-		assertEquals("Leaves: Magic 20 • Yew 15", text(v, CurrentSessionView.SC_SECONDARY_LINE_PREFIX + 0));
-		assertEquals("Forestry events: 4", text(v, CurrentSessionView.SC_SECONDARY_LINE_PREFIX + 1));
-		assertEquals("primary only", "4,824", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "REDWOOD LOGS"));
+		assertEquals("Leaves", SkillItems.title(v, CurrentSessionView.SC_SECONDARY_ITEMS_PREFIX, 0));
+		assertEquals(";" + ItemID.LEAVES_MAGIC + ":20;" + ItemID.LEAVES_YEW + ":15", SkillItems.grid(v, CurrentSessionView.SC_SECONDARY_ITEMS_PREFIX + 0));
+		assertEquals("Forestry events: 4", text(v, CurrentSessionView.SC_SECONDARY_LINE_PREFIX + 0));
+		assertEquals("primary only", "CUT|BANKED;" + REDWOOD + ":4,824|0", SkillItems.production(v));
 		assertNull("nothing burned: no auto-burned line", named(v, CurrentSessionView.SC_AUTO_TRANSFORMED_NAME));
 		fitsEveryWidth(v, "secondary");
 	}
@@ -342,7 +364,7 @@ public class WoodcuttingPresentationTest
 		CurrentSessionView v = render(woodcutting("ACTIVE", item(YEW, "Yew logs", 520), item(YEW, "Yew logs", 476), "'yew':3600000", null, null,
 			"yew", "'WOODCUTTING':91000"), s);
 		assertEquals("Yew", text(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("520", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "YEW LOGS"));
+		assertEquals("CUT|BANKED;" + YEW + ":520|476", SkillItems.production(v));
 		assertEquals("520 logs/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		assertNull(named(v, CurrentSessionView.SC_AUTO_TRANSFORMED_NAME));
 		assertNull(named(v, CurrentSessionView.SC_EVENT_NAME));
@@ -357,8 +379,7 @@ public class WoodcuttingPresentationTest
 		s.view = plain("yew");
 		CurrentSessionView v = render(woodcutting("ACTIVE", item(YEW, "Yew logs", 1000), item(YEW, "Yew logs", 735), "'yew':3600000",
 			item(YEW, "Yew logs", 265), null, "yew", "'WOODCUTTING':175000,'FIREMAKING':23000"), s);
-		assertEquals("1,000", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "YEW LOGS"));
-		assertEquals("735", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, CurrentSessionView.SC_BANKED_CELL));
+		assertEquals("CUT|BANKED;" + YEW + ":1,000|735", SkillItems.production(v));
 		assertEquals("265 auto-burned", text(v, CurrentSessionView.SC_AUTO_TRANSFORMED_NAME));
 		fitsEveryWidth(v, "infernal yew");
 	}
@@ -405,8 +426,9 @@ public class WoodcuttingPresentationTest
 			"'WOODCUTTING':29000"), s);
 		assertEquals("Sulliuscep", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("229", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "MUSHROOMS"));
-		assertEquals("Mushrooms 210 \u2022 Fungus 19", text(v, CurrentSessionView.SC_BREAKDOWN_NAME));
-		assertEquals("Fossils: Numulite 64 \u2022 Small 2", text(v, CurrentSessionView.SC_BYPRODUCT_PREFIX + 0));
+		assertEquals("CUT|BANKED;" + ItemID.BITTERCAP_MUSHROOM + ":210|0;" + ItemID.MORTMYREMUSHROOM + ":19|0", SkillItems.production(v));
+		assertEquals("Fossils", SkillItems.title(v, CurrentSessionView.SC_BYPRODUCT_PREFIX, 0));
+		assertEquals("CUT|BANKED;" + ItemID.FOSSIL_NUMULITE + ":64|0;" + ItemID.FOSSIL_SMALL_UNID + ":2|0", SkillItems.byproduct(v, 0));
 		assertNull(named(v, CurrentSessionView.SC_FOCUS_NAME));
 		fitsEveryWidth(v, "sulliuscep");
 	}
@@ -418,7 +440,7 @@ public class WoodcuttingPresentationTest
 		s.view = plain(null);
 		CurrentSessionView v = render(woodcutting("ACTIVE", item(LOGS_ID, "Logs", 12), null, null, null, null, null, "'WOODCUTTING':300"), s);
 		assertNull(named(v, CurrentSessionView.SC_METHOD_NAME));
-		assertEquals("12", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "LOGS CUT"));
+		assertEquals("CUT|BANKED;" + LOGS_ID + ":12|0", SkillItems.production(v));
 		assertNull(named(v, CurrentSessionView.SC_RATE_NAME));
 		assertNull("no tree: no CURRENT TRIP claimed", named(v, CurrentSessionView.SC_TRIP_NAME));
 		fitsEveryWidth(v, "unknown");
@@ -441,7 +463,7 @@ public class WoodcuttingPresentationTest
 			+ item(BARK, "Anima-infused bark", 123_456), null, "'arctic_pine':36000000", item(ItemID.ARCTIC_PINE_LOG, "Arctic pine logs", 45_678),
 			"'forestry:leprechaun':123", "arctic_pine", "'WOODCUTTING':9999999"), s);
 		assertEquals("Full", cell(v, CurrentSessionView.SC_TRIP_GRID_NAME, CurrentSessionView.SC_EST_FULL_CELL));
-		assertTrue(text(v, CurrentSessionView.SC_SECONDARY_LINE_PREFIX + 0).endsWith("+2 more"));
+		assertEquals("all six leaves, never '+N more'", 7, SkillItems.grid(v, CurrentSessionView.SC_SECONDARY_ITEMS_PREFIX + 0).split(";").length);
 		fitsEveryWidth(v, "long labels");
 	}
 

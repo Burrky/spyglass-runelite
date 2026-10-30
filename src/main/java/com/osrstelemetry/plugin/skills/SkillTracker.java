@@ -135,6 +135,27 @@ public interface SkillTracker
 	}
 
 	/**
+	 * ADDED (live-QA polish). What the account holds for the current method
+	 * OUTSIDE the inventory (bank as seen this login, plus any storage the
+	 * skill reads): titled section of item sprites and short lines ("Bank can
+	 * make: 240"). Null = none (the default). Planning only, never a metric.
+	 */
+	default SkillCompanionView.EventView stock(long nowMillis)
+	{
+		return null;
+	}
+
+	/**
+	 * ADDED (live-QA polish). What the inventory holds of this skill's target
+	 * resources right now (item -> quantity); null = not known (no inventory
+	 * read yet, or the skill never needs it).
+	 */
+	default Map<Integer, Long> carried()
+	{
+		return null;
+	}
+
+	/**
 	 * Proofs, since the last call, that another skill's XP right now belongs
 	 * to this skill's activity (other skill name -> when), drained by the
 	 * call; empty by default. Evidence only.

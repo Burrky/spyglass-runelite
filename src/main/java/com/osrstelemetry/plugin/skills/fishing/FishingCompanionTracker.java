@@ -716,11 +716,20 @@ public final class FishingCompanionTracker implements SkillTracker
 		{
 			return null;
 		}
-		return new SkillCompanionView.SupplyView(supplyCaption(m), supply.getCount(), supply.runwayMillis(activeMillis));
+		Integer item = supplyItem(m);
+		SkillCompanionView.SupplyView view = new SkillCompanionView.SupplyView(supplyCaption(m), supply.getCount(), supply.runwayMillis(activeMillis));
+		return item == null ? view : view.withItem(item);
 	}
 
 	/** The supply the player actually carries most of (barbarian: feathers, bait or offcuts); the method's first one otherwise. */
 	private String supplyCaption(FishingMethod m)
+	{
+		Integer best = supplyItem(m);
+		String name = best == null ? null : FishingCompanionDefinition.supplyName(best);
+		return name == null ? "Supplies" : name;
+	}
+
+	private Integer supplyItem(FishingMethod m)
 	{
 		Integer best = null;
 		long bestCount = 0L;
@@ -733,8 +742,7 @@ public final class FishingCompanionTracker implements SkillTracker
 				bestCount = c;
 			}
 		}
-		String name = best == null ? null : FishingCompanionDefinition.supplyName(best);
-		return name == null ? "Supplies" : name;
+		return best;
 	}
 
 	@Override

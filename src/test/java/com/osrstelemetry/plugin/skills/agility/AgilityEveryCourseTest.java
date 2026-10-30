@@ -144,6 +144,73 @@ public class AgilityEveryCourseTest
 		assertNotNull("the lap timer runs", v.getElapsedMillis());
 	}
 
+	/**
+	 * Live QA: players click the NEXT obstacle while the current one is still
+	 * animating, so the current obstacle's XP arrives with a newer click
+	 * pending. Every obstacle must still advance the route exactly once, in
+	 * order -- never skipping one, never crediting the next one early -- and
+	 * the lap counts exactly once.
+	 */
+	@Test
+	public void clickingTheNextObstacleEarly_eachObstacleAdvancesExactlyOnce_inOrder()
+	{
+		AgilitySim s = new AgilitySim();
+		List<AgilityCourse.Node> nodes = course.getNodes();
+		s.plane = course.getStartPlane() != null ? course.getStartPlane() : 1;
+		s.at(s.x, s.y, s.plane);
+		boolean varbit = course.getCompletionVarbit() != null;
+		int last = varbit ? nodes.size() : nodes.size() - 1;
+		s.t.onObjectClick(s.tick, s.now, nodes.get(0).getObjectIds().iterator().next());
+		s.steps(3);
+		int successes = 0;
+		for (int i = 0; i < last; i++)
+		{
+			// The next obstacle is clicked BEFORE this one's XP lands.
+			int next = i + 1 < nodes.size() ? nodes.get(i + 1).getObjectIds().iterator().next() : -1;
+			if (next > 0 && (i + 1 < last || !varbit))
+			{
+				s.t.onObjectClick(s.tick, s.now, next);
+			}
+			s.steps(1);
+			if (!nodes.get(i).isXpless())
+			{
+				s.t.onPosition(s.tick, s.now, s.x, s.y, s.plane, s.region());
+				s.t.onSkillXp(s.tick, 30, s.now);
+				successes++;
+			}
+			if (i == 0 && course.getStartPlane() != null)
+			{
+				s.at(s.x, s.y, course.getStartPlane() + 1);
+			}
+			if (varbit)
+			{
+				s.t.onVarbit(course.getCompletionVarbit(), i + 1, s.now);
+			}
+			s.steps(2);
+			SkillCompanionView.CycleView v = s.t.cycle(s.now);
+			if (v != null && v.isSynced() && i + 1 < last)
+			{
+				// A zero-XP ladder clicked ahead is passed as soon as the obstacle before it succeeded.
+				boolean ladderAhead = !course.isCountOnly() && i + 1 < last && nodes.get(i + 1).isXpless();
+				int expected = course.isCountOnly() ? successes : i + 1 + (ladderAhead ? 1 : 0);
+				assertEquals(course.getKey() + ": after obstacle " + i + " (" + nodes.get(i).getLabel() + ")", (long) expected,
+					(long) v.getProgress());
+			}
+		}
+		if (!varbit)
+		{
+			// The final obstacle was already clicked: its XP lands on the end tile.
+			AgilityCourse.Tile end = course.getEndTiles().get(0);
+			s.at(end.getX(), end.getY(), end.getPlane());
+			s.t.onSkillXp(s.tick, 100, s.now);
+			s.steps(2);
+			s.at(end.getX() + 3, end.getY() + 3, 0);
+		}
+		s.settle();
+		assertEquals("one lap of " + course.getKey(), 1L, s.laps(course));
+		assertEquals(0L, s.t.getMethods().getTransitions());
+	}
+
 	@Test
 	public void aLapJoinedPartWay_neverCounts_theNextFullOneDoes()
 	{

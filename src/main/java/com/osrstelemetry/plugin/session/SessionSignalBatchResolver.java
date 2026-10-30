@@ -147,6 +147,7 @@ final class SessionSignalBatchResolver
 		applyBossSelfConsumptionCorroboration(batch, classifications, current, context);
 		applyBossOnTaskSlayerOwnership(classifications, current);
 		applySkillContextOwnership(batch, classifications, current, context);
+		applySkillProductionTakeover(batch, classifications, current, context);
 
 		// Group lifecycle-carrying classifications by their resulting
 		// identity, remembering every originating signal's observedAt
@@ -660,6 +661,51 @@ final class SessionSignalBatchResolver
 					classifications.set(i, SignalClassification.metricOnly(c.getMetricUpdates()));
 					break;
 				}
+			}
+		}
+	}
+
+	/**
+	 * SKILL PRODUCTION TAKEOVER (live-QA takeover tuning). A skill's own XP
+	 * whose window also holds CAUSALLY CONFIRMED production of that skill
+	 * (ClassifierContext#hasFreshSkillProductionEvidence: its companion saw
+	 * the skill's XP and the matching items change together) is SPECIFIC
+	 * evidence of that skill, not ORDINARY -- but only against a SUSPENDED,
+	 * different pre-batch SKILLING session, which then yields at once instead of
+	 * waiting for a second XP window (the established session is not running;
+	 * real output of another skill is a deliberate switch, not a blip).
+	 * <p>
+	 * Everything that protects an ACTIVE session is untouched: XP amount is
+	 * never consulted; XP the context-ownership pass already proved belongs to
+	 * another skill's activity (applySkillContextOwnership, which runs first)
+	 * is METRIC_ONLY and never seen here; a skill without a companion, or a
+	 * companion that recorded no output (support XP the same action grants a
+	 * second skill, or an incidental secondary skill), has no production
+	 * evidence; Magic is never a skilling identity at all.
+	 */
+	static void applySkillProductionTakeover(List<SessionSignal> batch, List<SignalClassification> classifications, Session current,
+		ClassifierContext context)
+	{
+		if (context == null || current == null || current.getState() != SessionState.SUSPENDED
+			|| current.getActivityIdentity().getActivityType() != ActivityType.SKILLING)
+		{
+			// Skill-to-skill only: a SUSPENDED combat / Slayer / boss / structured session keeps its own hysteresis.
+			return;
+		}
+		for (int i = 0; i < batch.size(); i++)
+		{
+			SessionSignal s = batch.get(i);
+			SignalClassification c = classifications.get(i);
+			if (s.getKind() != SignalKind.XP_CHANGE || c.getDecisionKind() != SignalDecisionKind.START_OR_HEARTBEAT
+				|| c.getEvidenceStrength() != EvidenceStrength.ORDINARY || c.getIdentity() == null
+				|| c.getIdentity().getActivityType() != ActivityType.SKILLING
+				|| c.getIdentity().equals(current.getActivityIdentity()))
+			{
+				continue;
+			}
+			if (context.hasFreshSkillProductionEvidence(c.getIdentity().getActivityKey(), s.getXpWindowStart(), s.getObservedAt()))
+			{
+				classifications.set(i, SignalClassification.startOrHeartbeat(c.getIdentity(), c.getMetricUpdates(), EvidenceStrength.SPECIFIC));
 			}
 		}
 	}

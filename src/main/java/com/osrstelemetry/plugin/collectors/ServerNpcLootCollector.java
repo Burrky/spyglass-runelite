@@ -305,8 +305,33 @@ public class ServerNpcLootCollector
 			items.add(new EventPayloads.ServerNpcLootItem(itemStack.getId(), itemName, itemStack.getQuantity()));
 		}
 
+		// A reward the game reports as loot from an NPC never killed for it (the Brimstone chest, "from" Konar): one event,
+		// under its own source, so it is recorded once and never credited to the session that happens to be current.
+		EventPayloads.StructuredReward independent = independentReward(rawSourceId, sourceName, items);
+		if (independent != null)
+		{
+			eventLedger.append(client.getAccountHash(), EventType.STRUCTURED_REWARD, independent);
+			return;
+		}
 		EventPayloads.ServerNpcLoot payload = buildPayload(sourceName, rawSourceId, items);
 		eventLedger.append(client.getAccountHash(), EventType.SERVER_NPC_LOOT, payload);
+	}
+
+	/** The independent reward this server loot is, as a structured reward event, or null for ordinary NPC loot. Pure. */
+	static EventPayloads.StructuredReward independentReward(int npcId, String npcName, List<EventPayloads.ServerNpcLootItem> items)
+	{
+		com.osrstelemetry.plugin.activity.StructuredRewardSource source = com.osrstelemetry.plugin.activity.StructuredActivityRegistry.defaults()
+			.rewardForServerNpcLoot(npcId, npcName == null ? null : Text.removeTags(npcName));
+		if (source == null || items.isEmpty())
+		{
+			return null;
+		}
+		List<EventPayloads.StructuredRewardItem> out = new ArrayList<>();
+		for (EventPayloads.ServerNpcLootItem i : items)
+		{
+			out.add(new EventPayloads.StructuredRewardItem(i.getItemId(), i.getItemName(), i.getQuantity()));
+		}
+		return new EventPayloads.StructuredReward(source.getActivityKey(), source.getKey(), source.getDisplayName(), out);
 	}
 
 	/**

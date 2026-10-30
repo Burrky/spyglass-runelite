@@ -303,7 +303,7 @@ public class RunecraftPresentationTest
 	}
 
 	@Test
-	public void ourania_mixedOutput_asShares()
+	public void ourania_mixedOutput_everyRuneAsSpriteAndExactCount()
 	{
 		Source s = new Source();
 		s.view = view("ourania", trip("Since bank", 45_000L, "28", "2 loaded"));
@@ -313,7 +313,8 @@ public class RunecraftPresentationTest
 			item(PURE, "Pure essence", 1104), null, null, "ourania"), s);
 		assertEquals("Ourania Altar", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("4,020", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "TOTAL RUNES"));
-		assertEquals("Chaos 25% • Nature 21% • Body 17% • Law 16% • +2 more", text(v, CurrentSessionView.SC_BREAKDOWN_NAME));
+		assertEquals("every rune, exact, most first -- no shares, no '+N more'", ";" + ItemID.CHAOSRUNE + ":1,020;" + NATURE + ":860;"
+			+ ItemID.BODYRUNE + ":700;" + ItemID.LAWRUNE + ":640;" + ItemID.COSMICRUNE + ":590;" + ItemID.DEATHRUNE + ":210", SkillItems.production(v));
 		assertEquals("4,020 runes/hr", text(v, CurrentSessionView.SC_RATE_NAME));
 		assertEquals("1,104 essence used", text(v, CurrentSessionView.SC_CONSUMED_NAME));
 		fitsEveryWidth(v, "ourania");
@@ -329,7 +330,8 @@ public class RunecraftPresentationTest
 			null, "'bind_attempts:lava':448,'bind_bound:lava':412", "lava"), s);
 		assertEquals("Lava runes", text(v, CurrentSessionView.SC_METHOD_NAME));
 		assertEquals("448 essence used", text(v, CurrentSessionView.SC_CONSUMED_NAME));
-		assertEquals("Also used: Earth rune 448 • Fire talisman 16", text(v, CurrentSessionView.SC_OTHER_INPUTS_NAME));
+		assertEquals("Also used", SkillItems.title(v, CurrentSessionView.SC_OTHER_INPUTS_NAME + ":", 0));
+		assertEquals(";" + ItemID.EARTHRUNE + ":448;" + ItemID.FIRE_TALISMAN + ":16", SkillItems.grid(v, CurrentSessionView.SC_OTHER_INPUTS_NAME + ":0"));
 		assertEquals("Bound 412 / 448 (92%)", text(v, CurrentSessionView.SC_OCCURRENCE_LINE_PREFIX + 0));
 		assertEquals("No binding necklace: binds can fail", text(v, CurrentSessionView.SC_EVENT_LINE_PREFIX + 0));
 		fitsEveryWidth(v, "lava");
@@ -382,7 +384,8 @@ public class RunecraftPresentationTest
 			item(PURE, "Pure essence", 27) + "," + item(ItemID.SCAR_EXTRACT_MANGLED, "Mangled extract", 27), null, null, "nature"), s);
 		assertEquals("1,647", cell(v, CurrentSessionView.SC_PRODUCTION_GRID_NAME, "NATURE RUNES"));
 		assertEquals("27 essence used", text(v, CurrentSessionView.SC_CONSUMED_NAME));
-		assertEquals("Also used: Mangled extract 27", text(v, CurrentSessionView.SC_OTHER_INPUTS_NAME));
+		String extracts = SkillItems.grid(v, CurrentSessionView.SC_OTHER_INPUTS_NAME + ":0");
+		assertTrue(extracts, extracts.endsWith(":27") && extracts.split(";").length == 2);
 		fitsEveryWidth(v, "scar");
 	}
 

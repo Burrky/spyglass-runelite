@@ -19,6 +19,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import net.runelite.api.Client;
+import net.runelite.api.EnumComposition;
+import net.runelite.api.EnumID;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
@@ -86,6 +88,11 @@ public class RunecraftCompanionCollectorTest
 					return varbits.getOrDefault((Integer) a[0], 0);
 				case "getVarpValue":
 					return varps.getOrDefault((Integer) a[0], 0);
+				case "getEnum":
+					// The game's rune pouch enum, as the tests need it: type 14 = Astral, type 6 = Nature.
+					return (Integer) a[0] != EnumID.RUNEPOUCH_RUNE ? null : (EnumComposition) Proxy.newProxyInstance(EnumComposition.class.getClassLoader(),
+						new Class<?>[]{EnumComposition.class}, (p2, m2, a2) -> "getIntValue".equals(m2.getName())
+							? ((Integer) a2[0] == 14 ? ItemID.ASTRALRUNE : (Integer) a2[0] == 6 ? ItemID.NATURERUNE : -1) : null);
 				case "getItemContainer":
 					int id = (Integer) a[0];
 					return id == InventoryID.INV ? container(inv) : id == InventoryID.WORN ? container(worn) : null;
@@ -132,7 +139,6 @@ public class RunecraftCompanionCollectorTest
 		{
 			tick++;
 			now += 600;
-			rc.onRunecraftTick(new GameTick());
 			rc.onGameTick(new GameTick());
 		}
 	}
@@ -221,6 +227,51 @@ public class RunecraftCompanionCollectorTest
 		assertEquals("nature", u.get(0).getMethod());
 		SkillCompanionView v = rc.getView();
 		assertEquals(Long.valueOf(38L), v.getFlushedConsumed().get(ItemID.BLANKRUNE_HIGH));
+	}
+
+	@Test
+	public void confirmedCraft_isReportedAsProductionEvidence_xpOrItemsAloneAreNot()
+	{
+		List<Object[]> evidence = new ArrayList<>();
+		rc.setProductionEvidenceSink((skill, at) -> evidence.add(new Object[]{skill, at}));
+		ticks(2);
+		// Runes appearing without XP (a withdrawal) and XP without items: never evidence.
+		inv.put(ItemID.NATURERUNE, 100L);
+		push();
+		ticks(3);
+		rcXp += 500;
+		rc.onStatChanged(new StatChanged(Skill.RUNECRAFT, rcXp, 91, 91));
+		ticks(3);
+		assertTrue(evidence.isEmpty());
+		craftNatures(10);
+		assertEquals(1, evidence.size());
+		assertEquals("runecraft", evidence.get(0)[0]);
+		craftNatures(5);
+		assertEquals("rate-limited: one note per few seconds", 1, evidence.size());
+	}
+
+	@Test
+	public void runesCraftedIntoTheRunePouch_readFromItsNativeVarbits_areProduction()
+	{
+		current = session("s-rc", "SKILLING", "runecraft");
+		varbits.put(VarbitID.RUNE_POUCH_TYPE_1, 14);
+		varbits.put(VarbitID.RUNE_POUCH_QUANTITY_1, 300);
+		rc.onVarbitChanged(varbit(VarbitID.RUNE_POUCH_QUANTITY_1, 300));
+		ticks(2);
+		rcXp += 26 * 9;
+		rc.onStatChanged(new StatChanged(Skill.RUNECRAFT, rcXp, 91, 91));
+		inv.merge(ItemID.BLANKRUNE_HIGH, -26L, Long::sum);
+		push();
+		varbits.put(VarbitID.RUNE_POUCH_QUANTITY_1, 326);
+		rc.onVarbitChanged(varbit(VarbitID.RUNE_POUCH_QUANTITY_1, 326));
+		ticks(70);
+		long astral = 0;
+		for (EventPayloads.SkillProduction p : updates())
+		{
+			astral += qty(p.getProduced(), ItemID.ASTRALRUNE);
+		}
+		assertEquals("26 astrals that went straight into the pouch", 26L, astral);
+		assertEquals(Long.valueOf(26L), rc.getView().getFlushedConsumed().get(ItemID.BLANKRUNE_HIGH));
 	}
 
 	@Test

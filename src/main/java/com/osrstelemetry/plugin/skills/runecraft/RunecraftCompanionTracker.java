@@ -100,6 +100,8 @@ public final class RunecraftCompanionTracker implements SkillTracker
 		final Map<String, Long> otherXp = new HashMap<>();
 		final Map<Integer, Long> invNet = new HashMap<>();
 		final Map<Integer, Long> bankNet = new HashMap<>();
+		/** The rune pouch's own change (rune item -> delta): crafted runes can go straight into it. */
+		final Map<Integer, Long> runePouchNet = new HashMap<>();
 		boolean bankOpen;
 		boolean depositBoxOpen;
 		boolean excluded;
@@ -143,6 +145,8 @@ public final class RunecraftCompanionTracker implements SkillTracker
 
 	private Map<Integer, Long> lastInventory;
 	private Map<Integer, Long> lastBank;
+	/** The rune pouch's contents (rune item -> quantity) as last read natively; null = not read yet. */
+	private Map<Integer, Long> lastRunePouch;
 	private boolean bankOpen;
 	private boolean depositBoxOpen;
 	private int region = -1;
@@ -243,6 +247,26 @@ public final class RunecraftCompanionTracker implements SkillTracker
 		b.excluded |= region == RunecraftCompanionDefinition.GOTR_REGION;
 		lastInventory = new HashMap<>(items);
 		revision++;
+	}
+
+	/**
+	 * The rune pouch's contents (its native slot varbits). Since February 2023
+	 * crafted runes go straight into the pouch when it already holds that rune:
+	 * such a craft never shows its runes in the inventory. The first reading is
+	 * a baseline, never a change.
+	 */
+	public void onRunePouch(int tick, long nowMillis, Map<Integer, Long> runes)
+	{
+		Map<Integer, Long> next = new HashMap<>(runes);
+		next.values().removeIf(v -> v == null || v <= 0);
+		if (lastRunePouch != null && !next.equals(lastRunePouch))
+		{
+			Bucket b = bucket(tick, nowMillis);
+			SkillBanking.diffInto(lastRunePouch, next, b.runePouchNet);
+			b.excluded |= region == RunecraftCompanionDefinition.GOTR_REGION;
+			revision++;
+		}
+		lastRunePouch = next;
 	}
 
 	@Override
@@ -398,7 +422,22 @@ public final class RunecraftCompanionTracker implements SkillTracker
 
 		Map<Integer, Long> runesGained = new LinkedHashMap<>();
 		Map<Integer, Long> inputsUsed = new LinkedHashMap<>();
-		for (Map.Entry<Integer, Long> d : b.invNet.entrySet())
+		// Runes are counted over the inventory AND the rune pouch together: a craft into the pouch is still a craft,
+		// and moving runes between the two nets to nothing (never production, never an input).
+		Map<Integer, Long> net = new LinkedHashMap<>(b.invNet);
+		Map<Integer, Long> intoPouch = new HashMap<>();
+		for (Map.Entry<Integer, Long> d : b.runePouchNet.entrySet())
+		{
+			if (RunecraftCompanionDefinition.isRune(d.getKey()))
+			{
+				net.merge(d.getKey(), d.getValue(), Long::sum);
+				if (d.getValue() > 0)
+				{
+					intoPouch.put(d.getKey(), d.getValue());
+				}
+			}
+		}
+		for (Map.Entry<Integer, Long> d : net.entrySet())
 		{
 			int item = d.getKey();
 			long delta = d.getValue();
@@ -428,7 +467,16 @@ public final class RunecraftCompanionTracker implements SkillTracker
 		long runes = 0L;
 		for (Map.Entry<Integer, Long> r : runesGained.entrySet())
 		{
-			ledger.produced(r.getKey(), r.getValue(), ProductionLedger.Destination.INVENTORY);
+			// The part that went straight into the rune pouch is held there (never "in the inventory").
+			long pouched = Math.min(r.getValue(), intoPouch.getOrDefault(r.getKey(), 0L));
+			if (pouched > 0)
+			{
+				ledger.produced(r.getKey(), pouched, ProductionLedger.Destination.STORAGE);
+			}
+			if (r.getValue() - pouched > 0)
+			{
+				ledger.produced(r.getKey(), r.getValue() - pouched, ProductionLedger.Destination.INVENTORY);
+			}
 			runes += r.getValue();
 		}
 		long essence = 0L;
@@ -783,6 +831,7 @@ public final class RunecraftCompanionTracker implements SkillTracker
 		contextEvidence.clear();
 		lastInventory = null;
 		lastBank = null;
+		lastRunePouch = null;
 		bankOpen = false;
 		depositBoxOpen = false;
 		region = -1;
@@ -800,6 +849,7 @@ public final class RunecraftCompanionTracker implements SkillTracker
 		buckets.clear();
 		lastInventory = null;
 		lastBank = null;
+		lastRunePouch = null;
 		bankOpen = false;
 		depositBoxOpen = false;
 		contextEvidence.clear();

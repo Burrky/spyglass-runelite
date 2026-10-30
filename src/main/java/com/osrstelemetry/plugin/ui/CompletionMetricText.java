@@ -228,7 +228,7 @@ public final class CompletionMetricText
 	/** The same facts as {@link #summary}, as a wrapping {@link FactLine} ("Games: 8  •  Games/hr: 11.4"). */
 	static FactLine factLine(String label, int count, long activeMillis)
 	{
-		FactLine line = new FactLine(net.runelite.client.ui.FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		FactLine line = new FactLine(SpyglassFonts.small(), SpyglassTheme.TEXT_SECONDARY);
 		line.fact(countText(label, count));
 		Double rate = perHour(count, activeMillis);
 		if (rate != null)

@@ -40,9 +40,8 @@ import java.util.function.IntFunction;
 final class SkillCompanionModel
 {
 	static final long MIN_RATE_MILLIS = SkillGoalPlanner.MIN_RATE_MILLIS;
-	private static final int BREAKDOWN_MAX = 4;
 
-	/** PRODUCTION: the main cell, its banked part, the method rate and the compact lines under it. */
+	/** PRODUCTION: the main cell, its banked part, the method rate and the item sprites under it. */
 	static final class Production
 	{
 		final String caption;
@@ -50,30 +49,33 @@ final class SkillCompanionModel
 		final long banked;
 		final String rateText;
 		final String rateTooltip;
-		final String breakdown;
-		final List<String> byproducts;
+		/** The main resources as sprites + numbers (when they mix, or per-resource rows); null when the cell says it all. */
+		SkillCompanionView.ItemGroup mainItems;
+		/** Sprites + numbers after the main ones: by-products, other methods' output. */
+		final List<SkillCompanionView.ItemGroup> itemGroups;
+		/** The caption cell(s) earn their space (false when per-resource rows already say everything). */
+		boolean showCells = true;
+		/** BANKED is shown live (false for a skill whose items are made to be used, not gathered). */
+		boolean showBanked = true;
 		/** "&lt;count&gt; &lt;auto-transformed verb&gt;" (part of the total, never banked); null when none. */
 		String autoTransformedLine;
 		/** "&lt;count&gt; &lt;consumed phrase&gt;" (session-owned inputs used up); null when none. */
 		String consumedLine;
-		/** "Also used: Earth rune 13 \u2022 ..." (non-primary inputs by exact name); null when none. */
-		String otherInputsLine;
+		/** Non-primary inputs used up, as sprites + numbers; null when none. */
+		SkillCompanionView.ItemGroup otherInputs;
 		/** Method lines derived from occurrences ("Bound 412 / 448 (92%)"). */
 		List<String> occurrenceLines = Collections.emptyList();
 		/** Unit-family production (Phase 6): the main cell's text ("1,086 units"); null = the plain count. */
 		String totalText;
-		/** Unit-family production: the exact full-item equivalence ("271 × full + 2 units"); null when none. */
-		String unitsLine;
 
-		Production(String caption, long total, long banked, String rateText, String rateTooltip, String breakdown, List<String> byproducts)
+		Production(String caption, long total, long banked, String rateText, String rateTooltip, List<SkillCompanionView.ItemGroup> itemGroups)
 		{
 			this.caption = caption;
 			this.total = total;
 			this.banked = banked;
 			this.rateText = rateText;
 			this.rateTooltip = rateTooltip;
-			this.breakdown = breakdown;
-			this.byproducts = byproducts;
+			this.itemGroups = itemGroups;
 		}
 	}
 
@@ -124,6 +126,8 @@ final class SkillCompanionModel
 		boolean ownershipAlert;
 		/** The target prompt's noun ("<resource> (as full) in your bank and <storage>"). */
 		String promptNoun;
+		/** OWNED counts what you carry and the ETA follows this session's own rate of it (Agility rewards). */
+		boolean growsWithProduction;
 
 		Target(SkillGoal goal, SkillResource resource, List<SkillResource> choices, Long first, Long remaining, Long etaMillis, boolean reached)
 		{
@@ -159,6 +163,9 @@ final class SkillCompanionModel
 	{
 		final List<SkillCompanionView.EventView.Field> fields;
 		final List<String> lines;
+		/** The inputs as sprites + exact counts (instead of cells); empty = none. */
+		List<SkillCompanionView.ItemStat> items = Collections.emptyList();
+		String title = "Inputs used";
 
 		Inputs(List<SkillCompanionView.EventView.Field> fields, List<String> lines)
 		{
@@ -170,7 +177,8 @@ final class SkillCompanionModel
 	final String methodKey;
 	final String methodLabel;
 	final Trip trip;
-	final Production production;
+	/** Not final: a method whose action count is its output takes the action rate here (actionRateInProduction). */
+	Production production;
 	final List<SkillCompanionView.ContextLine> context;
 	final Target target;
 	/** SUPPLIES: the current method's consumable (count + runway), or null when it uses none. */
@@ -191,6 +199,8 @@ final class SkillCompanionModel
 	ActionSession actions;
 	/** INPUTS USED (Phase 6); null when the definition offers no input cells. */
 	Inputs inputs;
+	/** What the account holds for the method outside the inventory ("In bank"); null when none. */
+	Event stock;
 
 	/** CURRENT FOCUS: what it is, what it gave and for how long (never a remaining estimate). */
 	static final class Focus
@@ -201,6 +211,9 @@ final class SkillCompanionModel
 		final long count;
 		final String timeCaption;
 		final String timeText;
+		/** A quiet line under the numbers ("Last tree: 4 logs"); null = none. */
+		String note;
+		String noteTooltip;
 
 		Focus(String title, String label, String countCaption, long count, String timeCaption, String timeText)
 		{
@@ -222,6 +235,8 @@ final class SkillCompanionModel
 		final String timeText;
 		final List<SkillCompanionView.EventView.Field> fields;
 		final List<SkillCompanionView.ContextLine> lines;
+		/** Sprites + numbers after the fields (none by default). */
+		List<SkillCompanionView.ItemGroup> itemGroups = Collections.emptyList();
 
 		Event(String name, String timeText, List<SkillCompanionView.EventView.Field> fields, List<SkillCompanionView.ContextLine> lines)
 		{
@@ -251,11 +266,14 @@ final class SkillCompanionModel
 
 		final List<Cell> cells;
 		final List<String> lines;
+		/** Families shown compactly: sprites + exact numbers, titled by the family. */
+		final List<SkillCompanionView.ItemGroup> groups;
 
-		Secondary(List<Cell> cells, List<String> lines)
+		Secondary(List<Cell> cells, List<String> lines, List<SkillCompanionView.ItemGroup> groups)
 		{
 			this.cells = cells;
 			this.lines = lines;
+			this.groups = groups;
 		}
 	}
 
@@ -334,6 +352,9 @@ final class SkillCompanionModel
 		final long count;
 		final String runway;
 		final String runwayTooltip;
+		/** The supply item (its sprite); -1 = none known. */
+		int itemId = -1;
+		String name;
 
 		Supply(String caption, long count, String runway, String runwayTooltip)
 		{
@@ -373,6 +394,7 @@ final class SkillCompanionModel
 		this.secondary = base.secondary;
 		this.actions = base.actions;
 		this.inputs = base.inputs;
+		this.stock = base.stock;
 	}
 
 	private SkillCompanionModel(SkillCompanionModel base, Supply supply)
@@ -392,6 +414,7 @@ final class SkillCompanionModel
 		this.secondary = base.secondary;
 		this.actions = base.actions;
 		this.inputs = base.inputs;
+		this.stock = base.stock;
 	}
 
 	static SkillCompanionModel build(CurrentSessionSnapshot snapshot, SkillCompanionDefinition def, SkillCompanionView view, SkillGoal goal,
@@ -447,7 +470,7 @@ final class SkillCompanionModel
 		production = withConsumed(production, def, stats, view, bound);
 		if (production != null)
 		{
-			List<String> occLines = def.occurrenceLines(method, occurrences(stats, view, bound));
+			List<String> occLines = def.liveOccurrenceLines(method, occurrences(stats, view, bound));
 			if (!occLines.isEmpty())
 			{
 				production.occurrenceLines = occLines;
@@ -455,6 +478,10 @@ final class SkillCompanionModel
 		}
 		Target target = buildTarget(def, goal, method, produced, skillXp, xpPerHour(snapshot, def), bankQuantity,
 			bound ? view.getBanking() : Collections.<Integer, SkillGoalPlanner.BankingSample>emptyMap(), externalStock);
+		if (def.targetGrowsWithProduction(method) && target.resource != null && target.goal.getFamily() != SkillGoal.Family.LEVEL)
+		{
+			target = carriedTarget(target, def, method, produced, bankQuantity, view.getCarried(), methodMillis);
+		}
 		SkillCompanionModel model = new SkillCompanionModel(method, label, trip, production, view.getContext(), target);
 		addExtras(model, def, view, stats, method, produced, methodMillis, bound);
 		addActionsAndInputs(model, def, view, stats, method, methodMillis, bound);
@@ -473,15 +500,18 @@ final class SkillCompanionModel
 		else if (sv.getRunwayMillis() == null)
 		{
 			runway = null;
-			tip = "How long what you carry lasts at what this method actually uses -- appears after a few minutes of it "
-				+ "(never assumed one per success)";
+			tip = "How long what you carry lasts at what this method actually uses -- appears once enough was really used "
+				+ "(never assumed one per success, never a theoretical rate)";
 		}
 		else
 		{
 			runway = SkillGoalPlanner.etaText(sv.getRunwayMillis());
 			tip = "How long what you carry lasts at what this method actually used so far (bank supplies don't count)";
 		}
-		return withCycles(new SkillCompanionModel(model, new Supply(sv.getName().toUpperCase(java.util.Locale.ROOT), sv.getCount(), runway, tip)),
+		Supply supply = new Supply(sv.getName().toUpperCase(java.util.Locale.ROOT), sv.getCount(), runway, tip);
+		supply.itemId = sv.getItemId();
+		supply.name = sv.getName();
+		return withCycles(new SkillCompanionModel(model, supply),
 			def, view, stats, method, produced, methodMillis, bound);
 	}
 
@@ -719,10 +749,14 @@ final class SkillCompanionModel
 		}
 		sortByQuantity(main, produced);
 
+		List<String> columns = def.productionColumns(method);
+		boolean rows = columns != null && !columns.isEmpty();
+		boolean showBanked = def.productionShowsBanked(method);
+		List<SkillCompanionView.ItemGroup> groups = new ArrayList<>();
 		String caption = null;
 		long total = 0L;
 		long bankedMain = 0L;
-		String breakdown = null;
+		SkillCompanionView.ItemGroup mainItems = null;
 		if (!main.isEmpty())
 		{
 			for (SkillResource r : main)
@@ -732,39 +766,40 @@ final class SkillCompanionModel
 			}
 			boolean grouped = main.get(0).getGroup() != null;
 			caption = def.productionCaption(method, main);
-			if (main.size() > 1)
+			if (rows || main.size() > 1 || grouped || def.productionSprites(method))
 			{
-				breakdown = def.breakdownAsShares(method) ? shares(main, produced, total) : line(main, produced);
-			}
-			else if (grouped)
-			{
-				breakdown = line(main, produced);
+				// Every main resource as its own sprite + exact number (never shares, never "+N more").
+				mainItems = new SkillCompanionView.ItemGroup(main.size() > 1 ? def.productionItemsTitle(method) : null,
+					rows ? columns : null, stats(def, main, produced, banked, rows));
 			}
 		}
 
-		List<String> byproducts = new ArrayList<>();
 		for (Map.Entry<String, List<SkillResource>> g : byGroup.entrySet())
 		{
 			sortByQuantity(g.getValue(), produced);
-			byproducts.add(def.groupTitle(g.getKey()) + ": " + line(g.getValue(), produced));
+			groups.add(new SkillCompanionView.ItemGroup(def.groupTitle(g.getKey()), rows ? columns : null,
+				stats(def, g.getValue(), produced, banked, rows)));
 		}
-		for (SkillResource r : other)
+		if (!other.isEmpty())
 		{
-			byproducts.add(r.getShortName() + " " + fmt(produced.getOrDefault(r.getItemId(), 0L)));
+			sortByQuantity(other, produced);
+			groups.add(new SkillCompanionView.ItemGroup("By-products", rows ? columns : null, stats(def, other, produced, banked, rows)));
 		}
-
 		if (!earlier.isEmpty())
 		{
-			String also = alsoLine(def, earlier, produced);
-			if (also != null)
+			sortByQuantity(earlier, produced);
+			List<SkillCompanionView.ItemStat> also = stats(def, earlier, produced, banked, rows);
+			if (!also.isEmpty())
 			{
-				byproducts.add(also);
+				groups.add(new SkillCompanionView.ItemGroup("Also made", rows ? columns : null, also));
 			}
 		}
 		UnitFamily family = commonFamily(def, main);
 		if (family != null)
 		{
-			return unitProduction(def, method, family, main, produced, banked, methodMillis, caption, byproducts);
+			Production p = unitProduction(def, method, family, main, produced, banked, methodMillis, caption, groups);
+			p.showBanked = showBanked;
+			return p;
 		}
 
 		String rateText = null;
@@ -799,11 +834,22 @@ final class SkillCompanionModel
 				rateTooltip = "Every main resource per hour of active session time (logged-out time never counts)";
 			}
 		}
-		if (caption == null && byproducts.isEmpty())
+		if (caption == null && groups.isEmpty())
 		{
 			return null;
 		}
-		return new Production(caption, total, bankedMain, rateText, rateTooltip, breakdown, byproducts);
+		boolean showCells = caption != null && (!rows || main.size() > 1) && !def.productionSprites(method);
+		if (!def.productionRateLine())
+		{
+			rateText = null;
+			rateTooltip = null;
+		}
+		Production p = new Production(caption, total, bankedMain, rateText, rateTooltip, groups);
+		p.showBanked = showBanked;
+		// Per-resource rows already carry one resource's produced and banked numbers; the blended cell only when resources mix.
+		p.showCells = showCells;
+		p.mainItems = mainItems;
+		return p;
 	}
 
 	/** The one unit family every main resource belongs to; null when any is item-counted or families differ. */
@@ -824,12 +870,14 @@ final class SkillCompanionModel
 
 	/**
 	 * PRODUCTION of one unit family (Phase 6): counted in units ("1,086
-	 * units") with the exact full-item equivalence, banked in units, and the
-	 * method's own units per hour -- a mix of variants is one family, never a
-	 * "TOTAL" of unrelated items.
+	 * units"), banked in units, and the method's own units per hour -- a mix
+	 * of variants is one family, never a "TOTAL" of unrelated items. The
+	 * family's one-unit sprite carries the number (never a vial-by-vial
+	 * breakdown in prose).
 	 */
 	private static Production unitProduction(SkillCompanionDefinition def, String method, UnitFamily family, List<SkillResource> main,
-		Map<Integer, Long> produced, Map<Integer, Long> banked, Map<String, Long> methodMillis, String caption, List<String> byproducts)
+		Map<Integer, Long> produced, Map<Integer, Long> banked, Map<String, Long> methodMillis, String caption,
+		List<SkillCompanionView.ItemGroup> groups)
 	{
 		long units = 0L;
 		long bankedUnits = 0L;
@@ -846,19 +894,42 @@ final class SkillCompanionModel
 			rateText = fmt(Math.round(units * 3_600_000d / millis)) + " " + family.unitPlural() + "/hr";
 			rateTooltip = "Per hour of " + def.methodLabel(method) + " time this session (banking counts; long idles and logged-out time never do)";
 		}
-		Production p = new Production(caption, units, bankedUnits, rateText, rateTooltip, null, byproducts);
+		Production p = new Production(caption, units, bankedUnits, rateText, rateTooltip, groups);
 		p.totalText = family.unitsText(units);
-		p.unitsLine = units >= family.getFullUnits() ? "(" + family.equivalentText(units) + ")" : null;
+		// The variants' own sprites would only re-split one family: the family's one-unit sprite carries the number instead.
+		p.mainItems = new SkillCompanionView.ItemGroup(null, null, Collections.singletonList(SkillCompanionView.ItemStat.line(
+			oneUnitItem(family), family.getName(), family.unitsText(units),
+			family.getName() + ": " + family.unitsText(units) + (units >= family.getFullUnits() ? " (" + family.equivalentText(units) + ")" : ""))));
+		p.showCells = false;
 		return p;
 	}
 
-	/** "Also: <family> 360 units • <item> 28" -- earlier methods' own output (never part of the main cell). */
-	private static String alsoLine(SkillCompanionDefinition def, List<SkillResource> earlier, Map<Integer, Long> produced)
+	/** The family member that holds exactly one unit (its smallest variant); the canonical item when none does. */
+	static int oneUnitItem(UnitFamily family)
 	{
-		Map<String, Long> unitsByFamily = new LinkedHashMap<>();
+		for (Map.Entry<Integer, Integer> e : family.getUnitsPerItem().entrySet())
+		{
+			if (e.getValue() == 1)
+			{
+				return e.getKey();
+			}
+		}
+		return family.getCanonicalItemId();
+	}
+
+	/**
+	 * Sprites + exact numbers for resources (in the given order): a unit
+	 * family is ONE stat of its one-unit sprite counted in units; rows add
+	 * BANKED. Unnamed ids (-1) are kept by name with no sprite.
+	 */
+	static List<SkillCompanionView.ItemStat> stats(SkillCompanionDefinition def, List<SkillResource> resources, Map<Integer, Long> produced,
+		Map<Integer, Long> banked, boolean rows)
+	{
+		Map<String, long[]> familyUnits = new LinkedHashMap<>();
 		Map<String, UnitFamily> families = new LinkedHashMap<>();
-		Map<String, Long> plain = new LinkedHashMap<>();
-		for (SkillResource r : earlier)
+		List<SkillCompanionView.ItemStat> out = new ArrayList<>();
+		List<Object> order = new ArrayList<>();
+		for (SkillResource r : resources)
 		{
 			long q = produced.getOrDefault(r.getItemId(), 0L);
 			if (q <= 0)
@@ -868,86 +939,52 @@ final class SkillCompanionModel
 			UnitFamily f = def.unitFamily(r);
 			if (f != null)
 			{
-				unitsByFamily.merge(f.getKey(), q * f.unitsOf(r.getItemId()), Long::sum);
-				families.put(f.getKey(), f);
+				long[] u = familyUnits.get(f.getKey());
+				if (u == null)
+				{
+					u = new long[2];
+					familyUnits.put(f.getKey(), u);
+					families.put(f.getKey(), f);
+					order.add(f);
+				}
+				u[0] += q * f.unitsOf(r.getItemId());
+				u[1] += banked.getOrDefault(r.getItemId(), 0L) * f.unitsOf(r.getItemId());
+				continue;
 			}
-			else
+			order.add(r);
+		}
+		for (Object o : order)
+		{
+			if (o instanceof UnitFamily)
 			{
-				plain.merge(r.getShortName(), q, Long::sum);
+				UnitFamily f = (UnitFamily) o;
+				long[] u = familyUnits.get(f.getKey());
+				out.add(stat(oneUnitItem(f), f.getName(), u[0], u[1], rows, f.getName() + ": " + f.unitsText(u[0])
+					+ (rows ? " • " + f.unitsText(u[1]) + " banked" : "")));
+				continue;
 			}
+			SkillResource r = (SkillResource) o;
+			long q = produced.getOrDefault(r.getItemId(), 0L);
+			long b = banked.getOrDefault(r.getItemId(), 0L);
+			out.add(stat(r.getItemId(), r.getName(), q, b, rows, r.getName() + ": " + fmt(q) + (rows ? " • " + fmt(b) + " banked" : "")));
 		}
-		StringBuilder sb = new StringBuilder();
-		int shown = 0;
-		int total = unitsByFamily.size() + plain.size();
-		for (Map.Entry<String, Long> e : unitsByFamily.entrySet())
+		return out;
+	}
+
+	private static SkillCompanionView.ItemStat stat(int itemId, String name, long produced, long banked, boolean rows, String tooltip)
+	{
+		List<Long> values = new ArrayList<>();
+		values.add(produced);
+		if (rows)
 		{
-			if (shown == BREAKDOWN_MAX)
-			{
-				break;
-			}
-			sb.append(shown == 0 ? "" : " \u2022 ").append(families.get(e.getKey()).getName()).append(' ')
-				.append(families.get(e.getKey()).unitsText(e.getValue()));
-			shown++;
+			values.add(banked);
 		}
-		for (Map.Entry<String, Long> e : plain.entrySet())
-		{
-			if (shown == BREAKDOWN_MAX)
-			{
-				break;
-			}
-			sb.append(shown == 0 ? "" : " \u2022 ").append(e.getKey()).append(' ').append(fmt(e.getValue()));
-			shown++;
-		}
-		if (shown == 0)
-		{
-			return null;
-		}
-		if (total > shown)
-		{
-			sb.append(" \u2022 +").append(total - shown).append(" more");
-		}
-		return "Also: " + sb;
+		return new SkillCompanionView.ItemStat(itemId, name, values, null, tooltip);
 	}
 
 	private static void sortByQuantity(List<SkillResource> list, Map<Integer, Long> produced)
 	{
 		list.sort((a, b) -> Long.compare(produced.getOrDefault(b.getItemId(), 0L), produced.getOrDefault(a.getItemId(), 0L)));
-	}
-
-	/** "Chaos 25% \u2022 Nature 21% \u2022 ..." (a mixed method's live mix; History keeps every exact count). */
-	private static String shares(List<SkillResource> list, Map<Integer, Long> produced, long total)
-	{
-		StringBuilder sb = new StringBuilder();
-		int shown = 0;
-		for (SkillResource r : list)
-		{
-			if (shown == BREAKDOWN_MAX)
-			{
-				sb.append(" \u2022 +").append(list.size() - shown).append(" more");
-				break;
-			}
-			long q = produced.getOrDefault(r.getItemId(), 0L);
-			sb.append(shown == 0 ? "" : " \u2022 ").append(r.getShortName()).append(' ').append(total <= 0 ? 0 : Math.round(q * 100d / total)).append('%');
-			shown++;
-		}
-		return sb.toString();
-	}
-
-	private static String line(List<SkillResource> list, Map<Integer, Long> produced)
-	{
-		StringBuilder sb = new StringBuilder();
-		int shown = 0;
-		for (SkillResource r : list)
-		{
-			if (shown == BREAKDOWN_MAX)
-			{
-				sb.append(" • +").append(list.size() - shown).append(" more");
-				break;
-			}
-			sb.append(shown == 0 ? "" : " • ").append(r.getShortName()).append(' ').append(fmt(produced.getOrDefault(r.getItemId(), 0L)));
-			shown++;
-		}
-		return sb.toString();
 	}
 
 	// ---- ADDED (Skills Phase 4): auto-transformed, focus, event, secondary ------------
@@ -986,13 +1023,15 @@ final class SkillCompanionModel
 	private static Production copy(Production production)
 	{
 		Production p = new Production(production.caption, production.total, production.banked, production.rateText, production.rateTooltip,
-			production.breakdown, production.byproducts);
+			production.itemGroups);
+		p.showCells = production.showCells;
+		p.showBanked = production.showBanked;
+		p.mainItems = production.mainItems;
 		p.autoTransformedLine = production.autoTransformedLine;
 		p.consumedLine = production.consumedLine;
-		p.otherInputsLine = production.otherInputsLine;
+		p.otherInputs = production.otherInputs;
 		p.occurrenceLines = production.occurrenceLines;
 		p.totalText = production.totalText;
-		p.unitsLine = production.unitsLine;
 		return p;
 	}
 
@@ -1021,7 +1060,7 @@ final class SkillCompanionModel
 		}
 		Map<Integer, Long> merged = SkillProductionMerge.merge(session, view.getFlushedConsumed(), view.getPendingConsumed(), bound);
 		long total = 0L;
-		StringBuilder others = new StringBuilder();
+		List<SkillCompanionView.ItemStat> others = new ArrayList<>();
 		for (Map.Entry<Integer, Long> e : merged.entrySet())
 		{
 			if (def.isPrimaryInput(e.getKey()))
@@ -1030,16 +1069,18 @@ final class SkillCompanionModel
 			}
 			else if (e.getValue() > 0 && def.inputName(e.getKey()) != null)
 			{
-				others.append(others.length() == 0 ? "" : " \u2022 ").append(def.inputName(e.getKey())).append(' ').append(fmt(e.getValue()));
+				others.add(SkillCompanionView.ItemStat.of(e.getKey(), def.inputName(e.getKey()), e.getValue(),
+					def.inputName(e.getKey()) + ": " + fmt(e.getValue()) + " used"));
 			}
 		}
-		if (total <= 0 && others.length() == 0)
+		if (total <= 0 && others.isEmpty())
 		{
 			return production;
 		}
+		others.sort((a, b) -> Long.compare(b.getValues().get(0), a.getValues().get(0)));
 		Production p = copy(production);
 		p.consumedLine = total > 0 ? fmt(total) + " " + def.consumedPhrase() : null;
-		p.otherInputsLine = others.length() == 0 ? null : "Also used: " + others;
+		p.otherInputs = others.isEmpty() ? null : new SkillCompanionView.ItemGroup("Also used", null, others);
 		return p;
 	}
 
@@ -1051,12 +1092,22 @@ final class SkillCompanionModel
 		{
 			model.focus = new Focus(def.focusTitle(), f.getLabel(), def.focusCountCaption(method), f.getProduced(), def.focusTimeCaption(),
 				f.getElapsedMillis() == null ? null : CompletionMetricText.gameTime(f.getElapsedMillis() / 1000));
+			model.focus.note = f.getNote();
+			model.focus.noteTooltip = f.getNoteTooltip();
 		}
 		SkillCompanionView.EventView e = view.getEvent();
 		if (e != null)
 		{
 			model.event = new Event(e.getName(), CompletionMetricText.gameTime(e.getElapsedMillis() / 1000), e.getFields(), e.getLines());
 			model.event.title = e.getTitle();
+			model.event.itemGroups = e.getItemGroups();
+		}
+		SkillCompanionView.EventView st = view.getStock();
+		if (st != null)
+		{
+			model.stock = new Event(st.getName(), null, st.getFields(), st.getLines());
+			model.stock.title = st.getTitle();
+			model.stock.itemGroups = st.getItemGroups();
 		}
 		if (def.secondaries().isEmpty())
 		{
@@ -1069,6 +1120,7 @@ final class SkillCompanionModel
 		}
 		List<Secondary.Cell> cells = new ArrayList<>();
 		List<String> lines = new ArrayList<>();
+		List<SkillCompanionView.ItemGroup> groups = new ArrayList<>();
 		for (SkillCompanionDefinition.Secondary sec : def.secondaries())
 		{
 			List<SkillResource> family = new ArrayList<>();
@@ -1089,7 +1141,8 @@ final class SkillCompanionModel
 			if (sec.isCompactLine())
 			{
 				sortByQuantity(family, produced);
-				lines.add(sec.getCaption() + ": " + line(family, produced));
+				groups.add(new SkillCompanionView.ItemGroup(sec.getCaption(), null,
+					stats(def, family, produced, Collections.<Integer, Long>emptyMap(), false)));
 				continue;
 			}
 			String rate = null;
@@ -1118,9 +1171,9 @@ final class SkillCompanionModel
 				lines.add(def.occurrencesTitle() + ": " + fmt(n));
 			}
 		}
-		if (!cells.isEmpty() || !lines.isEmpty())
+		if (!cells.isEmpty() || !lines.isEmpty() || !groups.isEmpty())
 		{
-			model.secondary = new Secondary(cells, lines);
+			model.secondary = new Secondary(cells, lines, groups);
 		}
 	}
 
@@ -1138,12 +1191,37 @@ final class SkillCompanionModel
 		if (prefix != null && caption != null)
 		{
 			occ = occurrences(stats, view, bound);
-			Long n = occ.get(prefix + method);
-			if (n != null && n > 0)
+			// The definition decides which methods the count spans (by default the shown method alone).
+			java.util.Set<String> sessionMethods = new java.util.LinkedHashSet<>();
+			for (String k : occ.keySet())
 			{
-				Long millis = methodMillis.get(method);
-				String rate = millis != null && millis >= MIN_RATE_MILLIS ? fmt(Math.round(n * 3_600_000d / millis)) : null;
-				model.actions = new ActionSession(caption, n, caption + " / HR", rate);
+				if (k.startsWith(prefix))
+				{
+					sessionMethods.add(k.substring(prefix.length()));
+				}
+			}
+			long n = 0L;
+			long millisSum = 0L;
+			boolean millisKnown = false;
+			for (String m : def.actionMethods(method, sessionMethods))
+			{
+				Long c = occ.get(prefix + m);
+				if (c != null && c > 0)
+				{
+					n += c;
+					Long ms = methodMillis.get(m);
+					if (ms != null)
+					{
+						millisSum += ms;
+						millisKnown = true;
+					}
+				}
+			}
+			if (n > 0)
+			{
+				String rate = millisKnown && millisSum >= def.actionRateMinMillis(method) ? fmt(Math.round(n * 3_600_000d / millisSum)) : null;
+				String rateCaption = def.actionRateCaption(method);
+				model.actions = new ActionSession(caption, n, rateCaption != null ? rateCaption : caption + " / HR", rate);
 			}
 		}
 		Map<Integer, Long> session = new LinkedHashMap<>();
@@ -1160,9 +1238,30 @@ final class SkillCompanionModel
 			occ = occurrences(stats, view, bound);
 		}
 		List<SkillCompanionView.EventView.Field> fields = def.inputFields(method, consumed, occ);
-		if (!fields.isEmpty())
+		List<SkillCompanionView.ItemStat> items = def.inputItems(method, occ);
+		if (!fields.isEmpty() || !items.isEmpty())
 		{
 			model.inputs = new Inputs(fields, def.inputLines(method, occ));
+			model.inputs.items = items;
+			model.inputs.title = def.inputsTitle(method);
+		}
+		if (def.actionRateInProduction(method) && model.actions != null && model.production != null)
+		{
+			// One action = one item made: the production sprite already shows the total, so only the rate is added (never twice).
+			Production p = new Production(model.production.caption, model.production.total, model.production.banked,
+				model.actions.rateText == null ? null : model.actions.rateText + " " + model.actions.caption.toLowerCase(Locale.ROOT) + "/hr",
+				"Per hour of time on this " + def.methodTitle().toLowerCase(Locale.ROOT) + " (banking counts, long idles never do)",
+				model.production.itemGroups);
+			p.showCells = model.production.showCells;
+			p.showBanked = model.production.showBanked;
+			p.mainItems = model.production.mainItems;
+			p.autoTransformedLine = model.production.autoTransformedLine;
+			p.consumedLine = model.production.consumedLine;
+			p.otherInputs = model.production.otherInputs;
+			p.occurrenceLines = model.production.occurrenceLines;
+			p.totalText = model.production.totalText;
+			model.production = p;
+			model.actions = null;
 		}
 	}
 
@@ -1173,6 +1272,11 @@ final class SkillCompanionModel
 		java.util.function.Function<SkillResource, SkillExternalStock> externalStock)
 	{
 		SkillGoal g = goal == null ? SkillGoal.DEFAULT : goal;
+		if (g.getFamily() != SkillGoal.Family.LEVEL && !def.offersResourceTarget())
+		{
+			// A saved resource target of a skill that no longer offers one reads as its Level target (the saved level is kept).
+			g = g.withFamily(SkillGoal.Family.LEVEL);
+		}
 		if (g.getFamily() == SkillGoal.Family.LEVEL)
 		{
 			SkillGoalPlanner.LevelPlan plan = SkillGoalPlanner.level(g.getTargetLevel(), skillXp, xpPerHour);
@@ -1300,6 +1404,43 @@ final class SkillCompanionModel
 			t.ownershipAlert = storageUnknown;
 		}
 		t.promptNoun = resource.getShortName() + (family != null ? " (as " + family.getFullLabel() + ")" : "") + " in " + where;
+		return t;
+	}
+
+	/**
+	 * A resource target that grows while training (Agility's marks of grace,
+	 * crystal shards, termites): OWNED = what you carry + what the bank holds
+	 * (each known, or OWNED is unknown -- never zero), REMAINING, and an ETA
+	 * from this session's observed rate of that resource on this method only
+	 * (after 5 minutes and at least two of it; never a wiki rate).
+	 */
+	private static Target carriedTarget(Target base, SkillCompanionDefinition def, String method, Map<Integer, Long> produced,
+		IntFunction<Long> bankQuantity, Map<Integer, Long> carried, Map<String, Long> methodMillis)
+	{
+		SkillGoal g = base.goal;
+		SkillResource resource = base.resource;
+		Long bank = bankQuantity == null ? null : bankQuantity.apply(resource.getItemId());
+		Long inv = carried == null ? null : carried.getOrDefault(resource.getItemId(), 0L);
+		Long owned = bank == null || inv == null ? null : bank + inv;
+		Long remaining = owned == null ? null : Math.max(0L, g.getTargetQuantity() - owned);
+		boolean reached = remaining != null && remaining == 0;
+		Long eta = reached ? Long.valueOf(0L) : null;
+		long earned = produced.getOrDefault(resource.getItemId(), 0L);
+		Long millis = method == null ? null : methodMillis.get(method);
+		if (!reached && remaining != null && earned >= 2 && millis != null && millis >= MIN_RATE_MILLIS)
+		{
+			eta = (long) Math.ceil(remaining * (double) millis / earned);
+		}
+		Target t = new Target(g, resource, base.choices, owned, remaining, eta, reached);
+		t.firstCaption = "OWNED";
+		t.firstText = owned == null ? null : fmt(owned);
+		t.firstTooltip = owned == null
+			? (bank == null ? "Open your bank once so Spyglass can see what you already have" : "Your inventory has not been read yet")
+			: fmt(inv) + " carried + " + fmt(bank) + " in your bank";
+		t.remainingText = owned == null ? null : reached ? "Done" : fmt(remaining);
+		t.quantityText = fmt(g.getTargetQuantity());
+		t.promptNoun = resource.getName().toLowerCase(Locale.ROOT) + " (inventory and bank)";
+		t.growsWithProduction = true;
 		return t;
 	}
 

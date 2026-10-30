@@ -290,10 +290,10 @@ public class StructuredRewardPipelineTest
 	{
 		slayer(99);
 		closeTick();
-		// There is no producer for these; even a hand-made event is owned by nobody.
-		reward(null, "brimstone_chest", "Brimstone Chest", 1000);
+		// There is no producer for this one; even a hand-made event is owned by nobody.
+		reward(null, null, "Crystal Chest", 1000);
 		closeTick();
-		assertEquals("Bloodveld does not own a Brimstone chest", 0L, sessionCoins(session.testCurrentSession(), null));
+		assertEquals("Bloodveld does not own a crystal chest", 0L, sessionCoins(session.testCurrentSession(), null));
 
 		playActivity("barrows", 14231, "RANGED");
 		reward("barrows", null, "Crystal Chest", 1000);
@@ -337,5 +337,48 @@ public class StructuredRewardPipelineTest
 		assertEquals(liveRecord.getEventId(), rebuilt.getEventId());
 		assertEquals(liveRecord.getObservedAt(), rebuilt.getObservedAt());
 		assertEquals(liveRecord.getItems(), rebuilt.getItems());
+	}
+
+	// ------------------------------------------------------------------ independent rewards (the Brimstone chest)
+
+	private static final int PURE_ESSENCE_NOTED = 7937;
+
+	@Test
+	public void brimstoneChest_duringABloodveldTask_isTheChestsOwnRecord_neverBloodvelds_andRecordedOnce()
+	{
+		slayer(99);
+		closeTick();
+		String slayerId = session.testCurrentSession().getSessionId();
+		// What ServerNpcLootCollector now writes for the game's "loot from Konar quo Maten" (npc 8623): one structured reward.
+		EventPayloads.StructuredReward chest = com.osrstelemetry.plugin.collectors.ServerNpcLootCollectorAccess.independentReward(8623, "Konar quo Maten",
+			Collections.singletonList(new EventPayloads.ServerNpcLootItem(PURE_ESSENCE_NOTED, "Pure essence", 5095)));
+		assertNotNull("Konar's loot is the Brimstone chest", chest);
+		assertEquals("brimstone_chest", chest.getSourceKey());
+		assertTrue(ledger.appendAndWait(ACCOUNT, EventType.STRUCTURED_REWARD, chest, 2000));
+		closeTick();
+		assertEquals(slayerId, session.testCurrentSession().getSessionId());
+		assertTrue("Bloodveld owns none of it", session.testCurrentSession().getAggregates().getLootDrops().isEmpty());
+		LootTrackerSource src = tracked("brimstone_chest");
+		assertNotNull(src);
+		assertEquals("Brimstone chest", src.getSourceName());
+		assertEquals("one claim, one record", 1, trackedRecords());
+		assertEquals(5095, src.getRecords().get(0).getItems().get(0).getQuantity());
+	}
+
+	@Test
+	public void anOlderKonarNpcLootEvent_isReadAsTheChest_inTheSessionAndTheLootTracker()
+	{
+		slayer(99);
+		closeTick();
+		// As the earlier build wrote it: SERVER_NPC_LOOT named for Konar.
+		assertTrue(ledger.appendAndWait(ACCOUNT, EventType.SERVER_NPC_LOOT, new EventPayloads.ServerNpcLoot("Konar quo Maten", 8623,
+			Collections.singletonList(new EventPayloads.ServerNpcLootItem(PURE_ESSENCE_NOTED, "Pure essence", 5095))), 2000));
+		closeTick();
+		assertTrue("never the Slayer session's loot", session.testCurrentSession().getAggregates().getLootDrops().isEmpty());
+		assertEquals(1, tracked("brimstone_chest").getRecords().size());
+		assertEquals(1, trackedRecords());
+		// Ordinary NPC loot is untouched.
+		assertNull(com.osrstelemetry.plugin.collectors.ServerNpcLootCollectorAccess.independentReward(1618, "Bloodveld",
+			Collections.singletonList(new EventPayloads.ServerNpcLootItem(995, "Coins", 30))));
 	}
 }

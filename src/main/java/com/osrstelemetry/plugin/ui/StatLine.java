@@ -6,7 +6,6 @@ import java.awt.Dimension;
 import java.awt.Insets;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import net.runelite.client.ui.FontManager;
 
 /**
  * "Label ........ value" on one line when both fit the sidebar's real width;
@@ -28,10 +27,10 @@ final class StatLine extends JPanel
 		setOpaque(false);
 		setAlignmentX(LEFT_ALIGNMENT);
 		label = new JLabel(labelText);
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(labelColor);
 		value = new JLabel(valueText);
-		value.setFont(boldValue ? FontManager.getRunescapeBoldFont() : FontManager.getRunescapeSmallFont());
+		value.setFont(boldValue ? SpyglassFonts.bold() : SpyglassFonts.small());
 		value.setForeground(valueColor);
 		value.setHorizontalAlignment(JLabel.RIGHT);
 		add(label);

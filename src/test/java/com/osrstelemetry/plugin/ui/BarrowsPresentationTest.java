@@ -122,7 +122,7 @@ public class BarrowsPresentationTest
 
 	private static String headline(CurrentSessionView view)
 	{
-		return ((JLabel) named(view, CurrentSessionView.HEADLINE_NAME)).getText();
+		return HomeView.plain((JLabel) named(view, CurrentSessionView.HEADLINE_NAME));
 	}
 
 	// ------------------------------------------------------------------ title hierarchy
@@ -183,7 +183,7 @@ public class BarrowsPresentationTest
 		view.render(snap(barrows("{'HITPOINTS':12000}")));
 
 		assertNotNull(named(view, CurrentSessionView.BARROWS_BLOCK_NAME));
-		assertEquals("Brothers 4 / 6", ((JLabel) named(view, CurrentSessionView.BARROWS_BROTHER_COUNT_NAME)).getText());
+		assertEquals("Brothers 4 / 6", HomeView.plain((JLabel) named(view, CurrentSessionView.BARROWS_BROTHER_COUNT_NAME)));
 		List<String> chips = chipNames(view);
 		assertEquals(6, chips.size());
 		assertTrue(chips.contains("AHRIM:cleared"));
@@ -193,7 +193,7 @@ public class BarrowsPresentationTest
 		assertTrue(chips.contains("TORAG:remaining"));
 		assertTrue(chips.contains("VERAC:cleared"));
 		assertEquals("chests appear once, inside the Barrows block", 1, countNamed(view, CurrentSessionView.COMPLETION_METRIC_NAME));
-		assertTrue(((JLabel) named(view, CurrentSessionView.COMPLETION_METRIC_NAME)).getText().startsWith("Chests: 7"));
+		assertTrue(HomeView.plain((JLabel) named(view, CurrentSessionView.COMPLETION_METRIC_NAME)).startsWith("Chests: 7"));
 	}
 
 	@Test

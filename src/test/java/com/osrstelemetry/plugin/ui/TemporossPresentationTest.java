@@ -65,7 +65,7 @@ public class TemporossPresentationTest
 	private static String text(Container root, String name)
 	{
 		Component c = named(root, name);
-		return c == null ? null : ((JLabel) c).getText();
+		return c == null ? null : HomeView.plain((JLabel) c);
 	}
 
 	private static CurrentSessionSnapshot snap(Session s)
@@ -165,7 +165,7 @@ public class TemporossPresentationTest
 	{
 		CurrentSessionView v = view(FULL);
 		v.render(snap(tempoross("ACTIVE")));
-		assertEquals("Tempoross", ((JLabel) named(v, CurrentSessionView.HEADLINE_NAME)).getText());
+		assertEquals("Tempoross", HomeView.plain((JLabel) named(v, CurrentSessionView.HEADLINE_NAME)));
 		assertNull("no duplicate activity line", named(v, CurrentSessionView.ACTIVITY_LINE_NAME));
 	}
 
@@ -177,7 +177,7 @@ public class TemporossPresentationTest
 		v.render(snap(tempoross("ACTIVE")));
 		assertNotNull(named(v, CurrentSessionView.TEMPOROSS_BLOCK_NAME));
 		assertEquals(java.util.Arrays.asList("Energy:87", "Essence:64", "Storm:23"), bars(v));
-		assertEquals("1,450", ((JLabel) named(v, CurrentSessionView.TEMPOROSS_POINTS_NAME)).getText());
+		assertEquals("1,450", HomeView.plain((JLabel) named(v, CurrentSessionView.TEMPOROSS_POINTS_NAME)));
 		CurrentSessionView.ThinBar energy = (CurrentSessionView.ThinBar) named(v, CurrentSessionView.TEMPOROSS_BAR_PREFIX + "Energy:87");
 		assertEquals(87, energy.getPercent());
 		assertEquals("thin", 4, energy.getPreferredSize().height);
@@ -190,10 +190,10 @@ public class TemporossPresentationTest
 		CurrentSessionView v = view(FULL);
 		v.render(snap(tempoross("ACTIVE")));
 		assertEquals(1, countNamed(v, CurrentSessionView.COMPLETION_METRIC_NAME));
-		String text = ((JLabel) named(v, CurrentSessionView.COMPLETION_METRIC_NAME)).getText();
+		String text = HomeView.plain((JLabel) named(v, CurrentSessionView.COMPLETION_METRIC_NAME));
 		assertEquals("Games: 6", text);
 		assertEquals(1, countNamed(v, CurrentSessionView.COMPLETION_RATE_NAME));
-		assertTrue(((JLabel) named(v, CurrentSessionView.COMPLETION_RATE_NAME)).getText().startsWith("Games/hr: "));
+		assertTrue(HomeView.plain((JLabel) named(v, CurrentSessionView.COMPLETION_RATE_NAME)).startsWith("Games/hr: "));
 		assertTrue("games line sits after the current game",
 			indexOf(v, CurrentSessionView.COMPLETION_METRIC_NAME) > indexOf(v, CurrentSessionView.TEMPOROSS_POINTS_NAME));
 	}
@@ -216,7 +216,7 @@ public class TemporossPresentationTest
 		CurrentSessionView v = view(TemporossGameState.of(null, 40, null, 0));
 		v.render(snap(tempoross("ACTIVE")));
 		assertEquals(java.util.Collections.singletonList("Essence:40"), bars(v));
-		assertEquals("0", ((JLabel) named(v, CurrentSessionView.TEMPOROSS_POINTS_NAME)).getText());
+		assertEquals("0", HomeView.plain((JLabel) named(v, CurrentSessionView.TEMPOROSS_POINTS_NAME)));
 	}
 
 	// UI 9: a SUSPENDED Tempoross session never shows live game bars.
@@ -273,7 +273,7 @@ public class TemporossPresentationTest
 		List<Component> list = all(v);
 		for (int i = 0; i < list.size(); i++)
 		{
-			if (list.get(i) instanceof JLabel && "Fishing".equals(((JLabel) list.get(i)).getText()))
+			if (list.get(i) instanceof JLabel && "Fishing".equals(HomeView.plain((JLabel) list.get(i))))
 			{
 				firstXp = i;
 				break;
@@ -300,9 +300,9 @@ public class TemporossPresentationTest
 			{
 				Rectangle r = SwingUtilities.convertRectangle(c.getParent(), c.getBounds(), v);
 				assertTrue(width + "px: " + c.getName() + " overflows (" + (r.x + r.width) + ")", r.x >= 0 && r.x + r.width <= width + 1);
-				if (c instanceof JLabel && ((JLabel) c).getText() != null && !((JLabel) c).getText().isEmpty())
+				if (c instanceof JLabel && HomeView.plain((JLabel) c) != null && !HomeView.plain((JLabel) c).isEmpty())
 				{
-					assertTrue(width + "px: '" + ((JLabel) c).getText() + "' clipped", c.getWidth() >= c.getPreferredSize().width);
+					assertTrue(width + "px: '" + HomeView.plain((JLabel) c) + "' clipped", c.getWidth() >= c.getPreferredSize().width);
 				}
 			}
 			for (String bar : bars(v))
@@ -325,7 +325,7 @@ public class TemporossPresentationTest
 		game.set(TemporossGameState.of(0, 90, 55, 2_010));
 		v.render(snap(tempoross("ACTIVE")));
 		assertEquals(java.util.Arrays.asList("Energy:0", "Essence:90", "Storm:55"), bars(v));
-		assertEquals("2,010", ((JLabel) named(v, CurrentSessionView.TEMPOROSS_POINTS_NAME)).getText());
+		assertEquals("2,010", HomeView.plain((JLabel) named(v, CurrentSessionView.TEMPOROSS_POINTS_NAME)));
 		game.set(null);
 		v.render(snap(tempoross("ACTIVE")));
 		assertTrue(bars(v).isEmpty());
@@ -394,9 +394,9 @@ public class TemporossPresentationTest
 			{
 				Rectangle r = SwingUtilities.convertRectangle(c.getParent(), c.getBounds(), v);
 				assertTrue(width + "px: " + c.getName() + " overflows (" + (r.x + r.width) + ")", r.x >= 0 && r.x + r.width <= width + 1);
-				if (c instanceof JLabel && ((JLabel) c).getText() != null && !((JLabel) c).getText().isEmpty())
+				if (c instanceof JLabel && HomeView.plain((JLabel) c) != null && !HomeView.plain((JLabel) c).isEmpty())
 				{
-					assertTrue(width + "px: '" + ((JLabel) c).getText() + "' clipped", c.getWidth() >= c.getPreferredSize().width);
+					assertTrue(width + "px: '" + HomeView.plain((JLabel) c) + "' clipped", c.getWidth() >= c.getPreferredSize().width);
 				}
 			}
 			// Captions, points, three bar rows, games, permits, avg/best: no dead space.

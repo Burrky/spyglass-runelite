@@ -60,6 +60,13 @@ public final class HistoryEntry
 	private String skillPrimaryMethod;
 	/** Completed cycles (Agility: laps across all courses); 0 for skills without cycles and older entries. */
 	private long skillCycleTotal;
+	/**
+	 * ADDED (pass 28) for {@link HistoryEligibility}: the session's Slayer task
+	 * progress (0 when absent, including older files) and every produced
+	 * item's quantity (0 when none).
+	 */
+	private int slayerProgress;
+	private long producedQuantity;
 	/** ADDED (Phase 6): the skill's own list-row facts (SkillCompanionDefinition#historyRowFacts); null = the generic facts. */
 	private List<String> skillRowFacts;
 
@@ -128,6 +135,11 @@ public final class HistoryEntry
 			session.getActivityIdentity().getActivityType() == ActivityType.STRUCTURED_ACTIVITY
 				? (aggregates == null || aggregates.getActivityCompletions() == null ? 0 : aggregates.getActivityCompletions().getSessionCompletions())
 				: null);
+		if (aggregates != null)
+		{
+			entry.slayerProgress = aggregates.getSlayerProgressDelta() == null ? 0 : Math.max(0, aggregates.getSlayerProgressDelta());
+			entry.producedQuantity = producedTotal(aggregates);
+		}
 		if (aggregates != null && aggregates.getSkillStats() != null)
 		{
 			com.osrstelemetry.plugin.skills.SkillCompanionDefinition def =

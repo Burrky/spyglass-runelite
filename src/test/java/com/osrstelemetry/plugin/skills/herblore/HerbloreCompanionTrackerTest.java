@@ -501,6 +501,29 @@ public class HerbloreCompanionTrackerTest
 
 	// ---- CURRENT BATCH -----------------------------------------------------------------------------
 
+	/**
+	 * What the batch can still make: the CAN MAKE cell, or -- when that would
+	 * only repeat the limiting input's count (pass 28) -- the number the
+	 * limiting input's own tooltip names. Never both.
+	 */
+	private static String canMake(SkillCompanionView.EventView e)
+	{
+		String cell = field(e, "CAN MAKE");
+		String limit = null;
+		for (SkillCompanionView.EventView.Field f : e.getFields())
+		{
+			java.util.regex.Matcher m = java.util.regex.Pattern.compile("runs out first: you can make ([0-9,]+) more").matcher(f.getTooltip());
+			if (m.find())
+			{
+				assertNull("one limiting input at most", limit);
+				assertEquals("the limiting input's count is the batch", f.getValue(), m.group(1));
+				limit = m.group(1);
+			}
+		}
+		assertTrue("CAN MAKE or a limiting input, never both", cell == null || limit == null);
+		return cell != null ? cell : limit;
+	}
+
 	private static String field(SkillCompanionView.EventView e, String caption)
 	{
 		for (SkillCompanionView.EventView.Field f : e.getFields())
@@ -522,16 +545,16 @@ public class HerbloreCompanionTrackerTest
 		assertEquals("Current batch", e.getTitle());
 		assertEquals("18", field(e, "UNFINISHED"));
 		assertEquals("28", field(e, "SECONDARY"));
-		assertEquals("unfinished-limited", "18", field(e, "CAN MAKE"));
+		assertEquals("unfinished-limited", "18", canMake(e));
 		put(EGGS, -20);
 		push();
-		assertEquals("secondary-limited", "8", field(t.event(now), "CAN MAKE"));
+		assertEquals("secondary-limited", "8", canMake(t.event(now)));
 		put(EGGS, 10);
 		push();
-		assertEquals("equal", "18", field(t.event(now), "CAN MAKE"));
+		assertEquals("equal", "18", canMake(t.event(now)));
 		inv.remove(EGGS);
 		push();
-		assertEquals("insufficient", "0", field(t.event(now), "CAN MAKE"));
+		assertEquals("insufficient", "0", canMake(t.event(now)));
 	}
 
 	@Test
@@ -543,10 +566,10 @@ public class HerbloreCompanionTrackerTest
 		SkillCompanionView.EventView e = t.event(now);
 		assertEquals("19", field(e, "RANARR"));
 		assertEquals("49", field(e, "VIALS"));
-		assertEquals("herb-limited", "19", field(e, "CAN MAKE"));
+		assertEquals("herb-limited", "19", canMake(e));
 		put(VIAL, -45);
 		push();
-		assertEquals("vial-limited", "4", field(t.event(now), "CAN MAKE"));
+		assertEquals("vial-limited", "4", canMake(t.event(now)));
 	}
 
 	@Test
@@ -558,7 +581,7 @@ public class HerbloreCompanionTrackerTest
 		SkillCompanionView.EventView e = t.event(now);
 		assertEquals("43", field(e, "SUPER ENERGY DOSES"));
 		assertEquals("27", field(e, "SECONDARY"));
-		assertEquals("27 doses", field(e, "CAN MAKE"));
+		assertEquals("27 doses", canMake(e));
 	}
 
 	@Test
@@ -569,7 +592,7 @@ public class HerbloreCompanionTrackerTest
 		put(ItemID.MM_SECONDARY_POUCH_OPEN, 1);
 		push();
 		SkillCompanionView.EventView e = t.event(now);
-		assertEquals("≥ 4", field(e, "CAN MAKE"));
+		assertEquals("≥ 4", canMake(e));
 		boolean line = false;
 		for (SkillCompanionView.ContextLine l : e.getLines())
 		{
@@ -578,35 +601,122 @@ public class HerbloreCompanionTrackerTest
 		assertTrue(line);
 	}
 
-	@Test
-	public void accountPotential_onlyWithTheBankSeenThisLogin_andCountsHerbsAndVialsAsUnfinished()
+	static String line(SkillCompanionView.EventView v, String prefix)
 	{
-		login(SNAP_UNF, 10, EGGS, 10);
-		mixSuperRestore(1);
-		for (SkillCompanionView.ContextLine l : t.event(now).getLines())
+		for (SkillCompanionView.ContextLine l : v.getLines())
 		{
-			assertFalse("no fake account-wide potential", l.getText().startsWith("Account potential"));
-		}
-		t.setBankOpen(true);
-		bank.put(SNAP_UNF, 100L);
-		bank.put(ItemID.SNAPDRAGON, 50L);
-		bank.put(ItemID.UNIDENTIFIED_SNAPDRAGON, 20L);
-		bank.put(VIAL, 60L);
-		bank.put(EGGS, 1_000L);
-		pushBank();
-		step();
-		t.setBankOpen(false);
-		step();
-		String potential = null;
-		for (SkillCompanionView.ContextLine l : t.event(now).getLines())
-		{
-			if (l.getText().startsWith("Account potential"))
+			if (l.getText().startsWith(prefix))
 			{
-				potential = l.getText();
+				return l.getText();
 			}
 		}
-		// 9 carried + 100 banked unfinished + min(70 herbs, 60 vials) = 169 (eggs plenty).
-		assertEquals("Account potential: 169", potential);
+		return null;
+	}
+
+	static String itemText(SkillCompanionView.EventView v, int i)
+	{
+		return v.getItemGroups().get(0).getItems().get(i).getText();
+	}
+
+	void seeBank(Object... items)
+	{
+		t.setBankOpen(true);
+		for (int i = 0; i < items.length; i += 2)
+		{
+			bank.put((Integer) items[i], ((Number) items[i + 1]).longValue());
+		}
+		pushBank();
+		step();
+	}
+
+	@Test
+	public void inBank_unknownUntilTheBankIsSeen_neverZero_noCanMake()
+	{
+		login(SNAP_UNF, 10, EGGS, 10);
+		assertNull("no recipe yet: no IN BANK", t.stock(now));
+		mixSuperRestore(1);
+		SkillCompanionView.EventView v = t.stock(now);
+		assertEquals("In bank", v.getTitle());
+		assertEquals("UNFINISHED  \u2014", itemText(v, 0));
+		assertEquals("SECONDARY  \u2014", itemText(v, 1));
+		assertEquals(SNAP_UNF, v.getItemGroups().get(0).getItems().get(0).getItemId());
+		assertNull(line(v, "Bank can make"));
+		assertNull(line(v, "Potential XP"));
+		assertEquals("Open your bank to count your supplies", v.getLines().get(0).getText());
+		for (SkillCompanionView.ContextLine l : t.event(now).getLines())
+		{
+			assertFalse("never 'Account potential'", l.getText().contains("Account potential"));
+		}
+	}
+
+	@Test
+	public void inBank_bankCanMake_scarcestInput_potentialXpAtTheObservedXp_neverTheInventory()
+	{
+		login(SNAP_UNF, 10, EGGS, 10);
+		mixSuperRestore(2);
+		seeBank(SNAP_UNF, 100, EGGS, 80, ItemID.SNAPDRAGON, 50, VIAL, 60);
+		t.setBankOpen(false);
+		step();
+		SkillCompanionView.EventView v = t.stock(now);
+		assertEquals("UNFINISHED  100", itemText(v, 0));
+		assertEquals("SECONDARY  80", itemText(v, 1));
+		// Eggs are the scarcest; herbs + vials are never counted as unfinished; the 8 carried are CURRENT BATCH's.
+		assertEquals("Bank can make: 80", line(v, "Bank can make"));
+		assertEquals("80 x 142 XP each mix actually gave", "Potential XP: 11,360", line(v, "Potential XP"));
+		assertEquals("8", canMake(t.event(now)));
+	}
+
+	@Test
+	public void potentialXp_unknownUntilTwoCleanSamplesAgree()
+	{
+		login(SNAP_UNF, 10, EGGS, 10);
+		seeBank(SNAP_UNF, 100, EGGS, 100);
+		t.setBankOpen(false);
+		step();
+		mixSuperRestore(1);
+		assertEquals("Bank can make: 100", line(t.stock(now), "Bank can make"));
+		assertNull("one sample is not a rate", line(t.stock(now), "Potential XP"));
+		// A tick whose XP disagrees (shared / split XP) never makes the value trusted.
+		t.onSkillXp(tick, 400, now);
+		put(SNAP_UNF, -1, EGGS, -1, SR3, 1);
+		push();
+		steps(4);
+		assertNull(line(t.stock(now), "Potential XP"));
+	}
+
+	@Test
+	public void inBank_doseKeepingRecipe_storageUnread_isAFloor_thenExactWithStorage()
+	{
+		login(SE3, 5, AMYLASE, 30);
+		tickWith(true, SE3, -1, AMYLASE, -3, STAM3, 1);
+		steps(4);
+		seeBank(SE4, 10, AMYLASE, 100);
+		SkillCompanionView.EventView floor = t.stock(now);
+		assertEquals("40 doses in the bank, Potion Storage not read: at least", "Bank can make: \u2265 40 doses", line(floor, "Bank can make"));
+		t.onStorage(tick, now, Collections.singletonMap("super_energy", 12L));
+		step();
+		SkillCompanionView.EventView exact = t.stock(now);
+		assertEquals("Bank can make: 52 doses", line(exact, "Bank can make"));
+		assertTrue(itemText(exact, 0).endsWith("52 doses"));
+	}
+
+	@Test
+	public void amuletOfChemistryCrumbled_warnsWhileItMatters_clearsWhenWornAgain()
+	{
+		login(SNAP_UNF, 10, EGGS, 10);
+		t.setWorn(Collections.singleton(ItemID.AMULET_OF_CHEMISTRY));
+		mixSuperRestore(1);
+		assertTrue(t.context(now).isEmpty());
+		t.onChat(tick, now, "Your amulet of chemistry helps you create a 4-dose potion. It then crumbles to dust.");
+		t.setWorn(Collections.<Integer>emptySet());
+		assertEquals("Amulet of chemistry crumbled", t.context(now).get(0).getText());
+		assertEquals(SkillCompanionView.ContextLine.Tone.ALERT, t.context(now).get(0).getTone());
+		t.setWorn(Collections.singleton(ItemID.AMULET_OF_CHEMISTRY));
+		assertTrue("a new amulet worn: gone", t.context(now).isEmpty());
+		t.onChat(tick, now, "Your amulet of chemistry helps you create a 4-dose potion. It then crumbles to dust.");
+		t.setWorn(Collections.<Integer>emptySet());
+		assertFalse(t.context(now).isEmpty());
+		assertTrue("never permanent", t.context(now + HerbloreCompanionTracker.CHEMISTRY_WARNING_MILLIS + 1).isEmpty());
 	}
 
 	@Test
@@ -615,7 +725,7 @@ public class HerbloreCompanionTrackerTest
 		login(SNAP_UNF, 10, EGGS, 10, RANARR_UNF, 10, SNAPE, 3);
 		assertNull(t.event(now));
 		mixSuperRestore(1);
-		assertEquals("9", field(t.event(now), "CAN MAKE"));
+		assertEquals("9", canMake(t.event(now)));
 		for (int i = 0; i < 2; i++)
 		{
 			tickWith(true, RANARR_UNF, -1, SNAPE, -1, PP3, 1);
@@ -623,6 +733,6 @@ public class HerbloreCompanionTrackerTest
 		}
 		steps(3);
 		assertEquals("prayer", t.getMethodKey());
-		assertEquals("1", field(t.event(now), "CAN MAKE"));
+		assertEquals("1", canMake(t.event(now)));
 	}
 }

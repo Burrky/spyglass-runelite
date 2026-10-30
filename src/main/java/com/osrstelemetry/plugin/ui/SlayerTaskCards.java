@@ -13,7 +13,6 @@ import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.QuantityFormatter;
 
 /**
@@ -225,7 +224,7 @@ final class SlayerTaskCards
 	private static JLabel caption(String text)
 	{
 		JLabel l = new JLabel(text.toUpperCase(java.util.Locale.ROOT));
-		l.setFont(FontManager.getRunescapeSmallFont());
+		l.setFont(SpyglassFonts.small());
 		l.setForeground(SpyglassTheme.TEXT_MUTED);
 		l.setAlignmentX(Component.LEFT_ALIGNMENT);
 		return l;
@@ -239,13 +238,13 @@ final class SlayerTaskCards
 		row.setOpaque(false);
 		row.setAlignmentX(Component.LEFT_ALIGNMENT);
 		JLabel l = new JLabel(label);
-		l.setFont(FontManager.getRunescapeSmallFont());
+		l.setFont(SpyglassFonts.small());
 		l.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		l.setMinimumSize(new Dimension(0, l.getPreferredSize().height));
 		l.setToolTipText(label);
 		row.add(l, BorderLayout.CENTER);
 		JLabel v = new JLabel(value);
-		v.setFont(FontManager.getRunescapeSmallFont());
+		v.setFont(SpyglassFonts.small());
 		v.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		row.add(v, BorderLayout.EAST);
 		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
@@ -279,13 +278,13 @@ final class SlayerTaskCards
 		header.setOpaque(false);
 		header.setAlignmentX(Component.LEFT_ALIGNMENT);
 		JLabel titleLabel = new JLabel((expanded ? "▾ " : "▸ ") + title);
-		titleLabel.setFont(FontManager.getRunescapeSmallFont());
+		titleLabel.setFont(SpyglassFonts.small());
 		titleLabel.setForeground(titleColor);
 		titleLabel.setToolTipText(tooltip);
 		titleLabel.setMinimumSize(new Dimension(0, titleLabel.getPreferredSize().height));
 		header.add(titleLabel, BorderLayout.CENTER);
 		JLabel value = new JLabel(QuantityFormatter.quantityToStackSize(valueGp) + " gp");
-		value.setFont(FontManager.getRunescapeSmallFont());
+		value.setFont(SpyglassFonts.small());
 		value.setForeground(SpyglassTheme.ACCENT_GOLD);
 		header.add(value, BorderLayout.EAST);
 		MouseAdapter toggle = new MouseAdapter()
@@ -306,7 +305,7 @@ final class SlayerTaskCards
 		{
 			JLabel line = new JLabel(subLines.get(i));
 			line.setName(SUB_LINE_PREFIX + i);
-			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setFont(SpyglassFonts.small());
 			line.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			line.setAlignmentX(Component.LEFT_ALIGNMENT);
 			line.setMinimumSize(new Dimension(0, line.getPreferredSize().height));

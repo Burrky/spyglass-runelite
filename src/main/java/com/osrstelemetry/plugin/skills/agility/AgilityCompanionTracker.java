@@ -23,10 +23,15 @@ import java.util.TreeMap;
  *
  * <h3>Obstacle successes</h3>
  * A click on a course obstacle (MenuOptionClicked on its game object) is
- * remembered for {@link #CLICK_TIMEOUT_TICKS}; the next Agility XP within
- * that time is that obstacle's SUCCESS. An XP drop with no fresh obstacle
- * click is never an obstacle (shortcuts, other content), and a click
- * without XP is never a success (it may still be a failure, see Falls).
+ * remembered for {@link #CLICK_TIMEOUT_TICKS}; an Agility XP drop within
+ * that time is ONE obstacle's SUCCESS. Players click the next obstacle while
+ * the current one still animates, so several clicks can be pending: the XP
+ * belongs to the earliest of them on the route (the lap's first uncleared
+ * obstacle that was clicked), never simply the newest click -- each obstacle
+ * advances exactly once, in order, and a click ahead is never credited
+ * early. An XP drop with no fresh obstacle click is never an obstacle
+ * (shortcuts, other content), and a click without XP is never a success (it
+ * may still be a failure, see Falls).
  *
  * <h3>Course identity</h3>
  * The obstacle's own object id names its course (shared objects are
@@ -63,6 +68,8 @@ public final class AgilityCompanionTracker implements SkillTracker
 {
 	/** How long an obstacle click waits for its XP (walking to it included). */
 	static final int CLICK_TIMEOUT_TICKS = 25;
+	/** At most this many obstacle clicks wait for their XP at once (newest kept). */
+	static final int MAX_PENDING_CLICKS = 4;
 	/** A reward trigger click explains a reward this many ticks later at most. */
 	static final int TRIGGER_TICKS = 20;
 	/** Plane drop and damage within this many ticks of each other: one fall. */
@@ -133,7 +140,8 @@ public final class AgilityCompanionTracker implements SkillTracker
 	private boolean bankOpen;
 	private boolean depositBoxOpen;
 
-	private Click pendingClick;
+	/** Obstacle clicks still waiting for their XP, oldest first (one per object). */
+	private final List<Click> pendingClicks = new ArrayList<>();
 	/** Route state of the lap in progress (course = cycles.getMethod()). */
 	private boolean[] cleared;
 	private int lastNode = -1;
@@ -184,7 +192,14 @@ public final class AgilityCompanionTracker implements SkillTracker
 	{
 		if (!AgilityCourses.withObject(objectId).isEmpty())
 		{
-			pendingClick = new Click(objectId, tick, nowMillis, plane);
+			// Clicking the same obstacle again only refreshes it (one click per object waits).
+			pendingClicks.removeIf(c -> c.objectId == objectId);
+			pendingClicks.add(new Click(objectId, tick, nowMillis, plane));
+			while (pendingClicks.size() > MAX_PENDING_CLICKS)
+			{
+				pendingClicks.remove(0);
+			}
+			creditXplessClicks(tick);
 		}
 		for (AgilityCourse c : AgilityCourses.all())
 		{
@@ -202,26 +217,27 @@ public final class AgilityCompanionTracker implements SkillTracker
 		{
 			return;
 		}
+		pendingClicks.removeIf(c -> tick - c.tick > CLICK_TIMEOUT_TICKS);
 		// 1) The lap's end: Agility XP gained on a course end tile.
 		for (AgilityCourse c : AgilityCourses.endingAt(x, y, plane))
 		{
-			if (c.getCompletionVarbit() == null && (c.getKey().equals(cycles.getMethod()) || recentEvidence(c.getKey(), nowMillis)
-				|| (pendingClick != null && c.objectIds().contains(pendingClick.objectId))))
+			Click last = c.getCompletionVarbit() == null ? clickFor(c, tick) : null;
+			if (c.getCompletionVarbit() == null && (c.getKey().equals(cycles.getMethod()) || recentEvidence(c.getKey(), nowMillis) || last != null))
 			{
-				if (pendingClick != null && c.objectIds().contains(pendingClick.objectId))
+				if (last != null)
 				{
-					obstacleSuccess(c, pendingClick.objectId, nowMillis, pendingClick, true);
+					pendingClicks.remove(last);
+					obstacleSuccess(c, last.objectId, nowMillis, last, true);
 				}
-				pendingClick = null;
 				complete(c, nowMillis);
 				return;
 			}
 		}
-		// 2) The clicked obstacle succeeded.
-		Click click = pendingClick;
-		if (click != null && tick - click.tick <= CLICK_TIMEOUT_TICKS && tick >= click.tick)
+		// 2) A clicked obstacle succeeded: the earliest one on the route, never simply the newest click.
+		Click click = nextClick(tick);
+		if (click != null)
 		{
-			pendingClick = null;
+			pendingClicks.remove(click);
 			resolveSuccess(click, nowMillis);
 			return;
 		}
@@ -313,10 +329,7 @@ public final class AgilityCompanionTracker implements SkillTracker
 			cycles.abandon();
 			clearRoute();
 		}
-		if (pendingClick != null && tick - pendingClick.tick > CLICK_TIMEOUT_TICKS)
-		{
-			pendingClick = null;
-		}
+		pendingClicks.removeIf(c -> tick - c.tick > CLICK_TIMEOUT_TICKS);
 		if (cycles.isRunning() && (tick & 1) == 0)
 		{
 			// The lap timer is visible: refresh it about once a second.
@@ -325,6 +338,153 @@ public final class AgilityCompanionTracker implements SkillTracker
 	}
 
 	// ---- route -----------------------------------------------------------------------------
+
+	/**
+	 * Which pending click this XP drop is the success of. With a lap on a
+	 * course: of the clicks on that course's obstacles, the one whose route
+	 * node comes first among those not yet cleared (a click ahead waits for
+	 * its own XP); a click on the start obstacle when nothing else on the
+	 * route is waiting (a new lap); else the newest click on the course (a
+	 * repeat). Clicks of another course only when none of the lap's course
+	 * is waiting (a course change). Without a lap: the oldest click (clicks
+	 * are made in route order).
+	 */
+	private Click nextClick(int tick)
+	{
+		List<Click> live = new ArrayList<>();
+		for (Click c : pendingClicks)
+		{
+			if (tick >= c.tick && tick - c.tick <= CLICK_TIMEOUT_TICKS)
+			{
+				live.add(c);
+			}
+		}
+		if (live.isEmpty())
+		{
+			return null;
+		}
+		AgilityCourse lap = AgilityCourses.byKey(cycles.getMethod());
+		if (lap != null && cleared != null && cleared.length == lap.getNodes().size())
+		{
+			Click best = null;
+			int bestIdx = Integer.MAX_VALUE;
+			Click start = null;
+			Click newestOnCourse = null;
+			for (Click c : live)
+			{
+				if (!lap.objectIds().contains(c.objectId))
+				{
+					continue;
+				}
+				newestOnCourse = c;
+				int idx = firstAccepting(lap, c.objectId, cleared);
+				// A zero-XP obstacle (a ladder) never takes another obstacle's XP: its click credits it (creditXplessClicks).
+				if (idx >= 0 && idx < bestIdx && !lap.getNodes().get(idx).isXpless())
+				{
+					best = c;
+					bestIdx = idx;
+				}
+				if (lap.startNode().accepts(c.objectId))
+				{
+					start = c;
+				}
+			}
+			if (best != null)
+			{
+				return best;
+			}
+			if (start != null)
+			{
+				return start;
+			}
+			if (newestOnCourse != null)
+			{
+				return newestOnCourse;
+			}
+		}
+		return live.get(0);
+	}
+
+	/**
+	 * Zero-XP obstacles (a ladder) have no XP of their own: one is passed when
+	 * it is the NEXT obstacle of the lap and its click is pending -- at its
+	 * click, or as soon as the obstacle before it succeeded (clicked ahead).
+	 * In route order, one step at a time: never a jump past an uncleared
+	 * obstacle.
+	 */
+	private void creditXplessClicks(int tick)
+	{
+		AgilityCourse lap = AgilityCourses.byKey(cycles.getMethod());
+		if (lap == null || cleared == null || cleared.length != lap.getNodes().size() || lap.isCountOnly())
+		{
+			return;
+		}
+		boolean changed = false;
+		while (true)
+		{
+			int next = -1;
+			for (int i = 0; i < cleared.length; i++)
+			{
+				if (!cleared[i])
+				{
+					next = i;
+					break;
+				}
+			}
+			if (next < 0 || !lap.getNodes().get(next).isXpless())
+			{
+				break;
+			}
+			Click used = null;
+			for (Click c : pendingClicks)
+			{
+				if (tick >= c.tick && tick - c.tick <= CLICK_TIMEOUT_TICKS && lap.getNodes().get(next).accepts(c.objectId))
+				{
+					used = c;
+					break;
+				}
+			}
+			if (used == null)
+			{
+				break;
+			}
+			pendingClicks.remove(used);
+			cleared[next] = true;
+			lastNode = next;
+			changed = true;
+		}
+		if (changed)
+		{
+			publishProgress(lap);
+		}
+	}
+
+	/** The pending click (within the timeout) that belongs to this course, earliest on its route first; null when none. */
+	private Click clickFor(AgilityCourse course, int tick)
+	{
+		Click best = null;
+		int bestIdx = Integer.MAX_VALUE;
+		for (Click c : pendingClicks)
+		{
+			if (tick < c.tick || tick - c.tick > CLICK_TIMEOUT_TICKS || !course.objectIds().contains(c.objectId))
+			{
+				continue;
+			}
+			boolean onLap = course.getKey().equals(cycles.getMethod()) && cleared != null && cleared.length == course.getNodes().size();
+			int idx = firstAccepting(course, c.objectId, onLap ? cleared : null);
+			// The start obstacle clicked for the next lap never stands in for this lap's last one.
+			if (idx == 0 && onLap)
+			{
+				continue;
+			}
+			if (idx >= 0 && idx < bestIdx || best == null && idx >= 0)
+			{
+				best = c;
+				bestIdx = idx;
+			}
+		}
+		return best;
+	}
 
 	private void resolveSuccess(Click click, long nowMillis)
 	{
@@ -352,6 +512,12 @@ public final class AgilityCompanionTracker implements SkillTracker
 			&& !course.getKey().equals(cycles.getMethod()))
 		{
 			startLap(course, ambiguousStartAt, nowMillis);
+			// The shared obstacles between the shared start and this first course-unique one were passed on the way here.
+			int idx = firstAccepting(course, click.objectId, cleared);
+			for (int i = 1; i < idx; i++)
+			{
+				cleared[i] = true;
+			}
 		}
 		obstacleSuccess(course, click.objectId, nowMillis, click, false);
 	}
@@ -455,6 +621,8 @@ public final class AgilityCompanionTracker implements SkillTracker
 		lastNode = idx;
 		obstacleCount++;
 		publishProgress(course);
+		// A ladder right after it, already clicked: passed too, in order.
+		creditXplessClicks(lastTick == Integer.MIN_VALUE ? (click != null ? click.tick : 0) : lastTick);
 	}
 
 	private void startLap(AgilityCourse course, long startedAt, long nowMillis)
@@ -694,6 +862,25 @@ public final class AgilityCompanionTracker implements SkillTracker
 		return out;
 	}
 
+	/** The course rewards carried right now (OWNED of a reward target); null until the inventory was read. */
+	@Override
+	public Map<Integer, Long> carried()
+	{
+		if (lastInventory == null)
+		{
+			return null;
+		}
+		Map<Integer, Long> out = new HashMap<>();
+		for (Map.Entry<Integer, Long> e : lastInventory.entrySet())
+		{
+			if (AgilityCourses.isRewardItem(e.getKey()))
+			{
+				out.put(e.getKey(), e.getValue());
+			}
+		}
+		return out;
+	}
+
 	/** Agility has no inventory trip. */
 	@Override
 	public SkillCompanionView.TripView trip(long nowMillis)
@@ -735,7 +922,7 @@ public final class AgilityCompanionTracker implements SkillTracker
 		lastBank = null;
 		bankOpen = false;
 		depositBoxOpen = false;
-		pendingClick = null;
+		pendingClicks.clear();
 		triggerClicks.clear();
 		cycles.abandon();
 		clearRoute();
@@ -758,7 +945,7 @@ public final class AgilityCompanionTracker implements SkillTracker
 		lastBank = null;
 		bankOpen = false;
 		depositBoxOpen = false;
-		pendingClick = null;
+		pendingClicks.clear();
 		clearRoute();
 		evidenceCourse = null;
 		evidenceAt = -1L;

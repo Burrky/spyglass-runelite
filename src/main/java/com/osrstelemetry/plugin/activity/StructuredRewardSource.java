@@ -35,7 +35,14 @@ public final class StructuredRewardSource
 		 * few ticks (one bounded, one-shot correlation -- never an open-ended
 		 * inventory watch).
 		 */
-		CLAIM_MESSAGE
+		CLAIM_MESSAGE,
+
+		/**
+		 * The game's own loot tracker reports the claim as NPC loot from an NPC that is never killed for it (the Brimstone
+		 * chest's reward arrives as loot from Konar quo Maten): identified by that NPC's id. The reward is independent of any
+		 * activity: it is recorded under its own source and never lands in whatever session is current.
+		 */
+		SERVER_NPC_LOOT
 	}
 
 	private final String key;
@@ -48,6 +55,7 @@ public final class StructuredRewardSource
 	private final boolean claimMessageIsPrefix;
 	private final Set<Integer> claimRegions;
 	private final Set<String> aliases;
+	private int npcId = -1;
 
 	private StructuredRewardSource(String key, String displayName, String activityKey, Producer producer, int interfaceId, int containerId,
 		String claimMessage, boolean claimMessageIsPrefix, Set<Integer> claimRegions, Set<String> aliases)
@@ -69,6 +77,27 @@ public final class StructuredRewardSource
 	{
 		return new StructuredRewardSource(key, displayName, activityKey, Producer.REWARD_INTERFACE, interfaceId, containerId,
 			null, false, Collections.<Integer>emptySet(), aliases);
+	}
+
+	/** An independent reward the game's loot tracker reports as loot from {@code npcId} (see {@link Producer#SERVER_NPC_LOOT}). */
+	static StructuredRewardSource serverNpcLoot(String key, String displayName, int npcId, Set<String> aliases)
+	{
+		StructuredRewardSource s = new StructuredRewardSource(key, displayName, key, Producer.SERVER_NPC_LOOT, -1, -1, null, false,
+			Collections.<Integer>emptySet(), aliases);
+		s.npcId = npcId;
+		return s;
+	}
+
+	/** The NPC the game's loot tracker names for this reward (SERVER_NPC_LOOT sources), else -1. */
+	public int getNpcId()
+	{
+		return npcId;
+	}
+
+	/** An independent reward, owned by no activity: never credited to the current session. */
+	public boolean isIndependent()
+	{
+		return producer == Producer.SERVER_NPC_LOOT;
 	}
 
 	static StructuredRewardSource claimMessage(String key, String displayName, String activityKey, String message, boolean prefix,

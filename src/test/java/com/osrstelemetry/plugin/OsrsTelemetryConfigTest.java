@@ -62,7 +62,7 @@ public class OsrsTelemetryConfigTest
 	public void sections_sharedThenCurrentSession_noEmptyLootTrackerOrHistorySections() throws Exception
 	{
 		Map<String, String> sections = sectionsByName();
-		assertEquals(Arrays.asList("General", "Current Session"), orderedSectionNames());
+		assertEquals(Arrays.asList("Text size & contrast", "General", "Current Session", "Home"), orderedSectionNames());
 		assertTrue(!sections.containsKey("Loot Tracker"));
 		assertTrue("no setting is exclusively History's, so no History section", !sections.containsKey("History"));
 	}
@@ -112,7 +112,22 @@ public class OsrsTelemetryConfigTest
 		assertEquals(currentSession, scope.getAnnotation(ConfigItem.class).section());
 		assertEquals(SlayerXpScope.ALL_TASKS, scope.invoke(DEFAULTS));
 
-		assertEquals("no settings added or lost", expectedShared.size() + 2, items.size());
+		// Pass 29: Home's one opt-in reminder setting.
+		Method reminders = items.get("recurringNotifications");
+		assertEquals(sections.get("Home"), reminders.getAnnotation(ConfigItem.class).section());
+		assertEquals(Boolean.FALSE, reminders.invoke(DEFAULTS));
+		// Pass 30: the sidebar's text size and contrast, first and easy to find.
+		Method size = items.get("textSize");
+		Method contrast = items.get("textContrast");
+		assertEquals(sections.get("Text size & contrast"), size.getAnnotation(ConfigItem.class).section());
+		assertEquals(SidebarTextSize.STANDARD, size.invoke(DEFAULTS));
+		assertEquals(sections.get("Text size & contrast"), contrast.getAnnotation(ConfigItem.class).section());
+		assertEquals(SidebarTextContrast.STANDARD, contrast.invoke(DEFAULTS));
+		// Pass 31: the Kingdom overlay, on by default, in Home.
+		Method kingdom = items.get("kingdomOverlay");
+		assertEquals(sections.get("Home"), kingdom.getAnnotation(ConfigItem.class).section());
+		assertEquals(Boolean.TRUE, kingdom.invoke(DEFAULTS));
+		assertEquals("no settings added or lost", expectedShared.size() + 6, items.size());
 		for (Method m : items.values())
 		{
 			ConfigItem ci = m.getAnnotation(ConfigItem.class);
@@ -137,7 +152,9 @@ public class OsrsTelemetryConfigTest
 		assertEquals(Arrays.asList("Loot valuation"), new java.util.ArrayList<>(bySection.get(sections.get("General")).values()));
 		assertEquals(Arrays.asList("XP / Loot order", "Slayer XP scope"),
 			new java.util.ArrayList<>(bySection.get(sections.get("Current Session")).values()));
-		assertEquals("every section is non-empty and no other section exists", 2, bySection.size());
+		assertEquals(Arrays.asList("Reminders", "Kingdom overlay"), new java.util.ArrayList<>(bySection.get(sections.get("Home")).values()));
+		assertEquals(Arrays.asList("Text size", "Text contrast"), new java.util.ArrayList<>(bySection.get(sections.get("Text size & contrast")).values()));
+		assertEquals("every section is non-empty and no other section exists", 4, bySection.size());
 	}
 
 	@Test

@@ -24,10 +24,8 @@ import org.junit.Test;
 
 /**
  * Herblore TARGETS, decided in the shared model: LEVEL (above / reached, exact
- * XP left, ETA only from an established XP rate) and dose-normalized
- * STOCKPILE (bank variants + Potion Storage, unknown storage as bounds, ETA
- * only from what actually reached the bank / storage -- never the production
- * rate -- and only after the shared minimum deposits).
+ * XP left, ETA only from an established XP rate). Herblore offers no
+ * resource (stockpile) target: a saved one reads as its Level target.
  */
 public class HerbloreTargetTest
 {
@@ -35,7 +33,6 @@ public class HerbloreTargetTest
 	private static final Instant NOW = Instant.parse("2026-10-13T21:00:00Z");
 	private static final int SR4 = ItemID._4DOSE2RESTORE;
 	private static final int SR3 = ItemID._3DOSE2RESTORE;
-	private static final int SR2 = ItemID._2DOSE2RESTORE;
 
 	private static CurrentSessionSnapshot snapshot(long activeMillis, long xp)
 	{
@@ -88,67 +85,25 @@ public class HerbloreTargetTest
 	}
 
 	@Test
-	public void stockpile_bankVariantsPlusStorage_ownedRemaining_neverDoubleCounted()
+	public void herblore_offersNoResourceTarget()
 	{
+		assertFalse("potions are made to be used: Level is Herblore's only target", HerbloreCompanionDefinition.INSTANCE.offersResourceTarget());
+	}
+
+	@Test
+	public void savedStockpilePreference_readsAsTheLevelTarget_theSavedLevelIsKept()
+	{
+		int xp = Experience.getXpForLevel(85) + 1_000;
 		Map<Integer, Long> bank = new HashMap<>();
 		bank.put(SR4, 10L);
-		bank.put(SR3, 2L);
-		bank.put(SR2, 1L);
-		SkillGoal goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(20);
-		SkillCompanionModel.Target t = target(snapshot(3_600_000L, 200_000L), goal, 1, bank,
+		SkillGoal saved = SkillGoal.DEFAULT.withTargetLevel(90).withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(20);
+		SkillCompanionModel.Target t = target(snapshot(3_600_000L, 200_000L), saved, xp, bank,
 			SkillExternalStock.known("Potion Storage", 12L, null), Collections.<Integer, SkillGoalPlanner.BankingSample>emptyMap());
-		// 40 + 6 + 2 = 48 doses banked + 12 stored = 60 doses = 15 x 4-dose; target 80 doses -> 20 left = 5 x 4-dose.
-		assertEquals(Long.valueOf(60), t.first);
-		assertEquals("15 × 4-dose", t.firstText);
-		assertEquals(Long.valueOf(20), t.remaining);
-		assertEquals("5 × 4-dose", t.remainingText);
-		assertEquals("Bank + Potion Storage", t.ownershipLine);
-		assertFalse(t.ownershipAlert);
-		assertNull("no deposits yet: no ETA", t.etaMillis);
-	}
-
-	@Test
-	public void stockpile_eta_fromStoredDosesOnly_afterTheMinimumDeposits_neverFromProduction()
-	{
-		Map<Integer, Long> bank = Collections.singletonMap(SR4, 0L);
-		SkillGoal goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(100);
-		Map<Integer, SkillGoalPlanner.BankingSample> one = Collections.singletonMap(SR3,
-			new SkillGoalPlanner.BankingSample(100, 1, 3_600_000L));
-		assertNull("one deposit is not a rate", target(snapshot(3_600_000L, 200_000L), goal, 1, bank, SkillExternalStock.NOT_APPLICABLE, one)
-			.etaMillis);
-		Map<Integer, SkillGoalPlanner.BankingSample> two = Collections.singletonMap(SR3,
-			new SkillGoalPlanner.BankingSample(100, 2, 3_600_000L));
-		SkillCompanionModel.Target t = target(snapshot(3_600_000L, 200_000L), goal, 1, bank, SkillExternalStock.NOT_APPLICABLE, two);
-		// 300 doses stored per hour; 400 doses to go -> 80 minutes.
-		assertEquals(Long.valueOf(80L * 60_000L), t.etaMillis);
-	}
-
-	@Test
-	public void stockpile_unknownStorage_isALowerBound_withoutEta()
-	{
-		SkillGoal goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(SR4).withTargetQuantity(100);
-		Map<Integer, SkillGoalPlanner.BankingSample> two = Collections.singletonMap(SR3,
-			new SkillGoalPlanner.BankingSample(100, 2, 3_600_000L));
-		SkillCompanionModel.Target t = target(snapshot(3_600_000L, 200_000L), goal, 1, Collections.singletonMap(SR4, 50L),
-			SkillExternalStock.unknown("Potion Storage"), two);
-		assertEquals("≥ 50 × 4-dose", t.firstText);
-		assertEquals("≤ 50 × 4-dose", t.remainingText);
-		assertTrue(t.ownershipAlert);
-		assertNull(t.etaMillis);
-	}
-
-	@Test
-	public void stockpile_unfinishedPotion_countsItemsInBankAndStorage()
-	{
-		CurrentSessionSnapshot snap = snapshot(3_600_000L, 0L);
-		SkillGoal goal = SkillGoal.DEFAULT.withFamily(SkillGoal.Family.STOCKPILE).withResource(ItemID.RANARRVIAL).withTargetQuantity(500);
-		SkillCompanionModel.Target t = SkillCompanionModel.build(snap, HerbloreCompanionDefinition.INSTANCE,
-			new SkillCompanionView("herblore", "ranarr_unf", "s-h", Collections.<Integer, Long>emptyMap(), Collections.<Integer, Long>emptyMap(),
-				Collections.<String, Long>emptyMap(), Collections.<Integer, Long>emptyMap(), Collections.<Integer, Long>emptyMap(),
-				Collections.<String, Long>emptyMap(), null, Collections.<SkillCompanionView.ContextLine>emptyList(),
-				Collections.<Integer, SkillGoalPlanner.BankingSample>emptyMap()),
-			goal, 1, id -> id == ItemID.RANARRVIAL ? 120L : 0L, r -> SkillExternalStock.known("Potion Storage", 80L, null)).target;
-		assertEquals("200", t.firstText);
-		assertEquals("300", t.remainingText);
+		assertEquals(SkillGoal.Family.LEVEL, t.goal.getFamily());
+		assertEquals(90, t.goal.getTargetLevel());
+		assertEquals(Long.valueOf(Experience.getXpForLevel(90) - xp), t.first);
+		assertNull("no stockpile line", t.ownershipLine);
+		assertEquals("the saved preference object is never rewritten by reading it", SkillGoal.Family.STOCKPILE, saved.getFamily());
+		assertEquals(Integer.valueOf(SR4), saved.getResourceItemId());
 	}
 }

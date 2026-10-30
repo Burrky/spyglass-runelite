@@ -83,7 +83,7 @@ public class UiRefreshCoalescerTest
 		List<Runnable> tasks = java.util.Collections.synchronizedList(new ArrayList<>());
 		List<Set<UiSurface>> seen = java.util.Collections.synchronizedList(new ArrayList<>());
 		UiRefreshCoalescer c = new UiRefreshCoalescer(tasks::add, seen::add);
-		int threads = 8;
+		int threads = Math.max(8, UiSurface.values().length); // one thread per surface at least (pass 30 added surfaces)
 		CountDownLatch start = new CountDownLatch(1);
 		CountDownLatch done = new CountDownLatch(threads);
 		for (int t = 0; t < threads; t++)
@@ -107,7 +107,7 @@ public class UiRefreshCoalescerTest
 		}
 		start.countDown();
 		assertTrue(done.await(10, TimeUnit.SECONDS));
-		assertEquals("8000 marks, nothing drained: exactly one queued pass", 1, tasks.size());
+		assertEquals("many marks, nothing drained: exactly one queued pass", 1, tasks.size());
 		tasks.get(0).run();
 		assertEquals(EnumSet.allOf(UiSurface.class), seen.get(0));
 	}

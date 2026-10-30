@@ -27,7 +27,6 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
-import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JSeparator;
@@ -35,13 +34,13 @@ import net.runelite.api.Skill;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SkillIconManager;
-import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.AsyncBufferedImage;
 import net.runelite.client.util.QuantityFormatter;
 
 /**
  * Renders ONE {@link HistoryDetailModel} -- a single finalized session's full
- * detail: header (activity, time range, duration) with a Back control,
+ * detail: header (activity, time range, duration; parent navigation is the
+ * panel's fixed "‹ History" sub-header),
  * XP breakdown, session-owned loot (real sprites, GE/HA valuation,
  * reusing {@link LootPricing} exactly like {@code CurrentSessionView};
  * split into per-task cards for a multi-task Slayer session),
@@ -110,6 +109,12 @@ final class HistoryDetailView extends JPanel
 	private final ItemManager itemManager;
 	private final ItemValuationCache itemValuationCache;
 	private final OsrsTelemetryConfig config;
+	/**
+	 * Kept for the constructor's existing callers only: parent navigation
+	 * ("‹ History") now lives in the panel's fixed sub-header, so this view no
+	 * longer draws a Back control of its own.
+	 */
+	@SuppressWarnings("unused")
 	private final Runnable onBack;
 
 	private final JPanel content = new JPanel();
@@ -122,6 +127,15 @@ final class HistoryDetailView extends JPanel
 	 * model (no disk I/O), so state survives until the detail is left.
 	 */
 	private final Set<Integer> expandedTaskOrdinals = new HashSet<>();
+	/**
+	 * Pass 28: secondary sections start collapsed each time a session is
+	 * opened -- the skill block's per-resource and per-method rows, and the
+	 * starting loadout grids -- and keep their state until the detail is left.
+	 */
+	private boolean skillDetailsExpanded;
+	private boolean loadoutExpanded;
+	/** Name of the toggle to give focus back to after a toggle re-render, or null. */
+	private String refocusToggle;
 	private HistoryDetailModel lastModel;
 	/** Price-cache version and GE/HA mode the current detail was drawn with. */
 	private long renderedValuationVersion = -1L;
@@ -155,10 +169,9 @@ final class HistoryDetailView extends JPanel
 	void showUnavailable()
 	{
 		content.removeAll();
-		content.add(backRow());
-		content.add(Box.createVerticalStrut(16));
+		content.add(Box.createVerticalStrut(4));
 		JLabel label = new JLabel("This session could not be loaded.");
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		label.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(label);
@@ -169,12 +182,13 @@ final class HistoryDetailView extends JPanel
 	void showLoading()
 	{
 		expandedTaskOrdinals.clear();
+		skillDetailsExpanded = false;
+		loadoutExpanded = false;
 		lastModel = null;
 		content.removeAll();
-		content.add(backRow());
-		content.add(Box.createVerticalStrut(16));
+		content.add(Box.createVerticalStrut(4));
 		JLabel label = new JLabel("Loading...");
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		label.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(label);
@@ -187,25 +201,79 @@ final class HistoryDetailView extends JPanel
 		if (lastModel != null && !lastModel.getSessionId().equals(model.getSessionId()))
 		{
 			expandedTaskOrdinals.clear();
+			skillDetailsExpanded = false;
+			loadoutExpanded = false;
 		}
 		lastModel = model;
 		renderedValuationVersion = itemValuationCache.getVersion();
 		renderedValuationMode = config.lootValuationMode();
 		content.removeAll();
 
-		content.add(backRow());
-		content.add(Box.createVerticalStrut(4));
 		renderHeader(model);
 		renderSessionBlock(model);
 		renderSkillBlock(model);
 		renderSlayerBlock(model);
 		renderProducedItems(model);
+		renderFarmRuns(model);
 		renderXpBreakdown(model);
 		renderLootSection(model);
 		renderLoadoutSection(model.getStartingLoadout());
 
 		content.revalidate();
 		content.repaint();
+		String focus = refocusToggle;
+		refocusToggle = null;
+		if (focus != null)
+		{
+			for (Component c : content.getComponents())
+			{
+				Component found = findNamed(c, focus);
+				if (found != null)
+				{
+					found.requestFocusInWindow();
+					break;
+				}
+			}
+		}
+	}
+
+	static final String SKILL_DETAILS_TOGGLE_NAME = "historySkillDetails";
+	static final String LOADOUT_TOGGLE_NAME = "historyLoadoutToggle";
+
+	private static Component findNamed(Component c, String name)
+	{
+		if (name.equals(c.getName()))
+		{
+			return c;
+		}
+		if (c instanceof java.awt.Container)
+		{
+			for (Component k : ((java.awt.Container) c).getComponents())
+			{
+				Component f = findNamed(k, name);
+				if (f != null)
+				{
+					return f;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** A collapsed-by-default secondary section's toggle; toggling re-renders the loaded model (no disk) and keeps focus. */
+	private DisclosureToggle disclosure(String text, String name, boolean expanded, Runnable flip)
+	{
+		DisclosureToggle t = new DisclosureToggle(text, expanded, () ->
+		{
+			flip.run();
+			refocusToggle = name;
+			if (lastModel != null)
+			{
+				render(lastModel);
+			}
+		});
+		t.setName(name);
+		return t;
 	}
 
 	/** Redraws the loaded detail (no disk) only if prices or GE/HA changed since it was drawn. */
@@ -223,49 +291,25 @@ final class HistoryDetailView extends JPanel
 		itemValuationCache.setOnResolved(listener);
 	}
 
-	private JPanel backRow()
-	{
-		JPanel row = new JPanel(new BorderLayout());
-		row.setOpaque(false);
-		row.setAlignmentX(Component.LEFT_ALIGNMENT);
-		JButton back = new JButton("← Back");
-		back.setFont(FontManager.getRunescapeSmallFont());
-		back.setForeground(SpyglassTheme.TEXT_SECONDARY);
-		back.setBackground(SpyglassTheme.BACKGROUND_MAIN);
-		back.setFocusPainted(false);
-		back.setBorderPainted(false);
-		back.setContentAreaFilled(false);
-		back.setMargin(new java.awt.Insets(2, 0, 2, 0));
-		back.addActionListener(e ->
-		{
-			if (onBack != null)
-			{
-				onBack.run();
-			}
-		});
-		row.add(back, BorderLayout.WEST);
-		return row;
-	}
-
 	private void renderHeader(HistoryDetailModel model)
 	{
 		// Wraps: the detail page always shows the full activity name.
 		JLabel headlineLabel = new WrappingHtmlLabel(model.getTitle(), false);
 		headlineLabel.setName(TITLE_NAME);
-		headlineLabel.setFont(FontManager.getRunescapeBoldFont());
+		headlineLabel.setFont(SpyglassFonts.bold());
 		headlineLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		headlineLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(headlineLabel);
 
 		String finalizedText = formatAbsoluteTime(model.getFinalizedAt());
 		JLabel timeLabel = new JLabel(finalizedText == null ? "" : finalizedText);
-		timeLabel.setFont(FontManager.getRunescapeSmallFont());
+		timeLabel.setFont(SpyglassFonts.small());
 		timeLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		timeLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(timeLabel);
 
 		// Wraps between facts instead of clipping in a narrow sidebar.
-		FactLine secondaryLabel = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		FactLine secondaryLabel = new FactLine(SpyglassFonts.small(), SpyglassTheme.TEXT_SECONDARY);
 		secondaryLabel.setName(FACTS_NAME);
 		secondaryLabel.fact(formatDuration(model.getAccumulatedActiveDurationMillis()) + " active");
 		SessionAggregates.ReliableCount reliableCount = model.getReliableCount();
@@ -274,7 +318,7 @@ final class HistoryDetailView extends JPanel
 			String label = reliableCount.getKind() == SessionAggregates.ReliableCountKind.KILLS ? "kills" : "completions";
 			secondaryLabel.fact(formatNumber(reliableCount.getSessionOccurrences()) + " " + label);
 		}
-		secondaryLabel.setFont(FontManager.getRunescapeSmallFont());
+		secondaryLabel.setFont(SpyglassFonts.small());
 		secondaryLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		secondaryLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(secondaryLabel);
@@ -291,7 +335,7 @@ final class HistoryDetailView extends JPanel
 			// Session summary only (permits / final points): no live game state is ever kept.
 			JLabel statsLabel = new WrappingHtmlLabel(statsText, false);
 			statsLabel.setName(ACTIVITY_STATS_NAME);
-			statsLabel.setFont(FontManager.getRunescapeSmallFont());
+			statsLabel.setFont(SpyglassFonts.small());
 			statsLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			statsLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 			content.add(statsLabel);
@@ -300,7 +344,7 @@ final class HistoryDetailView extends JPanel
 		{
 			// The whole-session metrics on this page cover every task listed here.
 			JLabel tasksLabel = new WrappingHtmlLabel(slayerSummaryText(model), false);
-			tasksLabel.setFont(FontManager.getRunescapeSmallFont());
+			tasksLabel.setFont(SpyglassFonts.small());
 			tasksLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			tasksLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 			content.add(tasksLabel);
@@ -310,7 +354,7 @@ final class HistoryDetailView extends JPanel
 		{
 			JLabel superiorsLabel = new WrappingHtmlLabel(superiors, false);
 			superiorsLabel.setName(SLAYER_SUPERIORS_NAME);
-			superiorsLabel.setFont(FontManager.getRunescapeSmallFont());
+			superiorsLabel.setFont(SpyglassFonts.small());
 			superiorsLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			superiorsLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 			content.add(superiorsLabel);
@@ -504,7 +548,7 @@ final class HistoryDetailView extends JPanel
 		{
 			JLabel line = new WrappingHtmlLabel(actions, false);
 			line.setName(WT_ACTIONS_NAME);
-			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setFont(SpyglassFonts.small());
 			line.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			line.setAlignmentX(Component.LEFT_ALIGNMENT);
 			block.add(line);
@@ -637,6 +681,7 @@ final class HistoryDetailView extends JPanel
 		block.add(sectionTitle(skill.getSkill().getName().toUpperCase(java.util.Locale.ROOT)));
 		String verb = Character.toUpperCase(skill.producedVerb().charAt(0)) + skill.producedVerb().substring(1);
 		boolean cyclesSkill = skill.cycleNoun(true) != null;
+		boolean hasDetails = false;
 		java.util.Map<String, com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate> cycles =
 			stats.getCycles() == null ? java.util.Collections.<String, com.osrstelemetry.plugin.session.SessionAggregates.CycleAggregate>emptyMap()
 				: stats.getCycles();
@@ -718,6 +763,17 @@ final class HistoryDetailView extends JPanel
 				com.osrstelemetry.plugin.skills.SkillCompanionDefinition.HistoryRow r = ownRows.get(i);
 				JPanel row = sessionRow(r.getLabel(), SKILL_OWN_ROW_PREFIX + i, r.getValue(), null);
 				row.setToolTipText(r.getTooltip());
+				// Pass 28: an indented row is a resource's breakdown (banked,
+				// inputs, bonus doses): secondary detail, behind "Details".
+				// Expanded, they stay under their own resource (never a detached list).
+				if (r.getLabel() != null && r.getLabel().startsWith("  "))
+				{
+					hasDetails = true;
+					if (!skillDetailsExpanded)
+					{
+						continue;
+					}
+				}
 				block.add(row);
 			}
 		}
@@ -776,8 +832,22 @@ final class HistoryDetailView extends JPanel
 				row.setToolTipText(cyclesSkill ? "Time on this " + skill.methodTitle().toLowerCase(java.util.Locale.ROOT) + " and its full "
 					+ skill.cycleNoun(true) + " (each " + skill.methodTitle().toLowerCase(java.util.Locale.ROOT) + "'s own; never blended)"
 					: "Time spent on this method (respawns, walking and banking count; long idles do not)");
+				// Many methods: the per-method times are detail too.
+				if (methods.size() > 2)
+				{
+					hasDetails = true;
+					if (!skillDetailsExpanded)
+					{
+						continue;
+					}
+				}
 				block.add(row);
 			}
+		}
+		if (hasDetails)
+		{
+			block.add(disclosure(skillDetailsExpanded ? "Less" : "Details", SKILL_DETAILS_TOGGLE_NAME, skillDetailsExpanded,
+				() -> skillDetailsExpanded = !skillDetailsExpanded));
 		}
 		if (block.getComponentCount() <= 1)
 		{
@@ -1000,20 +1070,133 @@ final class HistoryDetailView extends JPanel
 		content.add(Box.createVerticalStrut(2));
 		JLabel totalLabel = new JLabel(ProducedItemGrid.compactTotal(total) + " total");
 		totalLabel.setName(PRODUCED_ITEMS_TOTAL_NAME);
-		totalLabel.setFont(FontManager.getRunescapeSmallFont());
+		totalLabel.setFont(SpyglassFonts.small());
 		totalLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		totalLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(totalLabel);
 		content.add(Box.createVerticalStrut(3));
-		content.add(ProducedItemGrid.build(items, itemManager));
+		// Pass 28: a skill may split its outputs into groups (Herblore: cleaned
+		// herbs, unfinished potions, potions), each with its own small heading
+		// and grid; one group keeps the single grid.
+		java.util.Map<String, java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView>> groups =
+			producedGroups(skill, items);
+		if (groups.size() <= 1)
+		{
+			content.add(ProducedItemGrid.build(items, itemManager));
+		}
+		else
+		{
+			for (java.util.Map.Entry<String, java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView>> g
+				: groups.entrySet())
+			{
+				long groupTotal = 0L;
+				for (com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView item : g.getValue())
+				{
+					groupTotal += Math.max(0L, item.getQuantity());
+				}
+				JLabel groupLabel = new JLabel(g.getKey() + " \u00b7 " + formatNumber(groupTotal));
+				groupLabel.setName(PRODUCED_GROUP_PREFIX + g.getKey());
+				groupLabel.setFont(SpyglassFonts.small());
+				groupLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
+				groupLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+				content.add(groupLabel);
+				content.add(Box.createVerticalStrut(2));
+				content.add(ProducedItemGrid.build(g.getValue(), itemManager));
+				content.add(Box.createVerticalStrut(4));
+			}
+		}
 		content.add(Box.createVerticalStrut(8));
+	}
+
+	static final String PRODUCED_GROUP_PREFIX = "historyProducedGroup:";
+
+	/** Items by the skill's output group, first-seen order; one entry (null key) when the skill has no groups. */
+	static java.util.Map<String, java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView>> producedGroups(
+		com.osrstelemetry.plugin.skills.SkillCompanionDefinition skill,
+		java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView> items)
+	{
+		java.util.Map<String, java.util.List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView>> groups =
+			new java.util.LinkedHashMap<>();
+		for (com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView item : items)
+		{
+			String group = skill == null || item.getItemId() == null ? null : skill.producedGroup(item.getItemId());
+			groups.computeIfAbsent(group, k -> new java.util.ArrayList<>()).add(item);
+		}
+		return groups;
+	}
+
+	/** Component name of the farm-runs section title (tests). */
+	static final String FARM_RUNS_NAME = "historyFarmRuns";
+
+	/**
+	 * FARM RUNS: each finished run this Farming session took part in, from its
+	 * one outcome file. In the run's primary session: what was done and the
+	 * crops seen planted. In any other session it overlapped: a reference to the
+	 * same run with no counts (canonical §28.9). XP stays in XP GAINED (never
+	 * repeated here); harvested herbs are not tracked.
+	 */
+	private void renderFarmRuns(HistoryDetailModel model)
+	{
+		java.util.List<com.osrstelemetry.plugin.farming.FarmingRunHistory.Record> runs = model.getFarmingRuns();
+		if (runs.isEmpty())
+		{
+			return;
+		}
+		JLabel header = sectionTitle(runs.size() == 1 ? "FARM RUN" : "FARM RUNS");
+		header.setName(FARM_RUNS_NAME);
+		content.add(header);
+		content.add(Box.createVerticalStrut(2));
+		for (com.osrstelemetry.plugin.farming.FarmingRunHistory.Record r : runs)
+		{
+			String when = formatAbsoluteTime(Instant.ofEpochMilli(r.getStartedAt()).toString());
+			long minutes = Math.max(1, (r.getFinishedAt() - r.getStartedAt()) / 60_000L);
+			content.add(sessionRow(r.getTitle(), null, minutes + "m", null));
+			if (!r.isPrimary())
+			{
+				// The same run, recorded once: its outcome and crops live with the Farming session it is placed in.
+				content.add(smallLine(r.isEndedAfter() ? "Finished and recorded in a later session"
+					: "Recorded in another Farming session", SpyglassTheme.TEXT_SECONDARY));
+				if (when != null)
+				{
+					content.add(smallLine(when, SpyglassTheme.TEXT_SECONDARY));
+				}
+				content.add(Box.createVerticalStrut(6));
+				continue;
+			}
+			content.add(smallLine(r.summary(), SpyglassTheme.TEXT_SECONDARY));
+			if (!r.getPlanted().isEmpty())
+			{
+				java.util.List<String> crops = new java.util.ArrayList<>();
+				r.getPlanted().forEach((crop, n) -> crops.add(crop + (n > 1 ? " \u00d7" + n : "")));
+				content.add(smallLine("Planted: " + String.join(", ", crops), SpyglassTheme.TEXT_SECONDARY));
+			}
+			if (r.isStartedBefore() || r.isEndedAfter())
+			{
+				content.add(smallLine(r.isStartedBefore() && r.isEndedAfter() ? "Also spans other sessions"
+					: r.isStartedBefore() ? "Started in an earlier session" : "Continued after this session", SpyglassTheme.TEXT_SECONDARY));
+			}
+			if (when != null)
+			{
+				content.add(smallLine(when, SpyglassTheme.TEXT_SECONDARY));
+			}
+			content.add(Box.createVerticalStrut(6));
+		}
+	}
+
+	private static JLabel smallLine(String text, java.awt.Color color)
+	{
+		JLabel l = new JLabel("<html>" + escapeHtml(text) + "</html>");
+		l.setFont(SpyglassFonts.small());
+		l.setForeground(color);
+		l.setAlignmentX(Component.LEFT_ALIGNMENT);
+		return l;
 	}
 
 	/** Same gold title + rule as "XP GAINED", so the History sections read as one family. */
 	private static JLabel sectionTitle(String text)
 	{
 		JLabel title = new JLabel(text);
-		title.setFont(FontManager.getRunescapeBoldFont());
+		title.setFont(SpyglassFonts.bold());
 		title.setForeground(SpyglassTheme.ACCENT_GOLD);
 		title.setAlignmentX(Component.LEFT_ALIGNMENT);
 		title.setBorder(BorderFactory.createCompoundBorder(
@@ -1030,14 +1213,14 @@ final class HistoryDetailView extends JPanel
 		row.setAlignmentX(Component.LEFT_ALIGNMENT);
 		JLabel l = new JLabel(left);
 		l.setName(leftName);
-		l.setFont(FontManager.getRunescapeSmallFont());
+		l.setFont(SpyglassFonts.small());
 		l.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		row.add(l, BorderLayout.WEST);
 		if (right != null)
 		{
 			JLabel r = new JLabel(right);
 			r.setName(rightName);
-			r.setFont(FontManager.getRunescapeSmallFont());
+			r.setFont(SpyglassFonts.small());
 			r.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			r.setHorizontalAlignment(JLabel.RIGHT);
 			row.add(r, BorderLayout.EAST);
@@ -1064,12 +1247,12 @@ final class HistoryDetailView extends JPanel
 			BorderFactory.createEmptyBorder(0, 0, 4, 0)));
 		JLabel caption = new JLabel("XP GAINED");
 		caption.setName(XP_TITLE_NAME);
-		caption.setFont(FontManager.getRunescapeBoldFont());
+		caption.setFont(SpyglassFonts.bold());
 		caption.setForeground(SpyglassTheme.ACCENT_GOLD);
 		title.add(caption, BorderLayout.WEST);
 		JLabel total = new JLabel(formatNumber(model.getTotalXpGained()));
 		total.setName(XP_TOTAL_NAME);
-		total.setFont(FontManager.getRunescapeBoldFont());
+		total.setFont(SpyglassFonts.bold());
 		total.setForeground(SpyglassTheme.ACCENT_GOLD);
 		total.setToolTipText(formatNumber(model.getTotalXpGained()) + " XP gained in total");
 		title.add(total, BorderLayout.EAST);
@@ -1087,13 +1270,13 @@ final class HistoryDetailView extends JPanel
 			west.setOpaque(false);
 			west.add(new JLabel(skillIcon(row.getSkill())), BorderLayout.WEST);
 			JLabel nameLabel = new JLabel(toTitleCase(row.getSkill()));
-			nameLabel.setFont(FontManager.getRunescapeSmallFont());
+			nameLabel.setFont(SpyglassFonts.small());
 			nameLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 			west.add(nameLabel, BorderLayout.CENTER);
 			line.add(west, BorderLayout.WEST);
 
 			JLabel xpLabel = new JLabel("+" + formatNumber(row.getXpGained()) + " XP");
-			xpLabel.setFont(FontManager.getRunescapeSmallFont());
+			xpLabel.setFont(SpyglassFonts.small());
 			xpLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			line.add(xpLabel, BorderLayout.EAST);
 
@@ -1129,14 +1312,14 @@ final class HistoryDetailView extends JPanel
 		headerRow.setOpaque(false);
 		headerRow.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-		JLabel titleLabel = new JLabel("LOOT  ×" + model.getLootDropCount());
-		titleLabel.setFont(FontManager.getRunescapeBoldFont());
+		JLabel titleLabel = new JLabel("LOOT  ×" + formatNumber(model.getLootDropCount()));
+		titleLabel.setFont(SpyglassFonts.bold());
 		titleLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		titleLabel.setBorder(BorderFactory.createEmptyBorder(3, 0, 5, 0));
 		headerRow.add(titleLabel, BorderLayout.WEST);
 
 		JLabel totalLabel = new JLabel(QuantityFormatter.quantityToStackSize(totalValue) + " gp");
-		totalLabel.setFont(FontManager.getRunescapeBoldFont());
+		totalLabel.setFont(SpyglassFonts.bold());
 		totalLabel.setForeground(SpyglassTheme.ACCENT_GOLD);
 		headerRow.add(totalLabel, BorderLayout.EAST);
 		section.add(headerRow);
@@ -1256,7 +1439,7 @@ final class HistoryDetailView extends JPanel
 				body.add(Box.createVerticalStrut(4));
 			}
 			JLabel xp = new WrappingHtmlLabel(taskXpText(task), false);
-			xp.setFont(FontManager.getRunescapeSmallFont());
+			xp.setFont(SpyglassFonts.small());
 			xp.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			xp.setAlignmentX(Component.LEFT_ALIGNMENT);
 			body.add(xp);
@@ -1333,7 +1516,7 @@ final class HistoryDetailView extends JPanel
 	private void renderLoadoutSection(LoadoutSnapshot loadout)
 	{
 		JLabel titleLabel = new JLabel("STARTING LOADOUT");
-		titleLabel.setFont(FontManager.getRunescapeBoldFont());
+		titleLabel.setFont(SpyglassFonts.bold());
 		titleLabel.setForeground(SpyglassTheme.ACCENT_BRONZE);
 		titleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		titleLabel.setBorder(BorderFactory.createCompoundBorder(
@@ -1343,16 +1526,26 @@ final class HistoryDetailView extends JPanel
 				BorderFactory.createEmptyBorder(0, 0, 4, 0))));
 		content.add(titleLabel);
 
+		if (loadout.getProvenance() == LoadoutProvenance.UNAVAILABLE)
+		{
+			content.add(provenanceLabel(loadout.getProvenance()));
+			content.add(Box.createVerticalStrut(4));
+			return;
+		}
+		// Pass 28: the grids are secondary detail -- collapsed until asked for.
+		DisclosureToggle toggle = disclosure("Inventory and equipment", LOADOUT_TOGGLE_NAME, loadoutExpanded,
+			() -> loadoutExpanded = !loadoutExpanded);
+		content.add(toggle);
+		if (!loadoutExpanded)
+		{
+			content.add(Box.createVerticalStrut(4));
+			return;
+		}
 		content.add(provenanceLabel(loadout.getProvenance()));
 		content.add(Box.createVerticalStrut(4));
 
-		if (loadout.getProvenance() == LoadoutProvenance.UNAVAILABLE)
-		{
-			return;
-		}
-
 		JLabel inventoryLabel = new JLabel("Inventory");
-		inventoryLabel.setFont(FontManager.getRunescapeSmallFont());
+		inventoryLabel.setFont(SpyglassFonts.small());
 		inventoryLabel.setForeground(SpyglassTheme.TEXT_MUTED);
 		inventoryLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(inventoryLabel);
@@ -1361,7 +1554,7 @@ final class HistoryDetailView extends JPanel
 		content.add(Box.createVerticalStrut(6));
 
 		JLabel equipmentLabel = new JLabel("Equipment");
-		equipmentLabel.setFont(FontManager.getRunescapeSmallFont());
+		equipmentLabel.setFont(SpyglassFonts.small());
 		equipmentLabel.setForeground(SpyglassTheme.TEXT_MUTED);
 		equipmentLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		content.add(equipmentLabel);
@@ -1391,7 +1584,7 @@ final class HistoryDetailView extends JPanel
 				break;
 		}
 		JLabel label = new WrappingHtmlLabel(text, false);
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(color);
 		label.setAlignmentX(Component.LEFT_ALIGNMENT);
 		return label;

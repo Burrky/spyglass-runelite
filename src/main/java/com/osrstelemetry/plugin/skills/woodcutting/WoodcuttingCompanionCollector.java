@@ -158,18 +158,24 @@ public class WoodcuttingCompanionCollector extends SkillCompanionCollector
 	@Override
 	protected void onOtherContainer(int containerId, ItemContainer container)
 	{
-		// Read each tick (onWoodcuttingTick); nothing to keep here.
+		// Read each tick (onGameTick); nothing to keep here.
 	}
 
-	@Subscribe
-	public void onWoodcuttingTick(GameTick event)
+	/**
+	 * The shared tick, with whether a burning axe is carried read FIRST, so this
+	 * tick's settlement already knows it. Deliberately NOT {@code @Subscribe}:
+	 * the inherited subscription already delivers every GameTick here, and
+	 * RuneLite would run a re-annotated override twice.
+	 */
+	@Override
+	public void onGameTick(GameTick event)
 	{
-		if (client.getGameState() != GameState.LOGGED_IN)
+		if (client.getGameState() == GameState.LOGGED_IN)
 		{
-			return;
+			woodcutting().setInfernalCarried(holdsBurningAxe(client.getItemContainer(InventoryID.INV))
+				|| holdsBurningAxe(client.getItemContainer(InventoryID.WORN)));
 		}
-		woodcutting().setInfernalCarried(holdsBurningAxe(client.getItemContainer(InventoryID.INV))
-			|| holdsBurningAxe(client.getItemContainer(InventoryID.WORN)));
+		super.onGameTick(event);
 	}
 
 	static boolean holdsBurningAxe(ItemContainer container)
@@ -188,9 +194,11 @@ public class WoodcuttingCompanionCollector extends SkillCompanionCollector
 		return false;
 	}
 
-	@Subscribe
-	public void onWoodcuttingGameState(GameStateChanged event)
+	/** The shared lifecycle, then scene loading (Forestry). Inherited subscription: never re-annotated (see onGameTick). */
+	@Override
+	public void onGameStateChanged(GameStateChanged event)
 	{
+		super.onGameStateChanged(event);
 		if (event.getGameState() == GameState.LOADING)
 		{
 			woodcutting().onSceneLoading(clock.getAsLong());

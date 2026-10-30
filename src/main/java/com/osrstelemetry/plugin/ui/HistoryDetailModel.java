@@ -337,6 +337,28 @@ final class HistoryDetailModel
 		return activityStats == null ? 0 : activityStats.getScoredCompletions();
 	}
 
+	private List<com.osrstelemetry.plugin.farming.FarmingRunHistory.Record> farmingRuns = java.util.Collections.emptyList();
+
+	/** Finished farm runs overlapping this Farming session (read from the run outcome files, never re-derived). */
+	List<com.osrstelemetry.plugin.farming.FarmingRunHistory.Record> getFarmingRuns()
+	{
+		return farmingRuns;
+	}
+
+	HistoryDetailModel withFarmingRuns(List<com.osrstelemetry.plugin.farming.FarmingRunHistory.Record> runs)
+	{
+		farmingRuns = runs == null ? java.util.Collections.emptyList() : java.util.Collections.unmodifiableList(new ArrayList<>(runs));
+		return this;
+	}
+
+	/** A Farming skilling session: the one kind that shows farm runs. */
+	static boolean isFarming(Session session)
+	{
+		return session != null && session.getActivityIdentity() != null
+			&& session.getActivityIdentity().getActivityType() == com.osrstelemetry.plugin.session.ActivityType.SKILLING
+			&& "farming".equals(session.getActivityIdentity().getActivityKey());
+	}
+
 	List<com.osrstelemetry.plugin.ui.model.CurrentSessionSnapshot.ProducedItemView> getProducedItems()
 	{
 		return producedItems;

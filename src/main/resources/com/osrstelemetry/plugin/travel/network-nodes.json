@@ -1,0 +1,487 @@
+{
+ "schema": 1,
+ "source": "Entrance tiles (where the player stands to use the ring or tree): Shortest Path fairy_rings.tsv / spirit_trees.tsv origins @ 142e73e2 (BSD-2), each within 3 tiles of RuneLite's worldmap/FairyRingLocation icon (master @ e98399f931c6, BSD-2). Per-ring requirements: OSRS Wiki 'Fairy ring' code table (checked 2026-10-21); the network's own requirements (Fairytale I, Fairytale II started, a dramen or lunar staff unless the Lumbridge & Draynor elite diary) are on every destination and so on every journey. Only overworld rings a player walks up to are listed (island-only rings such as AIR, AJS, CLP and CLS are reached only by ring). World spirit trees: RuneLite TransportationPointLocation (BSD-2); Tree Gnome Village's tree sits inside the maze and is left out as an entrance. Player-grown trees reuse their catalogued tile and evidence (fromTransport).",
+ "nodes": [
+  {
+   "id": "ring.aiq",
+   "network": "FAIRY_RING",
+   "code": "AIQ",
+   "name": "Fairy ring AIQ (Mudskipper Point)",
+   "x": 2996,
+   "y": 3114,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.ajr",
+   "network": "FAIRY_RING",
+   "code": "AJR",
+   "name": "Fairy ring AJR (Fremennik Slayer Dungeon)",
+   "x": 2780,
+   "y": 3613,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.akq",
+   "network": "FAIRY_RING",
+   "code": "AKQ",
+   "name": "Fairy ring AKQ (Piscatoris Hunter area)",
+   "x": 2319,
+   "y": 3619,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.akr",
+   "network": "FAIRY_RING",
+   "code": "AKR",
+   "name": "Fairy ring AKR (Hosidius Vinery)",
+   "x": 1826,
+   "y": 3540,
+   "plane": 0,
+   "requirements": {
+    "proofs": [
+     {
+      "name": "Visited Great Kourend",
+      "anyQuestFinished": [
+       "CLIENT_OF_KOUREND"
+      ],
+      "anyDiary": [
+       "KOUREND_EASY"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Client of Kourend is carried out inside Great Kourend; every Kourend & Kebos easy task is in Great Kourend"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.aks",
+   "network": "FAIRY_RING",
+   "code": "AKS",
+   "name": "Fairy ring AKS (Feldip Hunter area)",
+   "x": 2571,
+   "y": 2956,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.alp",
+   "network": "FAIRY_RING",
+   "code": "ALP",
+   "name": "Fairy ring ALP (Lighthouse)",
+   "x": 2503,
+   "y": 3636,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.alq",
+   "network": "FAIRY_RING",
+   "code": "ALQ",
+   "name": "Fairy ring ALQ (Haunted Woods, east of Canifis)",
+   "x": 3597,
+   "y": 3495,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.als",
+   "network": "FAIRY_RING",
+   "code": "ALS",
+   "name": "Fairy ring ALS (McGrubor's Wood)",
+   "x": 2644,
+   "y": 3495,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.biq",
+   "network": "FAIRY_RING",
+   "code": "BIQ",
+   "name": "Fairy ring BIQ (near the Kalphite Hive)",
+   "x": 3251,
+   "y": 3095,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.bis",
+   "network": "FAIRY_RING",
+   "code": "BIS",
+   "name": "Fairy ring BIS (Ardougne Zoo)",
+   "x": 2635,
+   "y": 3266,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.bkp",
+   "network": "FAIRY_RING",
+   "code": "BKP",
+   "name": "Fairy ring BKP (Chompy Marsh)",
+   "x": 2385,
+   "y": 3035,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.bkr",
+   "network": "FAIRY_RING",
+   "code": "BKR",
+   "name": "Fairy ring BKR (Mort Myre Swamp)",
+   "x": 3469,
+   "y": 3431,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.blr",
+   "network": "FAIRY_RING",
+   "code": "BLR",
+   "name": "Fairy ring BLR (Legends' Guild)",
+   "x": 2740,
+   "y": 3351,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.bls",
+   "network": "FAIRY_RING",
+   "code": "BLS",
+   "name": "Fairy ring BLS (south of Mount Quidamortem)",
+   "x": 1295,
+   "y": 3493,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.cip",
+   "network": "FAIRY_RING",
+   "code": "CIP",
+   "name": "Fairy ring CIP (Miscellania)",
+   "x": 2513,
+   "y": 3884,
+   "plane": 0,
+   "requirements": {
+    "quests": [
+     {
+      "quest": "THE_FREMENNIK_TRIALS",
+      "state": "FINISHED"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.ciq",
+   "network": "FAIRY_RING",
+   "code": "CIQ",
+   "name": "Fairy ring CIQ (north-west of Yanille)",
+   "x": 2528,
+   "y": 3127,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.cir",
+   "network": "FAIRY_RING",
+   "code": "CIR",
+   "name": "Fairy ring CIR (south of Mount Karuulm)",
+   "x": 1302,
+   "y": 3762,
+   "plane": 0,
+   "requirements": {
+    "proofs": [
+     {
+      "name": "Visited Great Kourend",
+      "anyQuestFinished": [
+       "CLIENT_OF_KOUREND"
+      ],
+      "anyDiary": [
+       "KOUREND_EASY"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Client of Kourend is carried out inside Great Kourend; every Kourend & Kebos easy task is in Great Kourend"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.cis",
+   "network": "FAIRY_RING",
+   "code": "CIS",
+   "name": "Fairy ring CIS (Arceuus Library)",
+   "x": 1639,
+   "y": 3868,
+   "plane": 0,
+   "requirements": {
+    "proofs": [
+     {
+      "name": "Visited Great Kourend",
+      "anyQuestFinished": [
+       "CLIENT_OF_KOUREND"
+      ],
+      "anyDiary": [
+       "KOUREND_EASY"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Client of Kourend is carried out inside Great Kourend; every Kourend & Kebos easy task is in Great Kourend"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.cjr",
+   "network": "FAIRY_RING",
+   "code": "CJR",
+   "name": "Fairy ring CJR (Sinclair Mansion)",
+   "x": 2705,
+   "y": 3576,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.ckr",
+   "network": "FAIRY_RING",
+   "code": "CKR",
+   "name": "Fairy ring CKR (south of Tai Bwo Wannai)",
+   "x": 2801,
+   "y": 3003,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.cks",
+   "network": "FAIRY_RING",
+   "code": "CKS",
+   "name": "Fairy ring CKS (Canifis)",
+   "x": 3447,
+   "y": 3470,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.dis",
+   "network": "FAIRY_RING",
+   "code": "DIS",
+   "name": "Fairy ring DIS (Wizards' Tower)",
+   "x": 3108,
+   "y": 3149,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.djp",
+   "network": "FAIRY_RING",
+   "code": "DJP",
+   "name": "Fairy ring DJP (Tower of Life)",
+   "x": 2658,
+   "y": 3230,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.djr",
+   "network": "FAIRY_RING",
+   "code": "DJR",
+   "name": "Fairy ring DJR (Chasm of Fire)",
+   "x": 1455,
+   "y": 3658,
+   "plane": 0,
+   "requirements": {
+    "proofs": [
+     {
+      "name": "Visited Great Kourend",
+      "anyQuestFinished": [
+       "CLIENT_OF_KOUREND"
+      ],
+      "anyDiary": [
+       "KOUREND_EASY"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Client of Kourend is carried out inside Great Kourend; every Kourend & Kebos easy task is in Great Kourend"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.dkp",
+   "network": "FAIRY_RING",
+   "code": "DKP",
+   "name": "Fairy ring DKP (Karamja gnome glider)",
+   "x": 2900,
+   "y": 3111,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.dkr",
+   "network": "FAIRY_RING",
+   "code": "DKR",
+   "name": "Fairy ring DKR (Edgeville)",
+   "x": 3129,
+   "y": 3496,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.dks",
+   "network": "FAIRY_RING",
+   "code": "DKS",
+   "name": "Fairy ring DKS (Polar Hunter area)",
+   "x": 2744,
+   "y": 3719,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.dlq",
+   "network": "FAIRY_RING",
+   "code": "DLQ",
+   "name": "Fairy ring DLQ (north of Nardah)",
+   "x": 3423,
+   "y": 3016,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "ring.ais",
+   "network": "FAIRY_RING",
+   "code": "AIS",
+   "name": "Fairy ring AIS (Auburn Valley)",
+   "x": 1429,
+   "y": 3324,
+   "plane": 0,
+   "requirements": {
+    "quests": [
+     {
+      "quest": "CHILDREN_OF_THE_SUN",
+      "state": "FINISHED"
+     }
+    ],
+    "proofs": [
+     {
+      "name": "Travelled to Civitas illa Fortis via Regulus Cento",
+      "anyQuestStarted": [
+       "TWILIGHTS_PROMISE"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Twilight's Promise starts at the Sunrise Palace in Civitas illa Fortis, reached via Regulus Cento"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.ajp",
+   "network": "FAIRY_RING",
+   "code": "AJP",
+   "name": "Fairy ring AJP (Avium Savannah)",
+   "x": 1651,
+   "y": 3010,
+   "plane": 0,
+   "requirements": {
+    "quests": [
+     {
+      "quest": "CHILDREN_OF_THE_SUN",
+      "state": "FINISHED"
+     }
+    ],
+    "proofs": [
+     {
+      "name": "Travelled to Civitas illa Fortis via Regulus Cento",
+      "anyQuestStarted": [
+       "TWILIGHTS_PROMISE"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Twilight's Promise starts at the Sunrise Palace in Civitas illa Fortis, reached via Regulus Cento"
+     }
+    ]
+   }
+  },
+  {
+   "id": "ring.ckq",
+   "network": "FAIRY_RING",
+   "code": "CKQ",
+   "name": "Fairy ring CKQ (Aldarin)",
+   "x": 1359,
+   "y": 2941,
+   "plane": 0,
+   "requirements": {
+    "quests": [
+     {
+      "quest": "CHILDREN_OF_THE_SUN",
+      "state": "FINISHED"
+     }
+    ],
+    "proofs": [
+     {
+      "name": "Travelled to Civitas illa Fortis via Regulus Cento",
+      "anyQuestStarted": [
+       "TWILIGHTS_PROMISE"
+      ],
+      "source": "OSRS Wiki (checked 2026-10-15): Twilight's Promise starts at the Sunrise Palace in Civitas illa Fortis, reached via Regulus Cento"
+     }
+    ]
+   }
+  },
+  {
+   "id": "tree.gnome_stronghold",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Tree Gnome Stronghold)",
+   "x": 2459,
+   "y": 3446,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "tree.battlefield",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Battlefield of Khazard)",
+   "x": 2555,
+   "y": 3259,
+   "plane": 0,
+   "requirements": {}
+  },
+  {
+   "id": "tree.prifddinas",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Prifddinas)",
+   "x": 3274,
+   "y": 6123,
+   "plane": 0,
+   "requirements": {
+    "quests": [
+     {
+      "quest": "SONG_OF_THE_ELVES",
+      "state": "FINISHED"
+     }
+    ]
+   }
+  },
+  {
+   "id": "tree.port_sarim",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Port Sarim, player-grown)",
+   "fromTransport": "spirit_tree.port_sarim"
+  },
+  {
+   "id": "tree.hosidius",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Hosidius, player-grown)",
+   "fromTransport": "spirit_tree.hosidius"
+  },
+  {
+   "id": "tree.etceteria",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Etceteria, player-grown)",
+   "fromTransport": "spirit_tree.etceteria"
+  },
+  {
+   "id": "tree.brimhaven",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Brimhaven, player-grown)",
+   "fromTransport": "spirit_tree.brimhaven"
+  },
+  {
+   "id": "tree.farming_guild",
+   "network": "SPIRIT_TREE",
+   "name": "Spirit tree (Farming Guild, player-grown)",
+   "fromTransport": "spirit_tree.farming_guild"
+  }
+ ]
+}

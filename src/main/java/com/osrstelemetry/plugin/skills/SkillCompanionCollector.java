@@ -113,6 +113,11 @@ public abstract class SkillCompanionCollector
 	/** At most one evidence note per this many ms (catches come every few seconds; freshness is 15 s+). */
 	static final long EVIDENCE_INTERVAL_MILLIS = 5_000L;
 
+	/** Where confirmed-production evidence goes (the session engine); null = nowhere (tests). */
+	private volatile java.util.function.BiConsumer<String, Instant> productionEvidenceSink;
+	private long lastSuccessCount = -1L;
+	private long lastProductionEvidenceAt = Long.MIN_VALUE;
+
 	/** Where context XP evidence goes (the session engine); null = nowhere. */
 	private volatile ContextEvidenceSink contextEvidenceSink;
 	private final Map<String, Long> lastContextSentAt = new HashMap<>();
@@ -267,6 +272,45 @@ public abstract class SkillCompanionCollector
 		catch (RuntimeException ex)
 		{
 			log.debug("Skill companion could not report method evidence", ex);
+		}
+	}
+
+	/**
+	 * Where this skill reports a CAUSALLY CONFIRMED success (its tracker
+	 * recorded output because the skill's XP and the matching items changed
+	 * together) -- the session engine's takeover evidence
+	 * (SessionRuntimeCoordinator#noteSkillProductionEvidence). Every companion
+	 * has the same rule; none is needed for tests.
+	 */
+	public void setProductionEvidenceSink(java.util.function.BiConsumer<String, Instant> sink)
+	{
+		this.productionEvidenceSink = sink;
+	}
+
+	/** A new confirmed success since the last call is reported (rate-limited, never per tick). */
+	protected void forwardProductionEvidence(long nowMillis)
+	{
+		long count = tracker.getLedger().successCount();
+		long previous = lastSuccessCount;
+		lastSuccessCount = count;
+		java.util.function.BiConsumer<String, Instant> sink = productionEvidenceSink;
+		if (previous < 0 || count <= previous || sink == null)
+		{
+			return;
+		}
+		if (lastProductionEvidenceAt != Long.MIN_VALUE && nowMillis - lastProductionEvidenceAt < EVIDENCE_INTERVAL_MILLIS
+			&& nowMillis >= lastProductionEvidenceAt)
+		{
+			return;
+		}
+		lastProductionEvidenceAt = nowMillis;
+		try
+		{
+			sink.accept(definition.getSkillKey(), Instant.ofEpochMilli(nowMillis));
+		}
+		catch (RuntimeException ex)
+		{
+			log.debug("Skill companion could not report production evidence", ex);
 		}
 	}
 
@@ -498,6 +542,7 @@ public abstract class SkillCompanionCollector
 		onPlayerPosition(client.getTickCount(), now, position);
 		tracker.onTick(client.getTickCount(), now, position == null ? -1 : position.getRegionID());
 		forwardContextEvidence();
+		forwardProductionEvidence(now);
 		ticksSinceFlush++;
 		List<? extends SkillTracker.Deposit> deposits = tracker.drainDeposits();
 		if (!deposits.isEmpty())
@@ -723,6 +768,16 @@ public abstract class SkillCompanionCollector
 				Collections.unmodifiableMap(new LinkedHashMap<>(tracker.getLedger().getPendingAutoTransformed())),
 				Collections.unmodifiableMap(new LinkedHashMap<>(flushedOccurrences)),
 				Collections.unmodifiableMap(new LinkedHashMap<>(tracker.getPendingOccurrences())), focus, event);
+		}
+		SkillCompanionView.EventView stock = tracker.stock(now);
+		if (stock != null)
+		{
+			built = built.withStock(stock);
+		}
+		Map<Integer, Long> carried = tracker.carried();
+		if (carried != null)
+		{
+			built = built.withCarried(Collections.unmodifiableMap(new LinkedHashMap<>(carried)));
 		}
 		if (!flushedConsumed.isEmpty() || !tracker.getLedger().getPendingConsumed().isEmpty())
 		{

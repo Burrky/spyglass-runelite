@@ -11,7 +11,6 @@ import java.util.List;
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import net.runelite.client.ui.FontManager;
 
 /**
  * The Smart Slayer six-stat dashboard: KILLS / KILLS/HR / LOOT/KILL over
@@ -123,11 +122,11 @@ final class SlayerStatGrid extends JPanel
 		cell.setName(CELL_PREFIX + caption);
 		cell.setOpaque(false);
 		JLabel captionLabel = new JLabel(caption);
-		captionLabel.setFont(FontManager.getRunescapeSmallFont());
+		captionLabel.setFont(SpyglassFonts.small());
 		captionLabel.setForeground(SpyglassTheme.TEXT_MUTED);
 		JLabel valueLabel = new JLabel(value == null ? "-" : value);
 		valueLabel.setName(VALUE_PREFIX + caption);
-		valueLabel.setFont(FontManager.getRunescapeBoldFont());
+		valueLabel.setFont(SpyglassFonts.bold());
 		valueLabel.setForeground(value == null ? SpyglassTheme.TEXT_MUTED : valueColor);
 		cell.add(captionLabel);
 		cell.add(valueLabel);

@@ -160,7 +160,7 @@ public class LootTrackerIndividualStreamTest
 		{
 			if (c instanceof JLabel && LootTrackerView.RECORD_SOURCE_NAME.equals(c.getName()))
 			{
-				out.add(((JLabel) c).getText());
+				out.add(HomeView.plain((JLabel) c));
 			}
 		}
 		return out;
@@ -175,9 +175,9 @@ public class LootTrackerIndividualStreamTest
 			{
 				for (Component k : all((Container) c))
 				{
-					if (k instanceof JLabel && ((JLabel) k).getText() != null && ((JLabel) k).getText().endsWith(" gp"))
+					if (k instanceof JLabel && HomeView.plain((JLabel) k) != null && HomeView.plain((JLabel) k).endsWith(" gp"))
 					{
-						out.add(((JLabel) k).getText());
+						out.add(HomeView.plain((JLabel) k));
 					}
 				}
 			}
@@ -202,8 +202,8 @@ public class LootTrackerIndividualStreamTest
 			if (c instanceof JLabel && LootTrackerView.RECORD_SOURCE_NAME.equals(c.getName()))
 			{
 				JLabel l = (JLabel) c;
-				assertFalse("source, never a timestamp, is the headline", l.getText().matches(".*\\d{2}:\\d{2}.*"));
-				assertTrue(l.getToolTipText().startsWith(l.getText() + " -- "));
+				assertFalse("source, never a timestamp, is the headline", HomeView.plain(l).matches(".*\\d{2}:\\d{2}.*"));
+				assertTrue(l.getToolTipText().startsWith(HomeView.plain(l) + " -- "));
 			}
 		}
 	}
@@ -268,7 +268,7 @@ public class LootTrackerIndividualStreamTest
 			{
 				if (c instanceof JLabel && LootTrackerView.SOURCE_TITLE_NAME.equals(c.getName()))
 				{
-					titles.add(((JLabel) c).getText());
+					titles.add(HomeView.plain((JLabel) c));
 				}
 			}
 			assertEquals("one card per source, most recent first", Arrays.asList("Kraken", "Gargoyle", "Cave kraken"), titles);

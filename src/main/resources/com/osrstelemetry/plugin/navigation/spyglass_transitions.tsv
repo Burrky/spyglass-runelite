@@ -1,0 +1,25 @@
+# Origin	Destination	menuOption menuTarget objectID	Skills	Items	Quests	Varbits	VarPlayers	Duration	Display info	Arrival area
+# Spyglass's own transitions (not from Shortest Path). Each row group says where it was verified. 'Arrival area' (x1 y1 x2 y2 plane):
+# where arrival is observed when the exact landing tile is not published; otherwise arrival is within 4 tiles of the Destination.
+#
+# Fossil Island dive (OSRS Wiki "Underwater area", 2026-10-21: "select Dive on the rowboat to enter the underwater section"; no
+# level or quest requirement). Origin: the islet landing of rowboat 30915 (Shortest Path boats.tsv). Destination: RuneLite's
+# underwater seaweed marker; arrival: the underwater map region 58_160 only (x 3712-3775, y 10240-10303, plane 0).
+3764 3899 0	3730 10271 0	Dive Rowboat -1						5	Underwater	3712 10240 3775 10303 0
+#
+# Hespori's cave, Farming Guild west wing. Object: Cave (Farming Guild), id 34499, option Enter (OSRS Wiki, 2026-10-21); 65 Farming
+# (OSRS Wiki "Hespori": "requires Farming 65 [boostable] to access"). Entrance tile: RuneLite worldmap DungeonLocation.HESPORI
+# (1231, 3729, BSD-2); origins: the standable tiles beside the object's footprint in the collision map. Inside: the chamber in
+# region 19_157 whose 3x3 centre (1246-1248, 10086-10088) is the patch's footprint; arrival anywhere in the chamber. The exit
+# returns beside the entrance (arrival observed around it).
+1230 3728 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1230 3729 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1230 3730 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1230 3731 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1231 3727 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1232 3727 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1233 3727 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1231 3732 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1232 3732 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1233 3732 0	1247 10080 0	Enter Cave 34499	65 Farming					2	Hespori	1238 10079 1256 10095 0
+1247 10080 0	1230 3729 0	Exit Cave -1						2	Farming Guild	1224 3722 1238 3736 0

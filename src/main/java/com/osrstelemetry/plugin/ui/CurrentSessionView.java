@@ -62,7 +62,6 @@ import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SkillIconManager;
 import net.runelite.client.ui.ColorScheme;
-import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.AsyncBufferedImage;
 import net.runelite.client.util.QuantityFormatter;
 
@@ -297,6 +296,88 @@ final class CurrentSessionView extends JPanel
 	private volatile java.util.function.Consumer<GotrStrategy> gotrStrategyWriter;
 	private volatile java.util.function.Supplier<GotrStrategy> gotrStrategyReader;
 
+	private volatile java.util.function.Supplier<String> xpMetricReader;
+	private volatile java.util.function.Consumer<String> xpMetricWriter;
+	/** The choice just made, until the saved value reflects it (keeps the click instant). */
+	private XpCardText.SecondMetric xpMetricOverride;
+
+	/** Where the skill cards' second metric choice is kept (RuneLite profile configuration in production). */
+	void setXpMetricStore(java.util.function.Supplier<String> reader, java.util.function.Consumer<String> writer)
+	{
+		this.xpMetricReader = reader;
+		this.xpMetricWriter = writer;
+	}
+
+	XpCardText.SecondMetric xpMetric()
+	{
+		java.util.function.Supplier<String> reader = xpMetricReader;
+		XpCardText.SecondMetric saved = null;
+		try
+		{
+			String v = reader == null ? null : reader.get();
+			saved = v == null ? null : XpCardText.SecondMetric.parse(v);
+		}
+		catch (RuntimeException e)
+		{
+			// unreadable: the default
+		}
+		if (xpMetricOverride != null && xpMetricOverride == saved)
+		{
+			xpMetricOverride = null;
+		}
+		return xpMetricOverride != null ? xpMetricOverride : saved == null ? XpCardText.SecondMetric.XP_REMAINING : saved;
+	}
+
+	/** Click or Space on a card's second metric: switch it on every skill card, saved. */
+	void toggleXpMetric()
+	{
+		XpCardText.SecondMetric next = xpMetric().other();
+		xpMetricOverride = next;
+		java.util.function.Consumer<String> writer = xpMetricWriter;
+		if (writer != null)
+		{
+			try
+			{
+				writer.accept(next.name());
+			}
+			catch (RuntimeException e)
+			{
+				// not saved: still shown for this session
+			}
+		}
+		Component owner = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+		String focusName = owner != null && XP_SECOND_NAME.equals(owner.getName()) ? XP_SECOND_NAME : null;
+		if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
+		if (focusName != null)
+		{
+			for (Component c : allComponents(this))
+			{
+				if (XP_SECOND_NAME.equals(c.getName()))
+				{
+					c.requestFocusInWindow();
+					break;
+				}
+			}
+		}
+	}
+
+	private static java.util.List<Component> allComponents(java.awt.Container c)
+	{
+		java.util.List<Component> out = new java.util.ArrayList<>();
+		for (Component k : c.getComponents())
+		{
+			out.add(k);
+			if (k instanceof java.awt.Container)
+			{
+				out.addAll(allComponents((java.awt.Container) k));
+			}
+		}
+		return out;
+	}
+
 	void setGotrStrategyReader(java.util.function.Supplier<GotrStrategy> reader)
 	{
 		this.gotrStrategyReader = reader;
@@ -404,10 +485,10 @@ final class CurrentSessionView extends JPanel
 	void render(CurrentSessionSnapshot snapshot)
 	{
 		lastSnapshot = snapshot;
-		if (pestPopupOpen)
+		if (pestPopupOpen || skillFieldEditing)
 		{
-			// A Pest Control goal dropdown is open: rebuilding now would close it
-			// under the cursor. The selection (or cancel) renders right after.
+			// A goal dropdown is open, or a target number is being typed: rebuilding
+			// now would close it / wipe the typing. The pick (or Enter) renders right after.
 			return;
 		}
 		content.removeAll();
@@ -556,7 +637,7 @@ final class CurrentSessionView extends JPanel
 		boolean welcome = tracked != null && !tracked.getAsBoolean();
 		JLabel title = new JLabel(welcome ? WELCOME_TITLE : NO_SESSION_TITLE);
 		title.setName(EMPTY_TITLE_NAME);
-		title.setFont(FontManager.getRunescapeBoldFont());
+		title.setFont(SpyglassFonts.bold());
 		title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
@@ -564,7 +645,7 @@ final class CurrentSessionView extends JPanel
 		// javadoc for why the previous fixed CSS width:180px (really ~233px
 		// in Swing's HTML engine) clipped against the sidebar edge.
 		JLabel subtitle = new WrappingHtmlLabel(welcome ? WELCOME_TEXT : NO_SESSION_TEXT, true);
-		subtitle.setFont(FontManager.getRunescapeSmallFont());
+		subtitle.setFont(SpyglassFonts.small());
 		subtitle.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		subtitle.setAlignmentX(Component.CENTER_ALIGNMENT);
 
@@ -617,17 +698,17 @@ final class CurrentSessionView extends JPanel
 			: primarySkill != null
 				? toTitleCase(primarySkill)
 				: (snapshot.getDisplayName() == null ? "Unknown activity" : snapshot.getDisplayName());
-		JLabel headlineLabel = new JLabel(headline);
+		// A long boss/activity name wraps under itself (pass 30: never cut short, at any text size) instead of pushing
+		// ACTIVE/SUSPENDED off the sidebar; it wraps at its own cell's width.
+		JLabel headlineLabel = new WrappingHtmlLabel(headline, false);
 		headlineLabel.setName(HEADLINE_NAME);
-		headlineLabel.setFont(FontManager.getRunescapeBoldFont());
+		headlineLabel.setFont(SpyglassFonts.bold());
 		headlineLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
-		// A long boss/activity name shrinks with an ellipsis (full name on
-		// hover) instead of pushing ACTIVE/SUSPENDED off the sidebar.
 		headlineLabel.setToolTipText(headline);
-		skillIdentity.add(headlineLabel, BorderLayout.CENTER);
+		skillIdentity.add(FarmingRunPage.cell(headlineLabel), BorderLayout.CENTER);
 
 		JLabel stateLabel = new JLabel(suspended ? "◌ SUSPENDED" : "● ACTIVE");
-		stateLabel.setFont(FontManager.getRunescapeSmallFont());
+		stateLabel.setFont(SpyglassFonts.small());
 		stateLabel.setForeground(accent);
 
 		// Shares the EAST region with stateLabel via a tight, zero-gap
@@ -656,7 +737,7 @@ final class CurrentSessionView extends JPanel
 		JLabel activityLabel = new JLabel(activityText.isEmpty() ? "Unknown activity" : activityText);
 		activityLabel.setName(ACTIVITY_LINE_NAME);
 		activityLabel.setToolTipText(activityText.isEmpty() ? null : activityText);
-		activityLabel.setFont(FontManager.getRunescapeSmallFont());
+		activityLabel.setFont(SpyglassFonts.small());
 		activityLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		activityLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
@@ -670,7 +751,7 @@ final class CurrentSessionView extends JPanel
 		// touched here).
 		String durationText = formatDuration(snapshot.getActiveDurationMillis());
 		// Wraps between facts at narrow widths instead of clipping (FactLine).
-		FactLine secondaryLabel = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		FactLine secondaryLabel = new FactLine(SpyglassFonts.small(), SpyglassTheme.TEXT_SECONDARY);
 		secondaryLabel.setName(SESSION_FACTS_NAME);
 		secondaryLabel.fact(durationText);
 		if (suspended)
@@ -775,7 +856,7 @@ final class CurrentSessionView extends JPanel
 			row.setAlignmentX(Component.LEFT_ALIGNMENT);
 			JLabel done = new JLabel("Task complete");
 			done.setName(SLAYER_TASK_COMPLETE_NAME);
-			done.setFont(FontManager.getRunescapeBoldFont());
+			done.setFont(SpyglassFonts.bold());
 			done.setForeground(SpyglassTheme.STATUS_SUCCESS);
 			row.add(done, BorderLayout.WEST);
 			row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
@@ -792,7 +873,7 @@ final class CurrentSessionView extends JPanel
 			row.setAlignmentX(Component.LEFT_ALIGNMENT);
 			JLabel remainingLabel = new JLabel(formatNumber(remaining) + " remaining");
 			remainingLabel.setName(SLAYER_REMAINING_NAME);
-			remainingLabel.setFont(FontManager.getRunescapeBoldFont());
+			remainingLabel.setFont(SpyglassFonts.bold());
 			remainingLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 			row.add(remainingLabel, BorderLayout.WEST);
 			if (percent != null)
@@ -875,7 +956,7 @@ final class CurrentSessionView extends JPanel
 		if (superiors != null)
 		{
 			JLabel line = new WrappingHtmlLabel(superiors, false);
-			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setFont(SpyglassFonts.small());
 			line.setForeground(SpyglassTheme.ACCENT_SAGE);
 			line.setName(SLAYER_SUPERIORS_NAME);
 			line.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -1112,64 +1193,71 @@ final class CurrentSessionView extends JPanel
 
 		CurrentSessionSnapshot.LevelProgress levelProgress = entry.getLevelProgress();
 
-		// Row 1: icon + skill name only -- level/XP-per-hour have their
-		// own lane below (Row 1b), so the three facts never visually run
-		// together.
-		JPanel titleRow = new JPanel(new BorderLayout(4, 0));
-		titleRow.setOpaque(false);
-		titleRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-		titleRow.add(new JLabel(skillIcon(entry.getSkill())), BorderLayout.WEST);
+		XpCardText text = XpCardText.of(entry, xpMetric());
 
-		JLabel nameLabel = new JLabel(toTitleCase(entry.getSkill()));
-		nameLabel.setFont(FontManager.getRunescapeBoldFont());
+		// Row 1: icon + skill name ........ XP/hr: the rate is the card's most readable figure (bold, full contrast);
+		// its warm-up placeholder stays quiet.
+		JLabel nameLabel = new JLabel(toTitleCase(entry.getSkill()), skillIcon(entry.getSkill()), javax.swing.SwingConstants.LEFT);
+		nameLabel.setIconTextGap(4);
+		nameLabel.setFont(SpyglassFonts.bold());
 		nameLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
-		titleRow.add(nameLabel, BorderLayout.CENTER);
+		JLabel rateLabel = null;
+		if (text.rate != null)
+		{
+			rateLabel = new JLabel(text.rate);
+			rateLabel.setName(XP_RATE_NAME);
+			rateLabel.setFont(text.rateReady ? SpyglassFonts.bold() : SpyglassFonts.small());
+			rateLabel.setForeground(text.rateReady ? SpyglassTheme.TEXT_PRIMARY : SpyglassTheme.TEXT_MUTED);
+			if (!text.rateReady)
+			{
+				rateLabel.setToolTipText(RATE_WARMUP_TOOLTIP);
+			}
+		}
+		// Name and rate share the line when both fit; on a narrow sidebar the rate takes its own line (never cut short).
+		FitRow titleRow = new FitRow(nameLabel, rateLabel);
+		titleRow.setAlignmentX(Component.LEFT_ALIGNMENT);
 		card.add(titleRow);
 		card.add(Box.createVerticalStrut(2));
 
-		// Row 1b: level ................ XP/hr -- its own compact lane,
-		// distinct from the title above and the XP-gained/XP-to-level
-		// row below, so the three facts never visually run together.
-		JPanel statsRow = new JPanel(new BorderLayout(6, 0));
-		statsRow.setOpaque(false);
-		statsRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-
-		if (levelProgress != null)
+		// Row 2: the second metric (XP remaining or time to the next level, the player's choice), before the quieter stats.
+		if (text.second != null)
 		{
-			JLabel levelLabel = new JLabel("Lv " + levelProgress.getCurrentLevel());
-			levelLabel.setFont(FontManager.getRunescapeSmallFont());
-			levelLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
-			statsRow.add(levelLabel, BorderLayout.WEST);
+			JLabel secondLabel = new JLabel(text.second);
+			secondLabel.setName(XP_SECOND_NAME);
+			secondLabel.setFont(SpyglassFonts.regular());
+			secondLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
+			secondLabel.setToolTipText(text.secondTip);
+			secondLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+			secondLabel.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+			secondLabel.setFocusable(true);
+			secondLabel.getAccessibleContext().setAccessibleName(text.second + ". Press Space to switch between XP remaining and time to level");
+			secondLabel.addMouseListener(new java.awt.event.MouseAdapter()
+			{
+				@Override
+				public void mouseClicked(java.awt.event.MouseEvent e)
+				{
+					toggleXpMetric();
+				}
+			});
+			secondLabel.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).put(javax.swing.KeyStroke.getKeyStroke("SPACE"), "toggleXpMetric");
+			secondLabel.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).put(javax.swing.KeyStroke.getKeyStroke("ENTER"), "toggleXpMetric");
+			secondLabel.getActionMap().put("toggleXpMetric", new javax.swing.AbstractAction()
+			{
+				@Override
+				public void actionPerformed(java.awt.event.ActionEvent e)
+				{
+					toggleXpMetric();
+				}
+			});
+			card.add(secondLabel);
+			card.add(Box.createVerticalStrut(3));
 		}
 
-		if (entry.getXpPerHour() != null)
-		{
-			JLabel rateLabel = new JLabel(formatNumber(entry.getXpPerHour()) + " XP/hr");
-			rateLabel.setName(XP_RATE_NAME);
-			rateLabel.setFont(FontManager.getRunescapeSmallFont());
-			rateLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
-			statsRow.add(rateLabel, BorderLayout.EAST);
-		}
-		else if (entry.getRateWarmupRemainingMillis() != null)
-		{
-			// Not projected yet (shared rate floor): a quiet, honest
-			// placeholder instead of a wild extrapolation or a blank lane.
-			JLabel rateLabel = new JLabel(rateWarmupText(entry.getRateWarmupRemainingMillis()));
-			rateLabel.setName(XP_RATE_NAME);
-			rateLabel.setFont(FontManager.getRunescapeSmallFont());
-			rateLabel.setForeground(SpyglassTheme.TEXT_MUTED);
-			rateLabel.setToolTipText(RATE_WARMUP_TOOLTIP);
-			statsRow.add(rateLabel, BorderLayout.EAST);
-		}
-		card.add(statsRow);
-		card.add(Box.createVerticalStrut(4));
-
-		// Row 2: level-progress bar. Always present (a MAX skill shows
-		// a full green bar reading "MAX") so every card has the same
-		// fixed row structure/height.
+		// Row 3: level-progress bar. Always present (a MAX skill shows a full green bar reading "MAX") so every card has the
+		// same row structure.
 		JProgressBar bar = new JProgressBar(0, 100);
 		bar.setStringPainted(true);
-		bar.setFont(FontManager.getRunescapeSmallFont());
+		bar.setFont(SpyglassFonts.small());
 		bar.setBorderPainted(false);
 		bar.setBackground(SpyglassTheme.BORDER_SOFT);
 		bar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 14));
@@ -1189,37 +1277,21 @@ final class CurrentSessionView extends JPanel
 		}
 		else
 		{
-			// Defense in depth only (see LevelProgress' own javadoc --
-			// this cannot happen for a skill with nonzero session XP in
-			// practice): no absolute-XP data to compute real progress
-			// yet. Keep the row present at a fixed height rather than
-			// omitting it, so card height never varies by state.
+			// Defense in depth only: no absolute-XP data yet; the row keeps its place.
 			bar.setValue(0);
 			bar.setString("");
 			bar.setForeground(SpyglassTheme.BORDER_SOFT);
 		}
 		card.add(bar);
-		card.add(Box.createVerticalStrut(4));
+		card.add(Box.createVerticalStrut(3));
 
-		// Row 3: session XP gained ................ XP remaining to
-		// next level (omitted at MAX -- there is no next level).
-		JPanel footerRow = new JPanel(new BorderLayout(6, 0));
-		footerRow.setOpaque(false);
-		footerRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-
-		JLabel xpLabel = new JLabel("+" + formatNumber(entry.getXpGained()) + " XP");
-		xpLabel.setFont(FontManager.getRunescapeSmallFont());
-		xpLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
-		footerRow.add(xpLabel, BorderLayout.WEST);
-
-		if (levelProgress != null && !levelProgress.isMaxLevel())
-		{
-			JLabel remainingLabel = new JLabel(formatNumber(levelProgress.getXpRemainingToNextLevel()) + " XP to lvl " + (levelProgress.getCurrentLevel() + 1));
-			remainingLabel.setFont(FontManager.getRunescapeSmallFont());
-			remainingLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
-			footerRow.add(remainingLabel, BorderLayout.EAST);
-		}
-		card.add(footerRow);
+		// Row 4: level and XP gained, quieter supporting facts.
+		JLabel quiet = new JLabel(text.quiet);
+		quiet.setName(XP_QUIET_NAME);
+		quiet.setFont(SpyglassFonts.small());
+		quiet.setForeground(SpyglassTheme.TEXT_SECONDARY);
+		quiet.setAlignmentX(Component.LEFT_ALIGNMENT);
+		card.add(quiet);
 
 		return card;
 	}
@@ -1329,13 +1401,13 @@ final class CurrentSessionView extends JPanel
 		JLabel titleLabel = new JLabel(taskHistory ? TASK_HISTORY_TITLE
 			: killCount == null ? "LOOT" : "LOOT  ×" + killCount);
 		titleLabel.setName(LOOT_SECTION_TITLE_NAME);
-		titleLabel.setFont(FontManager.getRunescapeBoldFont());
+		titleLabel.setFont(SpyglassFonts.bold());
 		titleLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		titleLabel.setBorder(BorderFactory.createEmptyBorder(3, 0, 5, 0));
 		headerRow.add(titleLabel, BorderLayout.WEST);
 
 		JLabel totalLabel = new JLabel(QuantityFormatter.quantityToStackSize(totalValue) + " gp");
-		totalLabel.setFont(FontManager.getRunescapeBoldFont());
+		totalLabel.setFont(SpyglassFonts.bold());
 		totalLabel.setForeground(SpyglassTheme.ACCENT_GOLD);
 		headerRow.add(totalLabel, BorderLayout.EAST);
 		section.add(headerRow);
@@ -1625,6 +1697,8 @@ final class CurrentSessionView extends JPanel
 	static final String SESSION_FACTS_NAME = "sessionFacts";
 	/** A skill card's XP/hr lane (the rate, or its warm-up placeholder). */
 	static final String XP_RATE_NAME = "xpRate";
+	static final String XP_SECOND_NAME = "xpSecond";
+	static final String XP_QUIET_NAME = "xpQuiet";
 	static final String RATE_WARMUP_TOOLTIP = "Rates appear after 5 minutes of activity, so one early XP drop or kill can't project an unrealistic hourly rate.";
 
 	/** "XP/hr in 4m" -- whole minutes left, rounded up, never "in 0m". */
@@ -1667,7 +1741,7 @@ final class CurrentSessionView extends JPanel
 			block.add(Box.createVerticalStrut(2));
 			JLabel count = new JLabel("Brothers " + progress.getClearedCount() + " / " + BarrowsRunProgress.total());
 			count.setName(BARROWS_BROTHER_COUNT_NAME);
-			count.setFont(FontManager.getRunescapeBoldFont());
+			count.setFont(SpyglassFonts.bold());
 			count.setForeground(SpyglassTheme.TEXT_PRIMARY);
 			count.setAlignmentX(Component.LEFT_ALIGNMENT);
 			block.add(count);
@@ -1744,11 +1818,11 @@ final class CurrentSessionView extends JPanel
 				pointsRow.setOpaque(false);
 				pointsRow.setAlignmentX(Component.LEFT_ALIGNMENT);
 				JLabel label = new JLabel("Points");
-				label.setFont(FontManager.getRunescapeSmallFont());
+				label.setFont(SpyglassFonts.small());
 				label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 				JLabel value = new JLabel(formatNumber(game.getPoints()));
 				value.setName(TEMPOROSS_POINTS_NAME);
-				value.setFont(FontManager.getRunescapeBoldFont());
+				value.setFont(SpyglassFonts.bold());
 				value.setForeground(SpyglassTheme.ACCENT_GOLD);
 				value.setHorizontalAlignment(JLabel.RIGHT);
 				pointsRow.add(label, BorderLayout.WEST);
@@ -2184,7 +2258,7 @@ final class CurrentSessionView extends JPanel
 	{
 		WrappingHtmlLabel line = new WrappingHtmlLabel(text, false);
 		line.setName(name);
-		line.setFont(FontManager.getRunescapeSmallFont());
+		line.setFont(SpyglassFonts.small());
 		line.setForeground(color);
 		line.setAlignmentX(Component.LEFT_ALIGNMENT);
 		return line;
@@ -2461,7 +2535,7 @@ final class CurrentSessionView extends JPanel
 			}
 		};
 		combo.setName(name);
-		combo.setFont(FontManager.getRunescapeSmallFont());
+		combo.setFont(SpyglassFonts.small());
 		combo.setFocusable(false);
 		combo.setMaximumRowCount(Math.min(12, items.length));
 		for (PestChoice<T> c : items)
@@ -2515,7 +2589,7 @@ final class CurrentSessionView extends JPanel
 	{
 		WrappingHtmlLabel line = new WrappingHtmlLabel(text, true);
 		line.setName(name);
-		line.setFont(FontManager.getRunescapeSmallFont());
+		line.setFont(SpyglassFonts.small());
 		line.setForeground(color);
 		line.setHorizontalAlignment(JLabel.CENTER);
 		JPanel row = new JPanel(new BorderLayout())
@@ -2558,14 +2632,18 @@ final class CurrentSessionView extends JPanel
 	static final String SC_METHOD_NAME = "skillMethod";
 	static final String SC_TRIP_NAME = "skillTrip";
 	static final String SC_TRIP_GRID_NAME = "skillTripGrid";
-	static final String SC_SPACE_LEFT_CELL = "SPACE LEFT";
 	static final String SC_EST_FULL_CELL = "EST. FULL";
 	static final String SC_STORAGE_NAME = "skillStorage";
 	static final String SC_PRODUCTION_NAME = "skillProduction";
 	static final String SC_PRODUCTION_GRID_NAME = "skillProductionGrid";
 	static final String SC_BANKED_CELL = "BANKED";
 	static final String SC_RATE_NAME = "skillRate";
-	static final String SC_BREAKDOWN_NAME = "skillBreakdown";
+	/** Production's main sprites (index 0); the groups after it (by-products, other methods' output) use SC_BYPRODUCT_PREFIX. */
+	static final String SC_PRODUCTION_ITEMS_PREFIX = "skillProductionItems:";
+	static final String SC_EVENT_ITEMS_PREFIX = "skillEventItems:";
+	static final String SC_SECONDARY_ITEMS_PREFIX = "skillSecondaryItems:";
+	/** An item group's title label is the group's name + this suffix. */
+	static final String SC_ITEMS_TITLE_SUFFIX = ":title";
 	static final String SC_BYPRODUCT_PREFIX = "skillByproduct:";
 	static final String SC_CONTEXT_PREFIX = "skillContext:";
 	static final String SC_SUPPLY_NAME = "skillSupply";
@@ -2579,6 +2657,13 @@ final class CurrentSessionView extends JPanel
 	static final String SC_FOCUS_NAME = "skillFocus";
 	static final String SC_FOCUS_GRID_NAME = "skillFocusGrid";
 	static final String SC_FOCUS_LABEL_NAME = "skillFocusLabel";
+	static final String SC_FOCUS_NOTE_NAME = "skillFocusNote";
+	static final String SC_TARGET_SPRITE_NAME = "skillTargetSprite";
+	static final String SC_INPUTS_ITEMS_NAME = "skillInputsItems";
+	static final String SC_STOCK_NAME = "skillStock";
+	static final String SC_STOCK_GRID_NAME = "skillStockGrid";
+	static final String SC_STOCK_ITEMS_PREFIX = "skillStockItems:";
+	static final String SC_STOCK_LINE_PREFIX = "skillStockLine:";
 	static final String SC_EVENT_NAME = "skillEvent";
 	static final String SC_EVENT_TITLE_NAME = "skillEventTitle";
 	static final String SC_EVENT_GRID_NAME = "skillEventGrid";
@@ -2590,10 +2675,11 @@ final class CurrentSessionView extends JPanel
 	static final String SC_SECONDARY_NAME = "skillSecondary";
 	static final String SC_SECONDARY_GRID_NAME = "skillSecondaryGrid";
 	static final String SC_SECONDARY_LINE_PREFIX = "skillSecondaryLine:";
-	static final String SC_RUNWAY_CELL = "RUNWAY";
+	/** How long the carried supply lasts at what the method actually used ("TIME LEFT", never "runway"). */
+	static final String SC_TIME_LEFT_CELL = "TIME LEFT";
+	static final String SC_SUPPLY_ITEMS_NAME = "skillSupplyItems";
 	static final String SC_ACTIONS_NAME = "skillActions";
 	static final String SC_ACTIONS_GRID_NAME = "skillActionsGrid";
-	static final String SC_UNITS_NAME = "skillUnits";
 	static final String SC_INPUTS_NAME = "skillInputs";
 	static final String SC_INPUTS_GRID_NAME = "skillInputsGrid";
 	static final String SC_INPUTS_LINE_PREFIX = "skillInputsLine:";
@@ -2704,6 +2790,13 @@ final class CurrentSessionView extends JPanel
 				source.definition().focusCountTooltip());
 			grid.addCell(model.focus.timeCaption, model.focus.timeText, SpyglassTheme.TEXT_PRIMARY, source.definition().focusTimeTooltip());
 			section.add(grid);
+			if (model.focus.note != null)
+			{
+				section.add(Box.createVerticalStrut(2));
+				JLabel note = wtLine(model.focus.note, SC_FOCUS_NOTE_NAME, SpyglassTheme.TEXT_SECONDARY);
+				note.setToolTipText(model.focus.noteTooltip);
+				section.add(note);
+			}
 			block.add(section);
 			block.add(Box.createVerticalStrut(6));
 		}
@@ -2711,38 +2804,8 @@ final class CurrentSessionView extends JPanel
 		if (model.event != null)
 		{
 			// CONTEXTUAL EVENT: only while one runs; context of this session, never a session of its own.
-			JPanel section = wtSection(SC_EVENT_NAME);
-			section.add(caption(model.event.title != null ? model.event.title : source.definition().eventTitle()));
-			section.add(Box.createVerticalStrut(3));
-			if (model.event.name != null)
-			{
-				section.add(wtLine(model.event.name + "  " + model.event.timeText, SC_EVENT_TITLE_NAME, SpyglassTheme.ACCENT_GOLD));
-			}
-			if (!model.event.fields.isEmpty())
-			{
-				section.add(Box.createVerticalStrut(2));
-				SlayerStatGrid grid = new SlayerStatGrid();
-				grid.setName(SC_EVENT_GRID_NAME);
-				grid.setMaxColumns(2);
-				for (com.osrstelemetry.plugin.skills.SkillCompanionView.EventView.Field f : model.event.fields)
-				{
-					grid.addCell(f.getCaption(), f.getValue(), SpyglassTheme.TEXT_PRIMARY, f.getTooltip());
-				}
-				section.add(grid);
-			}
-			for (int i = 0; i < model.event.lines.size(); i++)
-			{
-				com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine c = model.event.lines.get(i);
-				section.add(Box.createVerticalStrut(2));
-				JLabel line = wtLine(c.getText(), SC_EVENT_LINE_PREFIX + i,
-					c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.ALERT ? SpyglassTheme.ACCENT_AMBER
-						: c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.QUIET ? SpyglassTheme.TEXT_SECONDARY
-						: SpyglassTheme.TEXT_PRIMARY);
-				line.setToolTipText(c.getTooltip());
-				section.add(line);
-			}
-			block.add(section);
-			block.add(Box.createVerticalStrut(6));
+			addEventSection(block, model.event, source.definition().eventTitle(), SC_EVENT_NAME, SC_EVENT_TITLE_NAME, SC_EVENT_GRID_NAME,
+				SC_EVENT_ITEMS_PREFIX, SC_EVENT_LINE_PREFIX);
 		}
 
 		if (model.cycle != null)
@@ -2825,18 +2888,33 @@ final class CurrentSessionView extends JPanel
 			block.add(Box.createVerticalStrut(6));
 		}
 
-		if (model.trip != null)
+		if (model.trip != null && (model.trip.estFull != null || model.trip.storageLine != null))
 		{
+			// EST. FULL only once it is known (free slots alone never earn the space); the block hides otherwise.
 			JPanel section = wtSection(SC_TRIP_NAME);
 			section.add(caption("Current trip"));
 			section.add(Box.createVerticalStrut(3));
-			SlayerStatGrid grid = new SlayerStatGrid();
-			grid.setName(SC_TRIP_GRID_NAME);
-			grid.setMaxColumns(2);
-			grid.addCell(SC_SPACE_LEFT_CELL, formatNumber(model.trip.spaceLeft),
-				model.trip.spaceLeft <= 3 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY, "Free inventory slots");
-			grid.addCell(SC_EST_FULL_CELL, model.trip.estFull, SpyglassTheme.TEXT_PRIMARY, model.trip.estFullTooltip);
-			section.add(grid);
+			if (model.trip.estFull != null)
+			{
+				// Pass 28: one compact line ("Est. full  ~1:35"), not a framed
+				// cell for a single number.
+				JPanel row = new JPanel(new BorderLayout(6, 0));
+				row.setName(SC_TRIP_GRID_NAME);
+				row.setOpaque(false);
+				row.setAlignmentX(Component.LEFT_ALIGNMENT);
+				JLabel caption = new JLabel("Est. full");
+				caption.setFont(SpyglassFonts.small());
+				caption.setForeground(SpyglassTheme.TEXT_SECONDARY);
+				JLabel value = new JLabel(model.trip.estFull);
+				value.setName(SlayerStatGrid.VALUE_PREFIX + SC_EST_FULL_CELL);
+				value.setFont(SpyglassFonts.regular());
+				value.setForeground(model.trip.spaceLeft == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY);
+				row.add(caption, BorderLayout.WEST);
+				row.add(value, BorderLayout.EAST);
+				row.setToolTipText(model.trip.estFullTooltip);
+				row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+				section.add(row);
+			}
 			if (model.trip.storageLine != null)
 			{
 				section.add(Box.createVerticalStrut(2));
@@ -2854,7 +2932,7 @@ final class CurrentSessionView extends JPanel
 			JPanel section = wtSection(SC_PRODUCTION_NAME);
 			section.add(caption("Production"));
 			section.add(Box.createVerticalStrut(3));
-			if (production.caption != null)
+			if (production.caption != null && production.showCells)
 			{
 				SlayerStatGrid grid = new SlayerStatGrid();
 				grid.setName(SC_PRODUCTION_GRID_NAME);
@@ -2862,15 +2940,16 @@ final class CurrentSessionView extends JPanel
 				grid.addCell(production.caption, production.totalText != null ? production.totalText : formatNumber(production.total),
 					SpyglassTheme.ACCENT_GOLD,
 					"Everything this session " + source.definition().producedVerb() + " (dropping, banking or moving it never lowers this)");
-				grid.addCell(SC_BANKED_CELL, formatNumber(production.banked), SpyglassTheme.TEXT_PRIMARY, source.definition().bankedTooltip());
+				if (production.showBanked)
+				{
+					grid.addCell(SC_BANKED_CELL, formatNumber(production.banked), SpyglassTheme.TEXT_PRIMARY, source.definition().bankedTooltip());
+				}
 				section.add(grid);
 			}
-			if (production.unitsLine != null)
+			if (production.mainItems != null)
 			{
-				section.add(Box.createVerticalStrut(2));
-				JLabel units = wtLine(production.unitsLine, SC_UNITS_NAME, SpyglassTheme.TEXT_SECONDARY);
-				units.setToolTipText("The same amount as whole full items (never a fractional item)");
-				section.add(units);
+				// Every main resource as its own sprite + number (per-resource rows carry produced AND banked).
+				addItemGroups(section, java.util.Collections.singletonList(production.mainItems), SC_PRODUCTION_ITEMS_PREFIX);
 			}
 			if (production.rateText != null)
 			{
@@ -2893,30 +2972,16 @@ final class CurrentSessionView extends JPanel
 				used.setToolTipText(source.definition().consumedTooltip());
 				section.add(used);
 			}
-			if (production.otherInputsLine != null)
+			if (production.otherInputs != null)
 			{
-				section.add(Box.createVerticalStrut(2));
-				JLabel others = wtLine(production.otherInputsLine, SC_OTHER_INPUTS_NAME, SpyglassTheme.TEXT_SECONDARY);
-				others.setToolTipText(source.definition().otherInputsTooltip());
-				section.add(others);
+				addItemGroups(section, java.util.Collections.singletonList(production.otherInputs), SC_OTHER_INPUTS_NAME + ":");
 			}
 			for (int i = 0; i < production.occurrenceLines.size(); i++)
 			{
 				section.add(Box.createVerticalStrut(2));
 				section.add(wtLine(production.occurrenceLines.get(i), SC_OCCURRENCE_LINE_PREFIX + i, SpyglassTheme.TEXT_SECONDARY));
 			}
-			if (production.breakdown != null)
-			{
-				section.add(Box.createVerticalStrut(2));
-				section.add(wtLine(production.breakdown, SC_BREAKDOWN_NAME, SpyglassTheme.TEXT_SECONDARY));
-			}
-			for (int i = 0; i < production.byproducts.size(); i++)
-			{
-				section.add(Box.createVerticalStrut(2));
-				JLabel line = wtLine(production.byproducts.get(i), SC_BYPRODUCT_PREFIX + i, SpyglassTheme.TEXT_SECONDARY);
-				line.setToolTipText("By-products of the same actions (exact, as the game named them)");
-				section.add(line);
-			}
+			addItemGroups(section, production.itemGroups, SC_BYPRODUCT_PREFIX);
 			block.add(section);
 			block.add(Box.createVerticalStrut(6));
 		}
@@ -2925,16 +2990,23 @@ final class CurrentSessionView extends JPanel
 		{
 			// INPUTS USED (Phase 6): exactly what this method's successes used up (never a theoretical amount).
 			JPanel section = wtSection(SC_INPUTS_NAME);
-			section.add(caption("Inputs used"));
+			section.add(caption(model.inputs.title));
 			section.add(Box.createVerticalStrut(3));
-			SlayerStatGrid grid = new SlayerStatGrid();
-			grid.setName(SC_INPUTS_GRID_NAME);
-			grid.setMaxColumns(2);
-			for (com.osrstelemetry.plugin.skills.SkillCompanionView.EventView.Field f : model.inputs.fields)
+			if (!model.inputs.fields.isEmpty())
 			{
-				grid.addCell(f.getCaption(), f.getValue(), SpyglassTheme.TEXT_PRIMARY, f.getTooltip());
+				SlayerStatGrid grid = new SlayerStatGrid();
+				grid.setName(SC_INPUTS_GRID_NAME);
+				grid.setMaxColumns(2);
+				for (com.osrstelemetry.plugin.skills.SkillCompanionView.EventView.Field f : model.inputs.fields)
+				{
+					grid.addCell(f.getCaption(), f.getValue(), SpyglassTheme.TEXT_PRIMARY, f.getTooltip());
+				}
+				section.add(grid);
 			}
-			section.add(grid);
+			if (!model.inputs.items.isEmpty())
+			{
+				section.add(new SkillItemGrid(SC_INPUTS_ITEMS_NAME, null, model.inputs.items, itemManager));
+			}
 			for (int i = 0; i < model.inputs.lines.size(); i++)
 			{
 				section.add(Box.createVerticalStrut(2));
@@ -2942,6 +3014,13 @@ final class CurrentSessionView extends JPanel
 			}
 			block.add(section);
 			block.add(Box.createVerticalStrut(6));
+		}
+
+		if (model.stock != null)
+		{
+			// IN BANK: what the account holds for this method outside the inventory (planning only, never the session).
+			addEventSection(block, model.stock, "In bank", SC_STOCK_NAME, SC_STOCK_NAME + ":title", SC_STOCK_GRID_NAME,
+				SC_STOCK_ITEMS_PREFIX, SC_STOCK_LINE_PREFIX);
 		}
 
 		if (model.secondary != null)
@@ -2961,6 +3040,7 @@ final class CurrentSessionView extends JPanel
 				}
 				section.add(grid);
 			}
+			addItemGroups(section, model.secondary.groups, SC_SECONDARY_ITEMS_PREFIX);
 			for (int i = 0; i < model.secondary.lines.size(); i++)
 			{
 				section.add(Box.createVerticalStrut(2));
@@ -2978,10 +3058,22 @@ final class CurrentSessionView extends JPanel
 			SlayerStatGrid grid = new SlayerStatGrid();
 			grid.setName(SC_SUPPLY_GRID_NAME);
 			grid.setMaxColumns(2);
-			grid.addCell(model.supply.caption, formatNumber(model.supply.count),
-				model.supply.count == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
-				"In your inventory now (what you can use without banking)");
-			grid.addCell(SC_RUNWAY_CELL, model.supply.runway, model.supply.count == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+			if (model.supply.itemId > 0)
+			{
+				// The supply's own sprite with what you carry; the grid keeps only how long it lasts.
+				section.add(new SkillItemGrid(SC_SUPPLY_ITEMS_NAME, null, java.util.Collections.singletonList(
+					com.osrstelemetry.plugin.skills.SkillCompanionView.ItemStat.line(model.supply.itemId, model.supply.name,
+						formatNumber(model.supply.count) + " carried", model.supply.name + ": " + formatNumber(model.supply.count)
+							+ " in your inventory now (what you can use without banking)")), itemManager));
+				section.add(Box.createVerticalStrut(2));
+			}
+			else
+			{
+				grid.addCell(model.supply.caption, formatNumber(model.supply.count),
+					model.supply.count == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
+					"In your inventory now (what you can use without banking)");
+			}
+			grid.addCell(SC_TIME_LEFT_CELL, model.supply.runway, model.supply.count == 0 ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_PRIMARY,
 				model.supply.runwayTooltip);
 			section.add(grid);
 			block.add(section);
@@ -2991,23 +3083,100 @@ final class CurrentSessionView extends JPanel
 		for (int i = 0; i < model.context.size(); i++)
 		{
 			com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine c = model.context.get(i);
-			Color color = c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.ALERT ? SpyglassTheme.ACCENT_AMBER
-				: c.getTone() == com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone.QUIET ? SpyglassTheme.TEXT_SECONDARY
-				: SpyglassTheme.TEXT_PRIMARY;
-			JLabel line = wtLine(c.getText(), SC_CONTEXT_PREFIX + i, color);
+			JLabel line = wtLine(c.getText(), SC_CONTEXT_PREFIX + i, toneColor(c.getTone()));
 			line.setToolTipText(c.getTooltip());
 			block.add(line);
 			block.add(Box.createVerticalStrut(i == model.context.size() - 1 ? 6 : 2));
 		}
 
-		addSkillTarget(block, source, model.target);
+		addSkillTarget(block, source, model.target, model.methodKey);
 
 		content.add(block);
 		content.add(separator());
 		content.add(Box.createVerticalStrut(6));
 	}
 
-	private void addSkillTarget(JPanel block, com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source, SkillCompanionModel.Target target)
+	/** One titled section of cells, item sprites and lines (a running event, or what the bank holds). */
+	private void addEventSection(JPanel block, SkillCompanionModel.Event event, String defaultTitle, String sectionName, String titleName,
+		String gridName, String itemsPrefix, String linePrefix)
+	{
+		JPanel section = wtSection(sectionName);
+		section.add(caption(event.title != null ? event.title : defaultTitle));
+		section.add(Box.createVerticalStrut(3));
+		if (event.name != null && event.timeText != null)
+		{
+			section.add(wtLine(event.name + "  " + event.timeText, titleName, SpyglassTheme.ACCENT_GOLD));
+		}
+		if (!event.fields.isEmpty())
+		{
+			section.add(Box.createVerticalStrut(2));
+			SlayerStatGrid grid = new SlayerStatGrid();
+			grid.setName(gridName);
+			grid.setMaxColumns(2);
+			for (com.osrstelemetry.plugin.skills.SkillCompanionView.EventView.Field f : event.fields)
+			{
+				grid.addCell(f.getCaption(), f.getValue(), SpyglassTheme.TEXT_PRIMARY, f.getTooltip());
+			}
+			section.add(grid);
+		}
+		addItemGroups(section, event.itemGroups, itemsPrefix);
+		for (int i = 0; i < event.lines.size(); i++)
+		{
+			com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine c = event.lines.get(i);
+			section.add(Box.createVerticalStrut(2));
+			JLabel line = wtLine(c.getText(), linePrefix + i, toneColor(c.getTone()));
+			line.setToolTipText(c.getTooltip());
+			section.add(line);
+		}
+		block.add(section);
+		block.add(Box.createVerticalStrut(6));
+	}
+
+	private static Color toneColor(com.osrstelemetry.plugin.skills.SkillCompanionView.ContextLine.Tone tone)
+	{
+		switch (tone)
+		{
+			case ALERT:
+				return SpyglassTheme.ACCENT_AMBER;
+			case DANGER:
+				return SpyglassTheme.STATUS_DANGER;
+			case QUIET:
+				return SpyglassTheme.TEXT_SECONDARY;
+			default:
+				return SpyglassTheme.TEXT_PRIMARY;
+		}
+	}
+
+	/**
+	 * Item groups as sprites + numbers ({@link SkillItemGrid}): an optional
+	 * small title, then the grid, named {@code prefix + index} (the title
+	 * {@code prefix + index + SC_ITEMS_TITLE_SUFFIX}).
+	 */
+	private void addItemGroups(JPanel section, List<com.osrstelemetry.plugin.skills.SkillCompanionView.ItemGroup> groups, String prefix)
+	{
+		if (groups == null)
+		{
+			return;
+		}
+		for (int i = 0; i < groups.size(); i++)
+		{
+			com.osrstelemetry.plugin.skills.SkillCompanionView.ItemGroup g = groups.get(i);
+			if (g.getItems().isEmpty())
+			{
+				continue;
+			}
+			section.add(Box.createVerticalStrut(3));
+			if (g.getTitle() != null)
+			{
+				section.add(wtLine(g.getTitle(), prefix + i + SC_ITEMS_TITLE_SUFFIX, SpyglassTheme.TEXT_MUTED));
+				section.add(Box.createVerticalStrut(1));
+			}
+			section.add(new SkillItemGrid(prefix + i, g.getCaptions(), g.getItems(), itemManager));
+		}
+	}
+
+	private void addSkillTarget(JPanel block, com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source, SkillCompanionModel.Target target,
+		String methodKey)
 	{
 		com.osrstelemetry.plugin.skills.SkillGoal goal = target.goal;
 		String skillName = source.definition().getSkill().getName();
@@ -3015,15 +3184,30 @@ final class CurrentSessionView extends JPanel
 		section.add(caption("Target"));
 		section.add(Box.createVerticalStrut(3));
 
-		List<PestChoice<com.osrstelemetry.plugin.skills.SkillGoal.Family>> families = new java.util.ArrayList<>();
-		for (com.osrstelemetry.plugin.skills.SkillGoal.Family f : com.osrstelemetry.plugin.skills.SkillGoal.Family.values())
+		// The resource target is named by what it counts ("Marks of grace", "Iron ore"), never "Stockpile".
+		String resourceLabel = resourceTargetLabel(source.definition(), methodKey);
+		Component familyCombo;
+		if (source.definition().offersResourceTarget())
 		{
-			families.add(new PestChoice<>(f, f.getLabel()));
+			List<PestChoice<com.osrstelemetry.plugin.skills.SkillGoal.Family>> families = new java.util.ArrayList<>();
+			for (com.osrstelemetry.plugin.skills.SkillGoal.Family f : com.osrstelemetry.plugin.skills.SkillGoal.Family.values())
+			{
+				families.add(new PestChoice<>(f, f == com.osrstelemetry.plugin.skills.SkillGoal.Family.STOCKPILE ? resourceLabel : f.getLabel()));
+			}
+			javax.swing.JComboBox<PestChoice<com.osrstelemetry.plugin.skills.SkillGoal.Family>> combo =
+				planCombo(SC_TARGET_FAMILY_NAME, families, goal.getFamily(), f -> selectSkillGoal(goal.withFamily(f)));
+			combo.setToolTipText("Level: a " + skillName + " level. " + resourceLabel + ": how many you own ("
+				+ (source.definition().targetGrowsWithProduction(methodKey) ? "inventory and bank" : "your bank, plus any storage Spyglass reads for it")
+				+ "). Remembered for this account");
+			familyCombo = combo;
 		}
-		javax.swing.JComboBox<PestChoice<com.osrstelemetry.plugin.skills.SkillGoal.Family>> familyCombo =
-			planCombo(SC_TARGET_FAMILY_NAME, families, goal.getFamily(), f -> selectSkillGoal(goal.withFamily(f)));
-		familyCombo.setToolTipText("Level: a " + skillName + " level. Stockpile: an amount of a resource you own (your bank, plus any "
-			+ "storage Spyglass reads for it). Remembered for this account");
+		else
+		{
+			// Level is the only target this skill offers: a plain label, no one-choice dropdown.
+			JLabel only = smallLabel(com.osrstelemetry.plugin.skills.SkillGoal.Family.LEVEL.getLabel(), SpyglassTheme.TEXT_PRIMARY);
+			only.setName(SC_TARGET_FAMILY_NAME);
+			familyCombo = only;
+		}
 
 		SlayerStatGrid grid = new SlayerStatGrid();
 		grid.setName(SC_TARGET_GRID_NAME);
@@ -3031,11 +3215,10 @@ final class CurrentSessionView extends JPanel
 		String eta = com.osrstelemetry.plugin.skills.SkillGoalPlanner.etaText(target.etaMillis);
 		if (goal.getFamily() == com.osrstelemetry.plugin.skills.SkillGoal.Family.LEVEL)
 		{
-			JLabel level = pestLink("Lvl " + goal.getTargetLevel(), SC_TARGET_LEVEL_NAME, "Target level -- click to change",
-				() -> askSkillNumber("Target " + skillName + " level (" + com.osrstelemetry.plugin.skills.SkillGoal.MIN_LEVEL + "-"
-					+ com.osrstelemetry.plugin.skills.SkillGoal.MAX_LEVEL + ")", goal.getTargetLevel(),
-					com.osrstelemetry.plugin.skills.SkillGoal.MIN_LEVEL, com.osrstelemetry.plugin.skills.SkillGoal.MAX_LEVEL,
-					goal::withTargetLevel));
+			javax.swing.JTextField level = skillNumberField(SC_TARGET_LEVEL_NAME, goal.getTargetLevel(), 3,
+				com.osrstelemetry.plugin.skills.SkillGoal.MIN_LEVEL, com.osrstelemetry.plugin.skills.SkillGoal.MAX_LEVEL,
+				"Target " + skillName + " level: type a level (" + com.osrstelemetry.plugin.skills.SkillGoal.MIN_LEVEL + "-"
+					+ com.osrstelemetry.plugin.skills.SkillGoal.MAX_LEVEL + ") and press Enter", goal::withTargetLevel);
 			section.add(pestRow(familyCombo, level));
 			section.add(Box.createVerticalStrut(4));
 			grid.addCell(SC_XP_LEFT_CELL, target.first == null ? null : formatNumber(target.first),
@@ -3048,11 +3231,20 @@ final class CurrentSessionView extends JPanel
 		}
 		else
 		{
-			section.add(pestRow(familyCombo, null));
-			section.add(Box.createVerticalStrut(2));
+			if (!target.growsWithProduction)
+			{
+				section.add(pestRow(familyCombo, null));
+				section.add(Box.createVerticalStrut(2));
+			}
 			if (target.resource == null)
 			{
 				section.add(wtLine(source.definition().stockpileEmptyHint(), SC_ETA_LINE_NAME, SpyglassTheme.TEXT_SECONDARY));
+				block.add(section);
+				return;
+			}
+			if (target.growsWithProduction)
+			{
+				addGrowingTarget(section, grid, source, target, goal, familyCombo, eta);
 				block.add(section);
 				return;
 			}
@@ -3066,12 +3258,11 @@ final class CurrentSessionView extends JPanel
 			resourceCombo.setToolTipText("What to stockpile (only resources Spyglass can count reliably)");
 			String promptNoun = target.promptNoun != null ? target.promptNoun
 				: target.resource.getName().toLowerCase(java.util.Locale.ROOT) + " in your bank";
-			JLabel quantity = pestLink(target.quantityText != null ? target.quantityText : formatNumber(goal.getTargetQuantity()),
-				SC_TARGET_QUANTITY_NAME, "Target amount -- click to change",
-				() -> askSkillNumber("How many " + promptNoun + "? (1-"
-					+ formatNumber(com.osrstelemetry.plugin.skills.SkillGoal.MAX_QUANTITY) + ")", goal.getTargetQuantity(), 1,
-					com.osrstelemetry.plugin.skills.SkillGoal.MAX_QUANTITY,
-					q -> goal.withResource(target.resource.getItemId()).withTargetQuantity(q)));
+			javax.swing.JTextField quantity = skillNumberField(SC_TARGET_QUANTITY_NAME, goal.getTargetQuantity(), 7, 1,
+				com.osrstelemetry.plugin.skills.SkillGoal.MAX_QUANTITY,
+				"How many " + promptNoun + (target.quantityText != null ? " (" + target.quantityText + ")" : "")
+					+ ": type an amount and press Enter",
+				q -> goal.withResource(target.resource.getItemId()).withTargetQuantity(q));
 			section.add(pestRow(resourceCombo, quantity));
 			section.add(Box.createVerticalStrut(4));
 			if (target.firstCaption != null)
@@ -3115,6 +3306,52 @@ final class CurrentSessionView extends JPanel
 		block.add(section);
 	}
 
+	/**
+	 * A reward target named by its reward ("Marks of grace [ 500 ]"): the
+	 * reward's sprite with what you own (inventory + bank; a dash until both
+	 * are known, never zero), then REMAINING and an ETA at the rate this
+	 * session actually earned it.
+	 */
+	private void addGrowingTarget(JPanel section, SlayerStatGrid grid, com.osrstelemetry.plugin.skills.SkillCompanionPanelSource source,
+		SkillCompanionModel.Target target, com.osrstelemetry.plugin.skills.SkillGoal goal, Component familyCombo, String eta)
+	{
+		javax.swing.JTextField quantity = skillNumberField(SC_TARGET_QUANTITY_NAME, goal.getTargetQuantity(), 7, 1,
+			com.osrstelemetry.plugin.skills.SkillGoal.MAX_QUANTITY, "How many " + target.promptNoun + ": type an amount and press Enter",
+			q -> goal.withResource(target.resource.getItemId()).withTargetQuantity(q));
+		section.add(pestRow(familyCombo, quantity));
+		section.add(Box.createVerticalStrut(3));
+		String owned = (target.firstText == null ? "\u2014" : target.firstText) + " owned";
+		section.add(new SkillItemGrid(SC_TARGET_SPRITE_NAME, null, java.util.Collections.singletonList(
+			com.osrstelemetry.plugin.skills.SkillCompanionView.ItemStat.line(target.resource.getItemId(), target.resource.getName(), owned,
+				target.resource.getName() + ": " + target.firstTooltip)), itemManager));
+		section.add(Box.createVerticalStrut(3));
+		grid.addCell(SC_REMAINING_CELL, target.remainingText, SpyglassTheme.ACCENT_GOLD,
+			"Still to get to reach " + formatNumber(goal.getTargetQuantity()));
+		grid.addCell(SC_ETA_CELL, target.reached ? "Done" : eta, SpyglassTheme.TEXT_PRIMARY, target.reached
+			? "You already own that many"
+			: eta == null ? "At the rate this session actually earns " + target.resource.getShortName().toLowerCase(java.util.Locale.ROOT)
+				+ " on this course -- appears after 5 minutes and two of them (never a wiki rate)"
+				: "At the rate this session actually earned them on this course");
+		section.add(grid);
+	}
+
+	/**
+	 * The resource target's name in the picker: the definition's own
+	 * ("Marks of grace"), else the method's one resource ("Iron ore"), else
+	 * "Resource" when the method has several (the resource picker names it) --
+	 * never the internal word "Stockpile".
+	 */
+	static String resourceTargetLabel(com.osrstelemetry.plugin.skills.SkillCompanionDefinition def, String methodKey)
+	{
+		String own = def.resourceTargetLabel(methodKey);
+		if (own != null)
+		{
+			return own;
+		}
+		List<com.osrstelemetry.plugin.skills.SkillResource> resources = def.stockpileResources(methodKey);
+		return resources.size() == 1 ? resources.get(0).getName() : "Resource";
+	}
+
 	/** Package-private so tests drive the target exactly as a dropdown / prompt does. Planning state only. */
 	void selectSkillGoal(com.osrstelemetry.plugin.skills.SkillGoal goal)
 	{
@@ -3130,20 +3367,67 @@ final class CurrentSessionView extends JPanel
 		}
 	}
 
-	private void askSkillNumber(String prompt, int current, int min, int max,
+	/** A target number field is being typed into: render() must not rebuild it away (see render). */
+	private boolean skillFieldEditing;
+
+	/**
+	 * A direct number entry ("Level [ 99 ]"): click, type, Enter commits --
+	 * clamped to [min, max]; anything that is not a number changes nothing.
+	 * No dialog. Leaving the field without Enter keeps the saved target.
+	 */
+	private javax.swing.JTextField skillNumberField(String name, int current, int columns, int min, int max, String tooltip,
 		java.util.function.IntFunction<com.osrstelemetry.plugin.skills.SkillGoal> change)
 	{
-		Object answer = javax.swing.JOptionPane.showInputDialog(this, prompt, "Target",
-			javax.swing.JOptionPane.PLAIN_MESSAGE, null, null, String.valueOf(current));
-		Integer value = parseSkillNumber(answer == null ? null : answer.toString(), min, max);
+		javax.swing.JTextField field = new javax.swing.JTextField(String.valueOf(current), columns)
+		{
+			@Override
+			public Dimension getMaximumSize()
+			{
+				return getPreferredSize();
+			}
+		};
+		field.setName(name);
+		field.setFont(SpyglassFonts.small());
+		field.setForeground(SpyglassTheme.ACCENT_GOLD);
+		field.setHorizontalAlignment(javax.swing.JTextField.CENTER);
+		field.setToolTipText(tooltip);
+		field.addFocusListener(new java.awt.event.FocusAdapter()
+		{
+			@Override
+			public void focusGained(java.awt.event.FocusEvent e)
+			{
+				skillFieldEditing = true;
+				field.selectAll();
+			}
+
+			@Override
+			public void focusLost(java.awt.event.FocusEvent e)
+			{
+				skillFieldEditing = false;
+				javax.swing.SwingUtilities.invokeLater(() -> rerenderIfIdle());
+			}
+		});
+		field.addActionListener(e -> commitSkillNumber(field.getText(), min, max, change));
+		return field;
+	}
+
+	/** Package-private so tests type into a target field exactly as Enter does. */
+	void commitSkillNumber(String text, int min, int max, java.util.function.IntFunction<com.osrstelemetry.plugin.skills.SkillGoal> change)
+	{
+		skillFieldEditing = false;
+		Integer value = clampSkillNumber(text, min, max);
 		if (value != null)
 		{
 			selectSkillGoal(change.apply(value));
 		}
+		else if (lastSnapshot != null)
+		{
+			render(lastSnapshot);
+		}
 	}
 
-	/** A whole number within [min, max] (commas allowed, up to 8 digits), else null. */
-	static Integer parseSkillNumber(String text, int min, int max)
+	/** A whole number (commas allowed, up to 8 digits) clamped to [min, max]; null when it is not a number. */
+	static Integer clampSkillNumber(String text, int min, int max)
 	{
 		if (text == null)
 		{
@@ -3154,8 +3438,7 @@ final class CurrentSessionView extends JPanel
 		{
 			return null;
 		}
-		int v = Integer.parseInt(t);
-		return v < min || v > max ? null : v;
+		return Math.max(min, Math.min(max, Integer.parseInt(t)));
 	}
 
 	// ---- PEST CONTROL ------------------------------------------------------------
@@ -3481,7 +3764,7 @@ final class CurrentSessionView extends JPanel
 			// the panel, and the label itself centers its text block.
 			WrappingHtmlLabel line = new WrappingHtmlLabel(detail, true);
 			line.setName(PEST_GOAL_DETAIL_NAME);
-			line.setFont(FontManager.getRunescapeSmallFont());
+			line.setFont(SpyglassFonts.small());
 			line.setForeground(plan.getProblem() != null ? SpyglassTheme.ACCENT_AMBER : SpyglassTheme.TEXT_SECONDARY);
 			line.setHorizontalAlignment(JLabel.CENTER);
 			if (plan.getOwned() != null)
@@ -3531,7 +3814,7 @@ final class CurrentSessionView extends JPanel
 	}
 
 	/** A dropdown row: the combo fills the width, an optional link sits at its right. */
-	private static JPanel pestRow(Component combo, JLabel trailing)
+	private static JPanel pestRow(Component combo, Component trailing)
 	{
 		JPanel row = new JPanel(new BorderLayout(4, 0));
 		row.setOpaque(false);
@@ -3566,7 +3849,7 @@ final class CurrentSessionView extends JPanel
 			}
 		};
 		combo.setName(name);
-		combo.setFont(FontManager.getRunescapeSmallFont());
+		combo.setFont(SpyglassFonts.small());
 		combo.setFocusable(false);
 		combo.setMaximumRowCount(Math.min(12, items.length));
 		for (PestChoice<T> c : items)
@@ -3614,7 +3897,7 @@ final class CurrentSessionView extends JPanel
 
 	private void rerenderIfIdle()
 	{
-		if (!pestPopupOpen && lastSnapshot != null)
+		if (!pestPopupOpen && !skillFieldEditing && lastSnapshot != null)
 		{
 			render(lastSnapshot);
 		}
@@ -3727,11 +4010,11 @@ final class CurrentSessionView extends JPanel
 				powerRow.setOpaque(false);
 				powerRow.setAlignmentX(Component.LEFT_ALIGNMENT);
 				JLabel label = new JLabel("Guardian Power");
-				label.setFont(FontManager.getRunescapeSmallFont());
+				label.setFont(SpyglassFonts.small());
 				label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 				JLabel value = new JLabel(game.getGuardianPowerPercent() + "%");
 				value.setName(GOTR_POWER_NAME);
-				value.setFont(FontManager.getRunescapeBoldFont());
+				value.setFont(SpyglassFonts.bold());
 				value.setForeground(SpyglassTheme.ACCENT_GOLD);
 				value.setHorizontalAlignment(JLabel.RIGHT);
 				powerRow.add(label, BorderLayout.WEST);
@@ -3918,7 +4201,7 @@ final class CurrentSessionView extends JPanel
 
 			JLabel name = new JLabel(altar.getDisplayName());
 			name.setName(GOTR_ALTAR_PREFIX + altar.name() + suffix);
-			name.setFont(FontManager.getRunescapeBoldFont());
+			name.setFont(SpyglassFonts.bold());
 			name.setForeground(marked ? SpyglassTheme.ACCENT_GOLD : locked ? SpyglassTheme.TEXT_MUTED : SpyglassTheme.TEXT_PRIMARY);
 
 			JLabel access = null;
@@ -3959,7 +4242,7 @@ final class CurrentSessionView extends JPanel
 		}
 		if (summary != null)
 		{
-			FactLine line = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+			FactLine line = new FactLine(SpyglassFonts.small(), SpyglassTheme.TEXT_SECONDARY);
 			line.setName(GOTR_ADVICE_NAME);
 			line.fact(summary, SpyglassTheme.TEXT_SECONDARY);
 			if (advice.getOutcome() == GotrAdvice.Outcome.EITHER && advice.getReason() != null)
@@ -3979,7 +4262,7 @@ final class CurrentSessionView extends JPanel
 	private static String markText(GotrAdvice.Mark mark)
 	{
 		String label = mark.getLabel();
-		return FontManager.getRunescapeSmallFont().canDisplay('★') ? label : label.replace('★', '*');
+		return SpyglassFonts.small().canDisplay('★') ? label : label.replace('★', '*');
 	}
 
 	private static String altarTooltip(GotrCandidate candidate, String detail)
@@ -4122,7 +4405,7 @@ final class CurrentSessionView extends JPanel
 	private static JLabel smallLabel(String text, Color color)
 	{
 		JLabel label = new JLabel(text);
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(color);
 		return label;
 	}
@@ -4138,10 +4421,10 @@ final class CurrentSessionView extends JPanel
 		row.setOpaque(false);
 		row.setAlignmentX(Component.LEFT_ALIGNMENT);
 		JLabel label = new JLabel(name);
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		JLabel value = new JLabel(percent + "%");
-		value.setFont(FontManager.getRunescapeSmallFont());
+		value.setFont(SpyglassFonts.small());
 		value.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		value.setHorizontalAlignment(JLabel.RIGHT);
 		row.add(label, BorderLayout.WEST);
@@ -4211,7 +4494,7 @@ final class CurrentSessionView extends JPanel
 		row.setAlignmentX(Component.LEFT_ALIGNMENT);
 		JLabel countLabel = new JLabel(CompletionMetricText.countText(label, count));
 		countLabel.setName(COMPLETION_METRIC_NAME);
-		countLabel.setFont(FontManager.getRunescapeSmallFont());
+		countLabel.setFont(SpyglassFonts.small());
 		countLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		row.add(countLabel, BorderLayout.WEST);
 		Double rate = CompletionMetricText.perHour(count, snapshot.getActiveDurationMillis());
@@ -4219,7 +4502,7 @@ final class CurrentSessionView extends JPanel
 		{
 			JLabel rateLabel = new JLabel(label + "/hr: " + String.format(java.util.Locale.ROOT, "%.1f", rate));
 			rateLabel.setName(COMPLETION_RATE_NAME);
-			rateLabel.setFont(FontManager.getRunescapeSmallFont());
+			rateLabel.setFont(SpyglassFonts.small());
 			rateLabel.setForeground(SpyglassTheme.TEXT_SECONDARY);
 			rateLabel.setHorizontalAlignment(JLabel.RIGHT);
 			row.add(rateLabel, BorderLayout.EAST);
@@ -4231,7 +4514,7 @@ final class CurrentSessionView extends JPanel
 	private static JLabel caption(String text)
 	{
 		JLabel label = new JLabel(text.toUpperCase(java.util.Locale.ROOT));
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(SpyglassTheme.TEXT_MUTED);
 		label.setAlignmentX(Component.LEFT_ALIGNMENT);
 		return label;
@@ -4276,7 +4559,7 @@ final class CurrentSessionView extends JPanel
 		chip.setToolTipText(brother.getDisplayName() + (cleared ? ": defeated this run" : ": not yet defeated this run"));
 
 		JLabel name = new JLabel(brother.getDisplayName());
-		name.setFont(FontManager.getRunescapeSmallFont());
+		name.setFont(SpyglassFonts.small());
 		name.setForeground(cleared ? SpyglassTheme.TEXT_MUTED : SpyglassTheme.TEXT_PRIMARY);
 		chip.add(name);
 		if (cleared)
@@ -4284,7 +4567,7 @@ final class CurrentSessionView extends JPanel
 			// The RuneScape fonts have no check glyph (RuneLite's own Barrows
 			// overlay uses the default font for it too).
 			JLabel tick = new JLabel("\u2713");
-			tick.setFont(FontManager.getDefaultFont());
+			tick.setFont(SpyglassFonts.defaultFont());
 			tick.setForeground(SpyglassTheme.STATUS_SUCCESS.darker());
 			chip.add(tick);
 		}

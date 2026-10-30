@@ -37,7 +37,6 @@ public class SkillsPhase5IsolationTest
 			assertNull(n, d.inputName(1436));
 			assertTrue(n, d.isPrimaryInput(1));
 			assertTrue(n, d.cycleYields().isEmpty());
-			assertFalse(n, d.breakdownAsShares(null));
 			assertTrue(n, d.occurrenceLines(null, Collections.singletonMap("x", 1L)).isEmpty());
 			assertFalse(n, d.historyShowsProducedWithCycles());
 		}

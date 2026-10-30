@@ -92,6 +92,14 @@ public final class ProductionLedger
 	private final Map<Integer, Long> pendingBanked = new LinkedHashMap<>();
 	private final Map<Integer, Long> pendingAutoTransformed = new LinkedHashMap<>();
 	private final Map<Integer, Long> pendingConsumed = new LinkedHashMap<>();
+	/** Confirmed successes recorded so far (monotonic, never reset): a new one is ownership evidence. */
+	private long successes;
+
+	/** How many confirmed successes this ledger has recorded (monotonic; compare two reads to see a new one). */
+	public long successCount()
+	{
+		return successes;
+	}
 
 	/** One confirmed success's output (quantity > 0), landing in {@code destination}. */
 	public void produced(int itemId, long quantity, Destination destination)
@@ -102,6 +110,7 @@ public final class ProductionLedger
 		}
 		pendingProduced.merge(itemId, quantity, Long::sum);
 		(destination == Destination.STORAGE ? heldStorage : heldInventory).merge(itemId, quantity, Long::sum);
+		successes++;
 	}
 
 	/**
@@ -117,6 +126,7 @@ public final class ProductionLedger
 		}
 		pendingProduced.merge(itemId, quantity, Long::sum);
 		pendingAutoTransformed.merge(itemId, quantity, Long::sum);
+		successes++;
 	}
 
 	/**

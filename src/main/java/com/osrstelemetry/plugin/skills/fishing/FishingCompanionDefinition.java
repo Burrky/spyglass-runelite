@@ -98,6 +98,7 @@ public final class FishingCompanionDefinition implements SkillCompanionDefinitio
 		SUPPLY_NAMES.put(ItemID.PISCARILIUS_SANDWORMS, "Sandworms");
 		SUPPLY_NAMES.put(ItemID.WILDERNESS_FISHING_BAIT, "Dark fishing bait");
 		SUPPLY_NAMES.put(ItemID.BRUT_FISH_CUTS, "Fish offcuts");
+		SUPPLY_NAMES.put(ItemID.SHARK_LURE, "Shark lures");
 
 		// Longest names first so "leaping trout" wins over "trout", "karambwanji" over "karambwan".
 		List<Map.Entry<String, Integer>> byLength = new ArrayList<>(FISH_BY_NAME.entrySet());
@@ -289,6 +290,13 @@ public final class FishingCompanionDefinition implements SkillCompanionDefinitio
 	{
 		FishingMethod m = FishingMethod.fromKey(methodKey);
 		return m == null ? null : m.getRateNoun();
+	}
+
+	/** Each resource its own sprite row: what this session caught and what of it reached the bank. */
+	@Override
+	public List<String> productionColumns(String methodKey)
+	{
+		return java.util.Arrays.asList("CAUGHT", "BANKED");
 	}
 
 	@Override

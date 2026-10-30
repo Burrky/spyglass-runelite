@@ -72,6 +72,16 @@ public interface SkillCompanionDefinition
 	/** History title for the produced-items grid ("Mined"). */
 	String producedTitle();
 
+	/**
+	 * ADDED (pass 28): the History output group an item belongs to, so one
+	 * session's outputs are shown in separate grids (e.g. intermediate and
+	 * final outputs); null = the one {@link #producedTitle} grid.
+	 */
+	default String producedGroup(int itemId)
+	{
+		return null;
+	}
+
 	/** Resources a STOCKPILE target may name for this method (reliably identified, produced and banked). */
 	List<SkillResource> stockpileResources(String methodKey);
 
@@ -350,12 +360,6 @@ public interface SkillCompanionDefinition
 		return java.util.Collections.emptyList();
 	}
 
-	/** Whether the production breakdown of {@code methodKey} reads as shares of the total ("Nature 18%") rather than counts. */
-	default boolean breakdownAsShares(String methodKey)
-	{
-		return false;
-	}
-
 	/** Extra compact production lines a method derives from the session's occurrences (e.g. binds that held); none by default. */
 	default List<String> occurrenceLines(String methodKey, java.util.Map<String, Long> occurrences)
 	{
@@ -590,9 +594,133 @@ public interface SkillCompanionDefinition
 		return "Inputs this session's successes used up (only what Spyglass saw become output)";
 	}
 
-	/** Tooltip on PRODUCTION's "Also used" line (inputs that are not {@link #isPrimaryInput primary}). */
+	/**
+	 * ADDED (Skills Phase 7). Whether PRODUCTION shows its own per-hour line.
+	 * False when the SESSION section already carries the method's own rate
+	 * (a second, item-keyed rate would only repeat or blur it).
+	 */
+	default boolean productionRateLine()
+	{
+		return true;
+	}
+
+	/** Tooltip on PRODUCTION's "Also used" sprites (inputs that are not {@link #isPrimaryInput primary}). */
 	default String otherInputsTooltip()
 	{
-		return "Other inputs this session's successes used up, by exact name (never added to the main input total)";
+		return "Other inputs this session's successes used up (never added to the main input total)";
+	}
+
+	// ---- ADDED (live-QA polish) -- sprite-first item presentation; defaults keep the plain tiles ----
+
+	/**
+	 * The methods whose actions the SESSION count adds up while {@code methodKey}
+	 * is shown (each successful action once): by default only the method
+	 * itself, so a method switch shows that method's own count. A skill whose
+	 * count is session-wide (every product of every recipe of the session)
+	 * returns every such method.
+	 */
+	default java.util.Set<String> actionMethods(String methodKey, java.util.Set<String> sessionMethods)
+	{
+		return java.util.Collections.singleton(methodKey);
+	}
+
+	/** The SESSION rate's caption; null = the action caption + " / HR" (the default). */
+	default String actionRateCaption(String methodKey)
+	{
+		return null;
+	}
+
+	/** Lines under the live PRODUCTION from the session's occurrences; History keeps {@link #occurrenceLines}. */
+	default List<String> liveOccurrenceLines(String methodKey, java.util.Map<String, Long> occurrences)
+	{
+		return occurrenceLines(methodKey, occurrences);
+	}
+
+	/**
+	 * PRODUCTION's per-resource columns, e.g. MINED | BANKED: each resource is
+	 * then a sprite row with its own produced and banked numbers (and the
+	 * blended TOTAL cell appears only when resources mix). Empty (the default)
+	 * = sprite tiles of what was produced.
+	 */
+	default List<String> productionColumns(String methodKey)
+	{
+		return java.util.Collections.emptyList();
+	}
+
+	/** Whether the live PRODUCTION shows BANKED (History, targets and banking rates keep it either way). True by default. */
+	default boolean productionShowsBanked(String methodKey)
+	{
+		return true;
+	}
+
+	/** Title of PRODUCTION's sprites for the main resources when they mix; null = none (the default). */
+	default String productionItemsTitle(String methodKey)
+	{
+		return null;
+	}
+
+	/**
+	 * Whether the resource target counts what you CARRY too and grows with
+	 * the method's own output (a reward picked up while training): OWNED is
+	 * inventory + the bank, and the ETA comes from this session's observed
+	 * rate of that resource. False by default (bank stock, banked-rate ETA).
+	 */
+	default boolean targetGrowsWithProduction(String methodKey)
+	{
+		return false;
+	}
+
+	/**
+	 * Whether PRODUCTION shows the method's output as its own sprite with the
+	 * amount (no caption cell). False by default (the caption cell).
+	 */
+	default boolean productionSprites(String methodKey)
+	{
+		return false;
+	}
+
+	/**
+	 * Whether the SESSION action count IS the production's own number (one
+	 * action = one item made): then only its rate shows, as PRODUCTION's rate
+	 * line ("312 bars/hr"), and the same total is never shown twice. False by
+	 * default.
+	 */
+	default boolean actionRateInProduction(String methodKey)
+	{
+		return false;
+	}
+
+	/** Method time before the SESSION action rate is shown; the shared 5 minutes by default. */
+	default long actionRateMinMillis(String methodKey)
+	{
+		return SkillGoalPlanner.MIN_RATE_MILLIS;
+	}
+
+	/** The inputs this method's successes used, as sprites + exact counts (shown instead of input cells); none by default. */
+	default List<SkillCompanionView.ItemStat> inputItems(String methodKey, java.util.Map<String, Long> occurrences)
+	{
+		return java.util.Collections.emptyList();
+	}
+
+	/** The inputs section's title. */
+	default String inputsTitle(String methodKey)
+	{
+		return "Inputs used";
+	}
+
+	/** Whether the live panel offers a resource (stockpile) target at all. True by default. */
+	default boolean offersResourceTarget()
+	{
+		return true;
+	}
+
+	/**
+	 * The resource target's own name in the target picker ("Marks of grace")
+	 * when the method has exactly one known reward; null = the generic
+	 * "Stockpile" (the default).
+	 */
+	default String resourceTargetLabel(String methodKey)
+	{
+		return null;
 	}
 }

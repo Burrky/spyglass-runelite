@@ -579,6 +579,148 @@ public class RunecraftCompanionTrackerTest
 	}
 
 	@Test
+	public void severalCraftsInOneTrip_pouchesEmptiedBetween_areOneTrip()
+	{
+		login(PURE, 0);
+		bankOpen();
+		trip(new Object[]{27, NATURE, 54});
+		long before = trips("nature");
+		// Bank -> craft, empty pouches, craft again, empty, craft -> bank: still exactly one trip.
+		trip(new Object[]{27, NATURE, 54}, new Object[]{27, NATURE, 54}, new Object[]{12, NATURE, 24});
+		assertEquals("pouch refills never fabricate trips", before + 1, trips("nature"));
+		assertEquals(54L * 3 + 24, p(NATURE));
+	}
+
+	/** One full trip: bank close with essence, crafts (each {@code runes} set), bank open. */
+	void trip(Object[]... crafts)
+	{
+		bank.merge(PURE, 1000L, Long::sum);
+		pushBank();
+		withdraw(PURE, 27);
+		bankClose();
+		steps(10);
+		for (Object[] c : crafts)
+		{
+			inv.merge(PURE, 0L, Long::sum);
+			craft(PURE, (Integer) c[0], java.util.Arrays.copyOfRange(c, 1, c.length));
+		}
+		steps(10);
+		bankOpen();
+	}
+
+	@Test
+	public void methodTransition_ouraniaToAstralToOurania_followsTheAltar_tripsAndProductionContinue()
+	{
+		login(PURE, 0);
+		bankOpen();
+		Object[] zmi = {27, NATURE, 6, ItemID.LAWRUNE, 4, ItemID.COSMICRUNE, 9, ItemID.CHAOSRUNE, 8};
+		for (int i = 0; i < 3; i++)
+		{
+			trip(zmi);
+		}
+		assertEquals("ourania", t.getMethodKey());
+		long ouraniaTrips = trips("ourania");
+		assertTrue("Ourania trips counted: " + ouraniaTrips, ouraniaTrips >= 2);
+		for (int i = 0; i < 5; i++)
+		{
+			trip(new Object[]{27, ItemID.ASTRALRUNE, 27});
+		}
+		assertEquals("five Astral runs: the method follows the altar", "astral", t.getMethodKey());
+		assertEquals(5L * 27, p(ItemID.ASTRALRUNE));
+		assertEquals("every Astral run is one trip, the first after the switch included", 5L, trips("astral"));
+		assertEquals("Ourania's trips never absorb Astral's", ouraniaTrips, trips("ourania"));
+		for (int i = 0; i < 3; i++)
+		{
+			trip(zmi);
+		}
+		assertEquals("ourania", t.getMethodKey());
+		assertTrue(trips("ourania") > ouraniaTrips);
+	}
+
+	final Map<Integer, Long> pouch = new HashMap<>();
+
+	void pushPouch()
+	{
+		t.onRunePouch(tick, now, new HashMap<>(pouch));
+	}
+
+	/** One trip whose crafted runes go straight into the rune pouch (the game's 2023 behaviour). */
+	void pouchTrip(int rune, long qty)
+	{
+		bank.merge(PURE, 1000L, Long::sum);
+		pushBank();
+		withdraw(PURE, 27);
+		bankClose();
+		steps(10);
+		t.onSkillXp(tick, 250, now);
+		inv.merge(PURE, -27L, Long::sum);
+		pouch.merge(rune, qty, Long::sum);
+		push();
+		pushPouch();
+		steps(14);
+		bankOpen();
+	}
+
+	@Test
+	public void runesCraftedIntoTheRunePouch_areProduction_switchTheMethod_andCountTrips()
+	{
+		pouch.put(ItemID.ASTRALRUNE, 500L);
+		login(PURE, 0);
+		pushPouch();
+		bankOpen();
+		Object[] zmi = {27, NATURE, 6, ItemID.LAWRUNE, 4, ItemID.COSMICRUNE, 9, ItemID.CHAOSRUNE, 8};
+		for (int i = 0; i < 3; i++)
+		{
+			trip(zmi);
+		}
+		assertEquals("ourania", t.getMethodKey());
+		long ouraniaTrips = trips("ourania");
+		for (int i = 0; i < 5; i++)
+		{
+			pouchTrip(ItemID.ASTRALRUNE, 27);
+		}
+		assertEquals("runes that never touch the inventory still move the method", "astral", t.getMethodKey());
+		assertEquals(5L * 27, p(ItemID.ASTRALRUNE));
+		assertEquals("every Astral run is one trip, the first after the switch included", 5L, trips("astral"));
+		assertEquals(ouraniaTrips, trips("ourania"));
+		assertTrue(c(PURE) >= 5L * 27);
+		for (int i = 0; i < 3; i++)
+		{
+			trip(zmi);
+		}
+		assertEquals("back to Ourania", "ourania", t.getMethodKey());
+		assertTrue(trips("ourania") > ouraniaTrips);
+		// Another altar afterwards: plain Nature runs switch again.
+		for (int i = 0; i < 3; i++)
+		{
+			trip(new Object[]{27, NATURE, 54});
+		}
+		assertEquals("nature", t.getMethodKey());
+	}
+
+	@Test
+	public void runePouchMoves_withoutXp_areNeverProduction_orBanking()
+	{
+		pouch.put(ItemID.ASTRALRUNE, 100L);
+		login(PURE, 27);
+		pushPouch();
+		// Runes moved inventory <-> pouch, and spells cast from the pouch: no XP, nothing made.
+		inv.put(ItemID.ASTRALRUNE, 40L);
+		push();
+		step();
+		inv.put(ItemID.ASTRALRUNE, 0L);
+		pouch.merge(ItemID.ASTRALRUNE, 40L, Long::sum);
+		push();
+		pushPouch();
+		steps(3);
+		pouch.merge(ItemID.ASTRALRUNE, -2L, Long::sum);
+		pushPouch();
+		steps(3);
+		assertEquals(0L, p(ItemID.ASTRALRUNE));
+		assertTrue(banked.isEmpty());
+	}
+
+	@Test
 	public void trip_thatCraftedTwoMethods_neverCounts()
 	{
 		login(PURE, 27);
@@ -660,8 +802,6 @@ public class RunecraftCompanionTrackerTest
 		assertTrue(d.isPrimaryInput(ItemID.BLANKRUNE_DAEYALT));
 		assertFalse(d.isPrimaryInput(ItemID.EARTHRUNE));
 		assertFalse(d.tripMatters("nature"));
-		assertTrue(d.breakdownAsShares("ourania"));
-		assertFalse(d.breakdownAsShares("nature"));
 		for (RunecraftMethod m : RunecraftMethod.values())
 		{
 			assertEquals(m, RunecraftMethod.fromKey(m.getKey()));

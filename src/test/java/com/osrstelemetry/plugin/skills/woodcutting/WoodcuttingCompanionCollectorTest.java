@@ -28,6 +28,7 @@ import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.Skill;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuOptionClicked;
@@ -132,7 +133,6 @@ public class WoodcuttingCompanionCollectorTest
 	{
 		tick++;
 		now += 600;
-		wc.onWoodcuttingTick(new GameTick());
 		wc.onGameTick(new GameTick());
 	}
 
@@ -223,6 +223,66 @@ public class WoodcuttingCompanionCollectorTest
 			}
 		}
 		return q;
+	}
+
+	/**
+	 * LIVE STARTUP GUARD: the real collector on a real RuneLite EventBus. Registration
+	 * must succeed (RuneLite stops the plugin otherwise), and the Woodcutting-specific
+	 * tick / scene-loading state must reach the shared handlers through the inherited
+	 * subscriptions alone: same totals as the direct-call test, nothing thrown.
+	 */
+	@Test
+	public void realRuneLiteEventBus_registersAndDeliversTheInfernalChain()
+	{
+		net.runelite.client.eventbus.EventBus bus = new net.runelite.client.eventbus.EventBus(e ->
+		{
+			throw new AssertionError("subscriber threw", e);
+		});
+		bus.register(wc);
+		worn.put(ItemID.INFERNAL_AXE, 1L);
+		current = session("s-wc", "SKILLING", "woodcutting");
+		GameStateChanged loading = new GameStateChanged();
+		loading.setGameState(GameState.LOADING);
+		bus.post(loading);
+		bus.post(click("Chop down", "<col=ffff>Yew tree", 10822, MenuAction.GAME_OBJECT_FIRST_OPTION, null));
+		for (int i = 0; i < 9; i++)
+		{
+			wcXp += 175;
+			bus.post(new StatChanged(Skill.WOODCUTTING, wcXp, 90, 90));
+			if (i % 3 == 2)
+			{
+				fmXp += 175;
+				bus.post(new StatChanged(Skill.FIREMAKING, fmXp, 80, 80));
+			}
+			else
+			{
+				bus.post(new ChatMessage(null, ChatMessageType.SPAM, "", "You get some yew logs.", null, 0));
+				inv.merge(ItemID.YEW_LOGS, 1L, Long::sum);
+				bus.post(new ItemContainerChanged(InventoryID.INV, container(inv)));
+			}
+			busTicks(bus, 4);
+		}
+		busTicks(bus, 60);
+		long produced = 0;
+		long burned = 0;
+		for (EventPayloads.SkillProduction p : updates())
+		{
+			produced += qty(p.getProduced(), ItemID.YEW_LOGS);
+			burned += qty(p.getAutoTransformed(), ItemID.YEW_LOGS);
+		}
+		assertEquals(9L, produced);
+		assertEquals("the burning axe was seen through the inherited GameTick subscription", 3L, burned);
+		bus.unregister(wc);
+	}
+
+	private void busTicks(net.runelite.client.eventbus.EventBus bus, int n)
+	{
+		for (int i = 0; i < n; i++)
+		{
+			tick++;
+			now += 600;
+			bus.post(new GameTick());
+		}
 	}
 
 	@Test

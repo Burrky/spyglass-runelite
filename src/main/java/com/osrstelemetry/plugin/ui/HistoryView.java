@@ -24,7 +24,6 @@ import javax.swing.JPanel;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SkillIconManager;
-import net.runelite.client.ui.FontManager;
 
 /**
  * The top-level component wired into {@code OsrsTelemetryPanel}'s own
@@ -96,6 +95,10 @@ final class HistoryView extends JPanel
 	private final HistoryDetailView detailView;
 
 	private String lastRenderKey;
+	private List<HistoryEntry> lastEntries = java.util.Collections.emptyList();
+	/** Whether the short records (HistoryEligibility) are listed below the reports; per panel, not saved. */
+	private boolean showShortRecords;
+	private ActionButton shortRecordsToggle;
 	/**
 	 * The session whose detail was opened and not yet left, or null. A
 	 * detail result for any other session (a late load after Back, or from
@@ -103,6 +106,7 @@ final class HistoryView extends JPanel
 	 * session is no longer in the list (another account's list, or aged out).
 	 */
 	private String openDetailSessionId;
+	private Consumer<String> detailListener;
 
 	HistoryView(SkillIconManager skillIconManager, ItemManager itemManager, ClientThread clientThread, OsrsTelemetryConfig config, Consumer<String> onEntryOpened)
 	{
@@ -127,14 +131,17 @@ final class HistoryView extends JPanel
 	/** Called when History changed or is shown (see class javadoc) -- cheap, skips rebuilding when nothing changed. */
 	void render(List<HistoryEntry> entries)
 	{
-		String key = computeRenderKey(entries);
+		lastEntries = entries;
+		String key = (showShortRecords ? "+" : "-") + computeRenderKey(entries);
 		if (key.equals(lastRenderKey))
 		{
 			return;
 		}
 		lastRenderKey = key;
+		boolean refocus = shortRecordsToggle != null && shortRecordsToggle.isFocusOwner();
 
 		listContent.removeAll();
+		shortRecordsToggle = null;
 
 		if (entries.isEmpty())
 		{
@@ -142,15 +149,47 @@ final class HistoryView extends JPanel
 		}
 		else
 		{
-			for (HistoryEntry entry : entries)
+			// Pass 28: one shared eligibility policy, applied before anything is
+			// counted or drawn (see HistoryEligibility). Short records stay one
+			// click away and keep their own order.
+			com.osrstelemetry.plugin.history.HistoryEligibility.Split split =
+				com.osrstelemetry.plugin.history.HistoryEligibility.split(entries);
+			if (split.getReports().isEmpty())
+			{
+				renderNoReports();
+			}
+			for (HistoryEntry entry : split.getReports())
 			{
 				listContent.add(buildRow(entry));
 				listContent.add(Box.createVerticalStrut(6));
+			}
+			int hidden = split.getHidden().size();
+			if (hidden > 0)
+			{
+				shortRecordsToggle = new ActionButton(shortRecordsLabel(hidden, showShortRecords), ActionButton.Style.SECONDARY,
+					this::toggleShortRecords);
+				shortRecordsToggle.setName(SHORT_TOGGLE_NAME);
+				shortRecordsToggle.setToolTipText(SHORT_TOGGLE_TIP);
+				shortRecordsToggle.setAlignmentX(Component.LEFT_ALIGNMENT);
+				listContent.add(shortRecordsToggle);
+				if (showShortRecords)
+				{
+					listContent.add(Box.createVerticalStrut(6));
+					for (HistoryEntry entry : split.getHidden())
+					{
+						listContent.add(buildRow(entry));
+						listContent.add(Box.createVerticalStrut(6));
+					}
+				}
 			}
 		}
 
 		listContent.revalidate();
 		listContent.repaint();
+		if (refocus && shortRecordsToggle != null)
+		{
+			shortRecordsToggle.requestFocusInWindow();
+		}
 
 		if (openDetailSessionId != null && !containsSession(entries, openDetailSessionId))
 		{
@@ -172,8 +211,69 @@ final class HistoryView extends JPanel
 
 	private void showList()
 	{
+		boolean wasOpen = openDetailSessionId != null;
 		openDetailSessionId = null;
 		cardLayout.show(cards, CARD_LIST);
+		if (wasOpen)
+		{
+			notifyDetailChanged(null);
+		}
+	}
+
+	/**
+	 * Opens a session's detail exactly as clicking its row does: the loading
+	 * placeholder at once, then one lazy background load through
+	 * {@code onEntryOpened}. Also used by the panel to restore a saved
+	 * History detail route (after it has checked the session belongs to the
+	 * current account's History).
+	 */
+	void openDetail(String sessionId)
+	{
+		if (sessionId == null)
+		{
+			return;
+		}
+		openDetailSessionId = sessionId;
+		showDetailLoading();
+		if (onEntryOpened != null)
+		{
+			onEntryOpened.accept(sessionId);
+		}
+		notifyDetailChanged(sessionId);
+	}
+
+	/** Back to the list (the panel's "active section returns to its root"). No-op when no detail is open. */
+	void closeDetail()
+	{
+		if (openDetailSessionId != null)
+		{
+			showList();
+		}
+	}
+
+	/** The session whose detail is open, or null when the list is shown. */
+	String getOpenDetailSessionId()
+	{
+		return openDetailSessionId;
+	}
+
+	/**
+	 * EDT: told the open detail's session id whenever a detail opens, and
+	 * null whenever an open detail closes (Back, or its session left the
+	 * current account's list). The panel keeps its navigation route in step.
+	 */
+	void setDetailListener(Consumer<String> listener)
+	{
+		this.detailListener = listener;
+	}
+
+	private void notifyDetailChanged(String sessionId)
+	{
+		Consumer<String> listener = detailListener;
+		if (listener != null)
+		{
+			listener.accept(sessionId);
+		}
 	}
 
 	/**
@@ -216,6 +316,12 @@ final class HistoryView extends JPanel
 	/** Called once OsrsTelemetryPanel's background loadDetail() call completes with a real Session. */
 	void showDetail(Session session)
 	{
+		showDetail(session, java.util.Collections.emptyList());
+	}
+
+	/** With the farm runs the background load found for a Farming session. */
+	void showDetail(Session session, java.util.List<com.osrstelemetry.plugin.farming.FarmingRunHistory.Record> runs)
+	{
 		if (openDetailSessionId == null || (session != null && !openDetailSessionId.equals(session.getSessionId())))
 		{
 			// Stale result: the player went Back, opened another session, or
@@ -228,7 +334,7 @@ final class HistoryView extends JPanel
 			showDetailUnavailable();
 			return;
 		}
-		detailView.render(model);
+		detailView.render(model.withFarmingRuns(runs));
 		cardLayout.show(cards, CARD_DETAIL);
 	}
 
@@ -243,20 +349,52 @@ final class HistoryView extends JPanel
 		cardLayout.show(cards, CARD_DETAIL);
 	}
 
+	static final String SHORT_TOGGLE_NAME = "historyShortRecords";
+	static final String SHORT_TOGGLE_TIP = "Short records: brief sessions with little activity (no completion or boss kill, fewer than 3 kills or drops, under 5 minutes). Nothing is deleted.";
+	static final String NO_REPORTS_TEXT = "No reports yet: only short records so far.";
+
+	/** "Show 12 short records" / "Hide short records". */
+	static String shortRecordsLabel(int hidden, boolean shown)
+	{
+		return shown ? "Hide short records" : "Show " + hidden + (hidden == 1 ? " short record" : " short records");
+	}
+
+	/** The secondary control (Space/Enter or click): lists or hides the short records. */
+	void toggleShortRecords()
+	{
+		showShortRecords = !showShortRecords;
+		render(lastEntries);
+	}
+
+	boolean isShowingShortRecords()
+	{
+		return showShortRecords;
+	}
+
+	private void renderNoReports()
+	{
+		JLabel text = new WrappingHtmlLabel(NO_REPORTS_TEXT, false);
+		text.setFont(SpyglassFonts.small());
+		text.setForeground(SpyglassTheme.TEXT_SECONDARY);
+		text.setAlignmentX(Component.LEFT_ALIGNMENT);
+		listContent.add(text);
+		listContent.add(Box.createVerticalStrut(6));
+	}
+
 	static final String EMPTY_TITLE = "No sessions yet";
 	static final String EMPTY_TEXT = "Finished sessions from the last 10 days appear here automatically.";
 
 	private void renderEmptyState()
 	{
 		JLabel title = new JLabel(EMPTY_TITLE);
-		title.setFont(FontManager.getRunescapeBoldFont());
+		title.setFont(SpyglassFonts.bold());
 		title.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
 		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
 		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
 		JLabel subtitle = new WrappingHtmlLabel(EMPTY_TEXT, true);
-		subtitle.setFont(FontManager.getRunescapeSmallFont());
+		subtitle.setFont(SpyglassFonts.small());
 		subtitle.setForeground(SpyglassTheme.TEXT_SECONDARY);
 		subtitle.setAlignmentX(Component.CENTER_ALIGNMENT);
 
@@ -307,7 +445,7 @@ final class HistoryView extends JPanel
 
 		JLabel headlineLabel = new JLabel(headline);
 		headlineLabel.setName(ROW_TITLE_NAME);
-		headlineLabel.setFont(FontManager.getRunescapeBoldFont());
+		headlineLabel.setFont(SpyglassFonts.bold());
 		headlineLabel.setForeground(SpyglassTheme.TEXT_PRIMARY);
 		headlineLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		textColumn.add(headlineLabel);
@@ -316,7 +454,7 @@ final class HistoryView extends JPanel
 		// instead of one long line that was truncated at every sidebar width.
 		// Plain-label FactLines, not HTML: see FactLine's javadoc (cost).
 		// Line 1 -- when, and for how long.
-		FactLine whenLine = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		FactLine whenLine = new FactLine(SpyglassFonts.small(), SpyglassTheme.TEXT_SECONDARY);
 		whenLine.setName(ROW_WHEN_NAME);
 		String compactWhen = formatCompact(entry.getFinalizedAt());
 		if (compactWhen != null)
@@ -327,7 +465,7 @@ final class HistoryView extends JPanel
 		textColumn.add(whenLine);
 
 		// Line 2 -- what it produced: task/game count first, then XP and drops.
-		FactLine statsLine = new FactLine(FontManager.getRunescapeSmallFont(), SpyglassTheme.TEXT_SECONDARY);
+		FactLine statsLine = new FactLine(SpyglassFonts.small(), SpyglassTheme.TEXT_SECONDARY);
 		statsLine.setName(ROW_STATS_NAME);
 		if (entry.getSlayerAssignmentCount() > 1)
 		{
@@ -381,7 +519,7 @@ final class HistoryView extends JPanel
 		}
 		if (entry.getLootDropCount() > 0)
 		{
-			statsLine.fact(entry.getLootDropCount() + (entry.getLootDropCount() == 1 ? " drop" : " drops"));
+			statsLine.fact(formatNumber(entry.getLootDropCount()) + (entry.getLootDropCount() == 1 ? " drop" : " drops"));
 		}
 		if (!statsLine.isEmpty())
 		{
@@ -396,20 +534,12 @@ final class HistoryView extends JPanel
 		row.add(textColumn, BorderLayout.CENTER);
 
 		JLabel chevron = new JLabel("›");
-		chevron.setFont(FontManager.getRunescapeBoldFont());
+		chevron.setFont(SpyglassFonts.bold());
 		chevron.setForeground(SpyglassTheme.TEXT_MUTED);
 		row.add(chevron, BorderLayout.EAST);
 
 		String sessionId = entry.getSessionId();
-		row.addMouseListener(new ClickListener(() ->
-		{
-			openDetailSessionId = sessionId;
-			showDetailLoading();
-			if (onEntryOpened != null)
-			{
-				onEntryOpened.accept(sessionId);
-			}
-		}));
+		row.addMouseListener(new ClickListener(() -> openDetail(sessionId)));
 
 		// Raised-surface hover feedback (background AND border lift
 		// together) while the cursor is over a row, reverting to the

@@ -134,6 +134,45 @@ public final class HerbloreCompanionTracker implements SkillTracker
 	private long lastChargeDropAt = Long.MIN_VALUE;
 	private boolean chargesValidated;
 	private long revision;
+	/** When the worn amulet of chemistry crumbled (the game's own line); Long.MIN_VALUE = not since it was last worn. */
+	private long chemistryCrumbledAt = Long.MIN_VALUE;
+	/** Herblore XP each recipe's single unit actually gave (mixes, or doses for dose-keeping recipes), from clean samples. */
+	private final Map<String, XpSample> xpPerUnit = new HashMap<>();
+
+	/** The amulet of chemistry's last-charge line. */
+	static final java.util.regex.Pattern CHEMISTRY_CRUMBLED = java.util.regex.Pattern.compile("(?i)amulet of chemistry.*crumbles");
+	/** The crumbled-amulet warning stays at most this long (it also clears once a dose-adding amulet is worn again). */
+	static final long CHEMISTRY_WARNING_MILLIS = 15 * 60_000L;
+
+	/**
+	 * Herblore XP per unit of one recipe, only from ticks where that recipe
+	 * alone produced and its XP arrived on the same tick. Trusted once two
+	 * samples agree within 10% (a shared or split XP drop never agrees).
+	 */
+	static final class XpSample
+	{
+		long xp;
+		long units;
+		int samples;
+		double min = Double.MAX_VALUE;
+		double max;
+
+		void add(long xpGained, long unitsMade)
+		{
+			double per = xpGained / (double) unitsMade;
+			xp += xpGained;
+			units += unitsMade;
+			samples++;
+			min = Math.min(min, per);
+			max = Math.max(max, per);
+		}
+
+		/** Null until trusted. */
+		Double perUnit()
+		{
+			return samples >= 2 && units > 0 && max <= min * 1.10 ? xp / (double) units : null;
+		}
+	}
 
 	// ---- inputs -------------------------------------------------------------------------------
 
@@ -149,6 +188,11 @@ public final class HerbloreCompanionTracker implements SkillTracker
 	@Override
 	public void onChat(int tick, long nowMillis, String message)
 	{
+		if (message != null && CHEMISTRY_CRUMBLED.matcher(message).find())
+		{
+			chemistryCrumbledAt = nowMillis;
+			revision++;
+		}
 	}
 
 	/** Every item worn right now (ids). */
@@ -158,6 +202,11 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		if (!next.equals(worn))
 		{
 			worn = next;
+			if (containsAny(worn, HerbloreRecipes.BONUS_AMULETS))
+			{
+				// A dose-adding amulet is worn again: the crumbled warning is over.
+				chemistryCrumbledAt = Long.MIN_VALUE;
+			}
 			revision++;
 		}
 	}
@@ -357,9 +406,23 @@ public final class HerbloreCompanionTracker implements SkillTracker
 			}
 		}
 		Set<Integer> claimed = new HashSet<>();
+		HerbloreRecipe only = null;
+		long onlyUnits = 0L;
+		int mixed = 0;
 		for (HerbloreRecipe r : candidates(b.invNet))
 		{
-			mix(r, b, xpNear, claimed);
+			long units = mix(r, b, xpNear, claimed);
+			if (units > 0)
+			{
+				mixed++;
+				only = r;
+				onlyUnits = units;
+			}
+		}
+		if (mixed == 1 && b.xp > 0)
+		{
+			// One recipe alone, its XP on the same tick: a clean sample of what one unit is worth.
+			xpPerUnit.computeIfAbsent(only.getKey(), k -> new XpSample()).add(b.xp, onlyUnits);
 		}
 		forgetRemoved(b.invNet);
 	}
@@ -378,8 +441,12 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		return new ArrayList<>(out);
 	}
 
-	/** One recipe's mixes on this tick, when (and only when) the causal evidence holds. */
-	private void mix(HerbloreRecipe r, Bucket b, long xpNear, Set<Integer> claimed)
+	/**
+	 * One recipe's mixes on this tick, when (and only when) the causal evidence
+	 * holds. Returns the units made (mixes, or the base potion's doses for a
+	 * dose-keeping recipe); 0 = none.
+	 */
+	private long mix(HerbloreRecipe r, Bucket b, long xpNear, Set<Integer> claimed)
 	{
 		Map<Integer, Long> net = b.invNet;
 		HerbloreRecipe.Input primary = r.primary();
@@ -396,7 +463,7 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		}
 		if (primaryItems <= 0 || (r.isXpRequired() && xpNear <= 0))
 		{
-			return;
+			return 0L;
 		}
 		long gainedItems = 0L;
 		long netUnits = 0L;
@@ -411,7 +478,7 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		}
 		if (gainedItems <= 0 || netUnits <= 0)
 		{
-			return;
+			return 0L;
 		}
 		long mixes = Math.min(primaryItems, gainedItems);
 
@@ -484,6 +551,7 @@ public final class HerbloreCompanionTracker implements SkillTracker
 			revision++;
 		}
 		revision++;
+		return r.preservesDoses() ? primaryUnits : mixes;
 	}
 
 	/**
@@ -755,17 +823,28 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		{
 			boolean atLeast = pouch && batch.secondaryLimited;
 			String value = (atLeast ? "≥ " : "") + fmt(batch.amount) + (r.preservesDoses() ? " doses" : "");
-			fields.add(new SkillCompanionView.EventView.Field("CAN MAKE", value, r.preservesDoses()
-				? "Doses of " + r.getName() + " what you carry can still become (the limiting ingredient decides)"
-				: "Mixes what you carry can still make (the limiting ingredient decides)"));
-			Long potential = accountPotential(r);
-			if (potential != null && potential > batch.amount)
+			int limiting = -1;
+			for (int i = 0; i < fields.size(); i++)
 			{
-				lines.add(new SkillCompanionView.ContextLine("Account potential: " + fmt(potential) + (r.preservesDoses() ? " doses" : ""),
-					SkillCompanionView.ContextLine.Tone.QUIET,
-					"What your inventory, your bank (as seen this login) and Potion Storage (when read this login) could make in all"
-						+ (r.getProcess() == HerbloreProcess.FINISHED_POTION ? ", herbs and vials of water counted as unfinished potions" : "")
-						+ " -- planning only, never part of the session"));
+				if (fields.get(i).getValue().equals(value))
+				{
+					limiting = i;
+					break;
+				}
+			}
+			if (limiting >= 0 && batch.amount > 0)
+			{
+				// Pass 28: CAN MAKE would repeat the limiting input's own count
+				// (one of each per mix): that input says it instead.
+				SkillCompanionView.EventView.Field f = fields.get(limiting);
+				fields.set(limiting, new SkillCompanionView.EventView.Field(f.getCaption(), f.getValue(),
+					f.getTooltip() + ". This one runs out first: you can make " + fmt(batch.amount) + " more"));
+			}
+			else
+			{
+				fields.add(new SkillCompanionView.EventView.Field("CAN MAKE", value, r.preservesDoses()
+					? "Doses of " + r.getName() + " what you carry can still become (the limiting ingredient decides)"
+					: "Mixes what you carry can still make (the limiting ingredient decides)"));
 			}
 		}
 		if (pouch)
@@ -776,7 +855,9 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		Integer charges = validatedAlchemistCharges();
 		if (charges != null && r.isBonusEligible())
 		{
-			lines.add(new SkillCompanionView.ContextLine("Alchemist's amulet: " + fmt(charges) + " charges", SkillCompanionView.ContextLine.Tone.QUIET,
+			lines.add(new SkillCompanionView.ContextLine(charges == 0 ? "Alchemist's amulet: no charges left"
+				: "Alchemist's amulet: " + fmt(charges) + (charges == 1 ? " charge" : " charges"),
+				charges == 0 ? SkillCompanionView.ContextLine.Tone.ALERT : SkillCompanionView.ContextLine.Tone.QUIET,
 				"The amulet's own charge counter (the game's), shown once it moved with a bonus dose Spyglass saw"));
 		}
 		return new SkillCompanionView.EventView("batch", null, 0L, fields, lines).withTitle("Current batch");
@@ -844,20 +925,18 @@ public final class HerbloreCompanionTracker implements SkillTracker
 	}
 
 	/**
-	 * ACCOUNT POTENTIAL (planning only): the same limiting-ingredient rule over
-	 * inventory + the bank as seen THIS login (never a saved snapshot that may
-	 * already include what you carry) + Potion Storage read this login. For a
-	 * finished potion, herbs (clean or grimy) and vials of water count as
-	 * unfinished potions too. Null when the bank was not seen this login.
+	 * What the bank holds as seen THIS login (never a saved snapshot), plus
+	 * Potion Storage when it was read this login (as units of each family's
+	 * 1-unit member); null when the bank was not seen this login. Never the
+	 * inventory: what you carry is CURRENT BATCH's.
 	 */
-	Long accountPotential(HerbloreRecipe r)
+	Map<Integer, Long> bankHoldings()
 	{
-		if (lastBank == null || lastInventory == null)
+		if (lastBank == null)
 		{
 			return null;
 		}
-		Map<Integer, Long> all = new HashMap<>(lastInventory);
-		lastBank.forEach((k, v) -> all.merge(k, v, Long::sum));
+		Map<Integer, Long> all = new HashMap<>(lastBank);
 		if (liveStorage != null)
 		{
 			for (Map.Entry<String, Long> s : liveStorage.entrySet())
@@ -865,7 +944,6 @@ public final class HerbloreCompanionTracker implements SkillTracker
 				UnitFamily f = HerbloreRecipes.family(s.getKey());
 				if (f != null && s.getValue() > 0)
 				{
-					// As units of the family's single-unit view: doses for potions, quantity for undosed ones.
 					int one = smallestMember(f);
 					if (one > 0)
 					{
@@ -874,46 +952,96 @@ public final class HerbloreCompanionTracker implements SkillTracker
 				}
 			}
 		}
-		if (r.getProcess() == HerbloreProcess.FINISHED_POTION)
+		return all;
+	}
+
+	/** What the current recipe's own inputs in the bank (and Potion Storage) can make; null when unknown. */
+	Batch bankCanMake(HerbloreRecipe r)
+	{
+		Map<Integer, Long> held = bankHoldings();
+		return held == null || r == null || !r.isBatchReliable() ? null : canMake(r, held);
+	}
+
+	/** Herblore XP one unit of {@code r} gave this session (two agreeing samples); null = not known yet. */
+	Double xpPerUnit(HerbloreRecipe r)
+	{
+		XpSample sample = r == null ? null : xpPerUnit.get(r.getKey());
+		return sample == null ? null : sample.perUnit();
+	}
+
+	/**
+	 * IN BANK (planning only, never part of the session): each input of the
+	 * current recipe as its sprite with what the bank and Potion Storage hold
+	 * ("-" until the bank is seen this login -- never zero), then what that
+	 * can make (the scarcest input decides) and the XP it would give at the
+	 * XP each one actually gave this session. Absent for herb cleaning, before
+	 * a recipe is known and inside Mastering Mixology.
+	 */
+	@Override
+	public SkillCompanionView.EventView stock(long nowMillis)
+	{
+		HerbloreRecipe r = HerbloreRecipes.recipe(methods.getCurrent());
+		if (r == null || r.getProcess() == HerbloreProcess.CLEANING || inMixology(nowMillis))
 		{
-			HerbloreRecipe.Input primary = r.primary();
-			for (Integer unfItem : primary.getItems().keySet())
+			return null;
+		}
+		Map<Integer, Long> held = bankHoldings();
+		// A potion input can also sit in Potion Storage: until it was read this login the count is only a floor.
+		boolean floor = false;
+		List<SkillCompanionView.ItemStat> items = new ArrayList<>();
+		for (HerbloreRecipe.Input in : r.getInputs())
+		{
+			boolean partial = in.isDosed() && liveStorage == null;
+			floor |= partial && held != null;
+			String count = held == null ? "\u2014" : (partial ? "\u2265 " : "") + fmt(in.available(held)) + (in.isDosed() ? " doses" : "");
+			items.add(SkillCompanionView.ItemStat.line(spriteOf(in), in.getName(), in.getCaption() + "  " + count,
+				in.getName() + (held == null ? ": open your bank to count it"
+					: ": " + count + " in your bank" + (in.isDosed() ? (partial ? " (Potion Storage not read yet)" : " and Potion Storage") : ""))));
+		}
+		List<SkillCompanionView.ContextLine> lines = new ArrayList<>();
+		if (held == null)
+		{
+			lines.add(new SkillCompanionView.ContextLine("Open your bank to count your supplies", SkillCompanionView.ContextLine.Tone.QUIET,
+				"Spyglass counts what your bank holds only once it was seen this login"));
+		}
+		else
+		{
+			Batch b = bankCanMake(r);
+			if (b != null)
 			{
-				for (HerbloreRecipe unfRecipe : HerbloreRecipes.producing(unfItem))
+				String unit = r.preservesDoses() ? " doses" : "";
+				lines.add(new SkillCompanionView.ContextLine("Bank can make: " + (floor ? "\u2265 " : "") + fmt(b.amount) + unit,
+					SkillCompanionView.ContextLine.Tone.NORMAL,
+					"What your bank's " + r.getName() + " ingredients can still make -- the scarcest one decides (what you carry is not included)"));
+				Double perUnit = xpPerUnit(r);
+				if (perUnit != null && b.amount > 0)
 				{
-					if (unfRecipe.getProcess() != HerbloreProcess.UNFINISHED_POTION)
-					{
-						continue;
-					}
-					long herbs = 0L;
-					long vials = 0L;
-					for (HerbloreRecipe.Input in : unfRecipe.getInputs())
-					{
-						if (in.getRole() == HerbloreRecipe.Role.PRIMARY)
-						{
-							herbs += in.available(all);
-							for (Integer herb : in.getItems().keySet())
-							{
-								for (HerbloreRecipe c : HerbloreRecipes.producing(herb))
-								{
-									if (c.getProcess() == HerbloreProcess.CLEANING)
-									{
-										herbs += c.primary().available(all);
-									}
-								}
-							}
-						}
-						else if (in.getRole() == HerbloreRecipe.Role.VIAL)
-						{
-							vials += in.available(all);
-						}
-					}
-					all.merge(unfItem, Math.min(herbs, vials), Long::sum);
+					lines.add(new SkillCompanionView.ContextLine("Potential XP: " + (floor ? "\u2265 " : "") + fmt(Math.round(b.amount * perUnit)),
+						SkillCompanionView.ContextLine.Tone.NORMAL,
+						"That many " + (r.preservesDoses() ? "doses" : "potions") + " at the Herblore XP each one actually gave you this session"));
 				}
 			}
 		}
-		Batch b = canMake(r, all);
-		return b == null ? null : b.amount;
+		return new SkillCompanionView.EventView("bank", null, 0L, Collections.<SkillCompanionView.EventView.Field>emptyList(), lines)
+			.withTitle("In bank")
+			.withItemGroups(Collections.singletonList(new SkillCompanionView.ItemGroup(null, null, items)));
+	}
+
+	/** The sprite for an input: a potion's 1-dose variant, else its first item. */
+	private static int spriteOf(HerbloreRecipe.Input in)
+	{
+		int best = -1;
+		int bestDoses = Integer.MAX_VALUE;
+		for (Map.Entry<Integer, Integer> e : in.getItems().entrySet())
+		{
+			int doses = in.isDosed() ? e.getValue() : 0;
+			if (best < 0 || doses < bestDoses)
+			{
+				best = e.getKey();
+				bestDoses = doses;
+			}
+		}
+		return best;
 	}
 
 	/** The family's 1-unit member (for dose families the 1-dose item), else its only member. */
@@ -940,6 +1068,13 @@ public final class HerbloreCompanionTracker implements SkillTracker
 			return Collections.singletonList(new SkillCompanionView.ContextLine("Mastering Mixology: its own activity",
 				SkillCompanionView.ContextLine.Tone.QUIET,
 				"Mixology's pastes, potions and rewards are never counted as recipes, batches or stockpile here"));
+		}
+		HerbloreRecipe r = HerbloreRecipes.recipe(methods.getCurrent());
+		if (chemistryCrumbledAt != Long.MIN_VALUE && nowMillis - chemistryCrumbledAt <= CHEMISTRY_WARNING_MILLIS
+			&& r != null && r.isBonusEligible() && !containsAny(worn, HerbloreRecipes.BONUS_AMULETS))
+		{
+			return Collections.singletonList(new SkillCompanionView.ContextLine("Amulet of chemistry crumbled", SkillCompanionView.ContextLine.Tone.ALERT,
+				"Your amulet of chemistry used its last charge (the game said so): no bonus doses until you wear another"));
 		}
 		return Collections.emptyList();
 	}
@@ -968,6 +1103,8 @@ public final class HerbloreCompanionTracker implements SkillTracker
 		lastChargeDrop = 0L;
 		lastChargeDropAt = Long.MIN_VALUE;
 		chargesValidated = false;
+		chemistryCrumbledAt = Long.MIN_VALUE;
+		xpPerUnit.clear();
 		revision++;
 	}
 

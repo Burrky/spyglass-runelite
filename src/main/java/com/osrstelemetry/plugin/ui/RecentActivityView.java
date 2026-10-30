@@ -5,7 +5,6 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
 import net.runelite.client.ui.ColorScheme;
-import net.runelite.client.ui.FontManager;
 
 /**
  * Placeholder-only view -- Recent Activity persistence/aggregation is
@@ -22,7 +21,7 @@ final class RecentActivityView extends JPanel
 		// Wraps to the ACTUAL available width -- see WrappingHtmlLabel's
 		// javadoc (the old fixed CSS width:180px was ~233px in Swing and clipped).
 		JLabel label = new WrappingHtmlLabel("Recent Activity is coming soon.", true);
-		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setFont(SpyglassFonts.small());
 		label.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
 		label.setHorizontalAlignment(SwingConstants.CENTER);
 

@@ -75,7 +75,9 @@ public class SkillsPhase4IsolationTest
 		assertNull(m.event);
 		assertNull(m.secondary);
 		assertNull(m.production.autoTransformedLine);
-		assertEquals("gems stay Mining's own by-product line", "Gems: Sapphire 3", m.production.byproducts.get(0));
+		assertEquals("gems stay Mining's own by-product group", "Gems", m.production.itemGroups.get(0).getTitle());
+		assertEquals(1623, m.production.itemGroups.get(0).getItems().get(0).getItemId());
+		assertEquals(Long.valueOf(3L), m.production.itemGroups.get(0).getItems().get(0).getValues().get(0));
 	}
 
 	static final class MiningSource implements com.osrstelemetry.plugin.skills.SkillCompanionPanelSource

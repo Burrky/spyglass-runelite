@@ -238,6 +238,71 @@ public class AgilityCompanionTrackerTest
 		assertEquals("the portal's shard", 1L, s.produced(ItemID.PRIF_CRYSTAL_SHARD));
 	}
 
+	/** Live QA: 4 -> 6 jumps and "10/12 while effectively complete" on Prifddinas, from clicking ahead. */
+	@Test
+	public void prifddinas_clickingAhead_andAMisclick_neverSkipOrJump_lastObstacleIsElevenOfTwelve()
+	{
+		AgilitySim s = new AgilitySim();
+		s.t.onObjectClick(s.tick, s.now, id(PRIF, 0));
+		s.steps(3);
+		int previous = 0;
+		for (int i = 0; i < 11; i++)
+		{
+			if (i == 6)
+			{
+				// A misclick on an obstacle far ahead: waits for its own XP, never credited now.
+				s.t.onObjectClick(s.tick, s.now, id(PRIF, 9));
+			}
+			s.t.onObjectClick(s.tick, s.now, id(PRIF, i + 1));
+			s.steps(1);
+			if (!PRIF.getNodes().get(i).isXpless())
+			{
+				s.t.onSkillXp(s.tick, 40, s.now);
+			}
+			s.steps(2);
+			int progress = s.t.cycle(s.now).getProgress();
+			assertTrue("never a jump of two except the clicked-ahead ladder: " + previous + " -> " + progress,
+				progress - previous <= (i + 1 < 12 && PRIF.getNodes().get(i + 1).isXpless() ? 2 : 1));
+			assertTrue("never ahead of the obstacles really passed", progress <= i + 2);
+			previous = progress;
+		}
+		assertEquals("the last obstacle still to go: 11 of 12", 11, s.t.cycle(s.now).getProgress());
+		assertEquals(Integer.valueOf(12), s.t.cycle(s.now).getDenominator());
+		AgilityCourse.Tile end = PRIF.getEndTiles().get(0);
+		s.at(end.getX(), end.getY(), end.getPlane());
+		s.t.onSkillXp(s.tick, 100, s.now);
+		s.steps(2);
+		s.settle();
+		assertEquals(1L, s.laps(PRIF));
+	}
+
+	@Test
+	public void carried_isTheRewardsInTheInventory_unknownBeforeItIsRead()
+	{
+		AgilityCompanionTracker fresh = new AgilityCompanionTracker();
+		assertNull("never read: unknown, not zero", fresh.carried());
+		AgilitySim s = new AgilitySim();
+		s.inv.put(ItemID.GRACE, 14L);
+		s.inv.put(ItemID.LOBSTER, 6L);
+		s.t.onInventory(s.tick, s.now, new java.util.HashMap<>(s.inv), 2);
+		assertEquals(java.util.Collections.singletonMap(ItemID.GRACE, 14L), s.t.carried());
+	}
+
+	@Test
+	public void worldHopMidLap_neverALapAcrossIt_theNextFullLapCounts()
+	{
+		AgilitySim s = new AgilitySim();
+		obstacles(s, SEERS, 0, 3);
+		s.t.onLogout();
+		obstacles(s, SEERS, 3, SEERS.getNodes().size() - 1);
+		s.finish(SEERS, id(SEERS, SEERS.getNodes().size() - 1));
+		s.settle();
+		assertEquals("the hop broke that lap: never counted", 0L, s.laps(SEERS));
+		s.lap(SEERS);
+		s.settle();
+		assertEquals(1L, s.laps(SEERS));
+	}
+
 	@Test
 	public void prifddinas_shardWithoutAPortal_isNeverCounted()
 	{

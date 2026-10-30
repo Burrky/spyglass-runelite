@@ -154,6 +154,21 @@ public final class AgilityCompanionDefinition implements SkillCompanionDefinitio
 		return false;
 	}
 
+	/** The target is named by the course's reward ("Marks of grace", "Crystal shards", "Termites"), never "Stockpile". */
+	@Override
+	public String resourceTargetLabel(String methodKey)
+	{
+		AgilityCourse.Reward r = rewardOf(methodKey);
+		return r == null ? null : r.getShortName();
+	}
+
+	/** A reward is picked up while running: OWNED is inventory + bank, the ETA this session's own reward rate. */
+	@Override
+	public boolean targetGrowsWithProduction(String methodKey)
+	{
+		return true;
+	}
+
 	@Override
 	public String stockpileEmptyHint()
 	{

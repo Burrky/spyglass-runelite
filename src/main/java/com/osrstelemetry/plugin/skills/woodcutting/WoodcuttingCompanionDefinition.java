@@ -288,6 +288,13 @@ public final class WoodcuttingCompanionDefinition implements SkillCompanionDefin
 		return m == WoodcuttingMethod.SULLIUSCEP ? "mushrooms" : m == WoodcuttingMethod.HOLLOW ? "bark" : "logs";
 	}
 
+	/** Each log its own sprite row: what this session cut and what of it reached the bank. */
+	@Override
+	public List<String> productionColumns(String methodKey)
+	{
+		return java.util.Arrays.asList("CUT", "BANKED");
+	}
+
 	@Override
 	public String producedVerb()
 	{

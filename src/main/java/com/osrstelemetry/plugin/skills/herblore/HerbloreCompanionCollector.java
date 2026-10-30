@@ -137,8 +137,21 @@ public class HerbloreCompanionCollector extends SkillCompanionCollector
 		return SkillExternalStock.known(HerbloreCompanionDefinition.STORAGE_NAME, units.getOrDefault(family.getKey(), 0L), storageObservedAt);
 	}
 
-	@Subscribe
-	public void onHerbloreTick(GameTick event)
+	/**
+	 * The shared tick, with worn items, amulet charges and a pending Potion
+	 * Storage read handled FIRST, so this tick's settlement already sees them.
+	 * Deliberately NOT {@code @Subscribe}: the inherited subscription already
+	 * delivers every GameTick here, and RuneLite would run a re-annotated
+	 * override twice.
+	 */
+	@Override
+	public void onGameTick(GameTick event)
+	{
+		readHerbloreState();
+		super.onGameTick(event);
+	}
+
+	private void readHerbloreState()
 	{
 		if (client.getGameState() != GameState.LOGGED_IN)
 		{
@@ -173,7 +186,7 @@ public class HerbloreCompanionCollector extends SkillCompanionCollector
 	}
 
 	@Subscribe
-	public void onHerbloreVarbit(VarbitChanged event)
+	public void onVarbitChanged(VarbitChanged event)
 	{
 		int varp = event.getVarpId();
 		if (isPotionStoreVar(varp))
@@ -182,9 +195,11 @@ public class HerbloreCompanionCollector extends SkillCompanionCollector
 		}
 	}
 
-	@Subscribe
-	public void onHerbloreWidget(WidgetLoaded event)
+	/** The shared bank / deposit-box handling, then a Potion Storage re-read. Inherited subscription: never re-annotated. */
+	@Override
+	public void onWidgetLoaded(WidgetLoaded event)
 	{
+		super.onWidgetLoaded(event);
 		if (event.getGroupId() == InterfaceID.BANKMAIN)
 		{
 			// Read once the bank has been built (next game tick), never from inside its build script.

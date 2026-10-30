@@ -31,10 +31,37 @@ final class WrappingHtmlLabel extends JLabel
 	/** Used only before the parent has a real width; comfortably inside any sidebar. */
 	static final int FALLBACK_WIDTH = 160;
 
+	private String plain;
+
 	WrappingHtmlLabel(String plainText, boolean centered)
 	{
-		super("<html><div style='text-align:" + (centered ? "center" : "left") + ";'>"
-			+ escape(plainText) + "</div></html>");
+		super(html(plainText, centered));
+		this.plain = plainText;
+		// Text from the top: the label centres its text on the painted view's last measured height, which is stale until it has
+		// painted once at the current width, so a centred wrapped sentence was drawn too low and its last line cut (pass 29).
+		setVerticalAlignment(TOP);
+	}
+
+	/** The text as given (no markup). */
+	String plainText()
+	{
+		return plain;
+	}
+
+	/** Replaces the text (plain, escaped); a no-op when unchanged, so per-second updates cost nothing. */
+	void setPlainText(String plainText)
+	{
+		plain = plainText;
+		String html = html(plainText, false);
+		if (!html.equals(super.getText()))
+		{
+			setText(html);
+		}
+	}
+
+	private static String html(String plainText, boolean centered)
+	{
+		return "<html><div style='text-align:" + (centered ? "center" : "left") + ";'>" + escape(plainText) + "</div></html>";
 	}
 
 	int availableWidth()
@@ -59,10 +86,51 @@ final class WrappingHtmlLabel extends JLabel
 		Insets insets = getInsets();
 		int width = availableWidth();
 		int textWidth = Math.max(1, width - insets.left - insets.right);
-		view.setSize(textWidth, 0);
-		int height = (int) Math.ceil(view.getPreferredSpan(View.Y_AXIS)) + insets.top + insets.bottom;
+		// Measured on a view of its own: resizing the painted view here (to the parent's width) while painting resizes it
+		// back (to the label's own, narrower width beside an icon) made each pass repaint and re-lay out the other, an
+		// endless loop that kept the EDT busy (found 2026-10-22 on the preparation page).
+		View m = measure();
+		m.setSize(textWidth, 0);
+		int height = (int) Math.ceil(m.getPreferredSpan(View.Y_AXIS)) + insets.top + insets.bottom;
 		return new Dimension(width, height);
 	}
+
+	private View measureView;
+	private String measureText;
+	private java.awt.Font measureFont;
+
+	/** A separate HTML view of the same text and font, used only to measure (never painted). */
+	private View measure()
+	{
+		String text = super.getText();
+		if (measureView == null || !java.util.Objects.equals(text, measureText) || !java.util.Objects.equals(getFont(), measureFont))
+		{
+			measureView = BasicHTML.createHTMLView(this, text == null ? "" : text);
+			measureText = text;
+			measureFont = getFont();
+		}
+		return measureView;
+	}
+
+	/** Its width on one line (unwrapped): a row beside something else checks this to decide whether both fit. */
+	int naturalWidth()
+	{
+		String text = super.getText();
+		if (naturalText == null || !naturalText.equals(text) || !java.util.Objects.equals(getFont(), naturalFont))
+		{
+			// A view of its own that is never given a width (a sized view reports that width as its preferred span).
+			View v = BasicHTML.createHTMLView(this, text == null ? "" : text);
+			natural = (int) Math.ceil(v.getPreferredSpan(View.X_AXIS));
+			naturalText = text;
+			naturalFont = getFont();
+		}
+		Insets in = getInsets();
+		return natural + in.left + in.right;
+	}
+
+	private int natural;
+	private String naturalText;
+	private java.awt.Font naturalFont;
 
 	@Override
 	public Dimension getMaximumSize()

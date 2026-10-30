@@ -41,7 +41,7 @@ public enum FishingMethod
 	BIG_NET("Big net fishing", "FISH CAUGHT", "fish", true, "SHARK", opts("Big Net", "Net"),
 		items(ItemID.RAW_MACKEREL, ItemID.RAW_COD, ItemID.RAW_BASS), items()),
 	SHARK("Shark", "SHARKS", "sharks", true, "SHARK", opts("Harpoon"),
-		items(ItemID.RAW_SHARK), items()),
+		items(ItemID.RAW_SHARK), items(ItemID.SHARK_LURE)),
 	MONKFISH("Monkfish", "MONKFISH", "monkfish", true, "MONKFISH", opts("Net"),
 		items(ItemID.RAW_MONKFISH), items()),
 	KARAMBWAN("Karambwan", "KARAMBWAN", "karambwan", true, "KARAMBWAN", opts("Fish"),

@@ -190,7 +190,7 @@ public class LootTrackerInteractionTest
 	{
 		for (Component k : c.getComponents())
 		{
-			if (k instanceof JLabel && ((JLabel) k).getText() != null && ((JLabel) k).getText().startsWith(prefix))
+			if (k instanceof JLabel && HomeView.plain((JLabel) k) != null && HomeView.plain((JLabel) k).startsWith(prefix))
 			{
 				return (JLabel) k;
 			}
@@ -218,7 +218,7 @@ public class LootTrackerInteractionTest
 	{
 		for (Component c : all(view))
 		{
-			if (c instanceof JLabel && LootTrackerView.SOURCE_TITLE_NAME.equals(c.getName()) && sourceName.equals(((JLabel) c).getText()))
+			if (c instanceof JLabel && LootTrackerView.SOURCE_TITLE_NAME.equals(c.getName()) && sourceName.equals(HomeView.plain((JLabel) c)))
 			{
 				click(c);
 				return;

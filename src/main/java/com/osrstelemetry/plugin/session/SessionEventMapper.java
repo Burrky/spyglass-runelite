@@ -192,6 +192,14 @@ final class SessionEventMapper
 				// into independent per-item signals -- so
 				// SessionAggregateUpdater.apply() preserves it as one
 				// LootDropGroup (source/timestamp/items together).
+				com.osrstelemetry.plugin.activity.StructuredRewardSource independent = com.osrstelemetry.plugin.activity.StructuredActivityRegistry.defaults()
+					.rewardForServerNpcLoot(p.getSourceId() == null ? -1 : p.getSourceId(), p.getSourceName());
+				if (independent != null)
+				{
+					// An independent reward recorded as NPC loot by an older build (the Brimstone chest "from" Konar): a reward
+					// of its own source, never the current session's loot.
+					return SessionSignal.structuredReward(observedAt, independent.getActivityKey(), independent.getKey(), drops);
+				}
 				return SessionSignal.serverNpcLoot(observedAt, p.getSourceName(), drops);
 			}
 			case NPC_INTERACTION_TARGET:

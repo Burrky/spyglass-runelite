@@ -133,6 +133,18 @@ public class LootNarrowWidthAndBulkTest
 		}
 	}
 
+	private static void deepInvalidate(Component c)
+	{
+		c.invalidate();
+		if (c instanceof java.awt.Container)
+		{
+			for (Component k : ((java.awt.Container) c).getComponents())
+			{
+				deepInvalidate(k);
+			}
+		}
+	}
+
 	private void layoutAt(int width)
 	{
 		view.setSize(width, 4000);
@@ -260,10 +272,12 @@ public class LootNarrowWidthAndBulkTest
 	}
 
 	@Test
-	public void countIsItsOwnLabel_andTheNameShrinksFirst() throws Exception
+	public void countIsItsOwnLabel_andTheNameWrapsFirst() throws Exception
 	{
 		drops("Greater Nechryael", 7278, 2240, 1);
 		render();
+		layoutAt(150);
+		deepInvalidate(view); // as the panel's revalidation after the first layout at a new width
 		layoutAt(150);
 		JLabel name = null;
 		JLabel count = null;
@@ -279,9 +293,12 @@ public class LootNarrowWidthAndBulkTest
 			}
 		}
 		assertNotNull(name);
-		assertEquals("×2240", count.getText());
+		assertEquals("×2,240", count.getText());
 		assertEquals("Greater Nechryael", name.getToolTipText());
-		assertTrue("the name is what gives way", name.getWidth() < name.getPreferredSize().width);
+		// Pass 30: the name gives way by wrapping onto another line (never cut short); the count keeps its full width.
+		assertTrue("the name is what gives way", ((WrappingHtmlLabel) name).naturalWidth() > name.getWidth());
+		assertTrue("its whole name is shown", name.getHeight() >= name.getPreferredSize().height);
+		assertTrue("the count is whole", count.getWidth() >= count.getPreferredSize().width);
 		assertTrue(count.getWidth() >= count.getPreferredSize().width);
 	}
 
@@ -331,7 +348,7 @@ public class LootNarrowWidthAndBulkTest
 		press(bulk()); // all collapsed -> "Open All"
 		for (Component c : all(view))
 		{
-			if (LootTrackerView.SOURCE_TITLE_NAME.equals(c.getName()) && "Beta".equals(((JLabel) c).getText()))
+			if (LootTrackerView.SOURCE_TITLE_NAME.equals(c.getName()) && "Beta".equals(HomeView.plain((JLabel) c)))
 			{
 				for (java.awt.event.MouseListener l : c.getMouseListeners())
 				{

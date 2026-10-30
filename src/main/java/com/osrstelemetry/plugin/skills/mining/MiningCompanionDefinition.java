@@ -293,6 +293,13 @@ public final class MiningCompanionDefinition implements SkillCompanionDefinition
 		return m == null ? null : m.getRateNoun();
 	}
 
+	/** Each resource its own sprite row: what this session mined and what of it reached the bank. */
+	@Override
+	public List<String> productionColumns(String methodKey)
+	{
+		return java.util.Arrays.asList("MINED", "BANKED");
+	}
+
 	@Override
 	public String producedVerb()
 	{

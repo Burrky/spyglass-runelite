@@ -84,8 +84,6 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 	static final long NEST_PICKUP_MILLIS = 120_000L;
 	/** The CURRENT TREE section stays this long after its last log. */
 	static final long FOCUS_IDLE_MILLIS = 60_000L;
-	/** "Tree felled" shows this long. */
-	static final long FELLED_LINE_MILLIS = 20_000L;
 	static final String FIREMAKING = "FIREMAKING";
 
 	private static final WoodcuttingCompanionDefinition DEF = WoodcuttingCompanionDefinition.INSTANCE;
@@ -144,6 +142,8 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 		long produced;
 		long firstAt = -1L;
 		long lastAt = -1L;
+		/** It fell while being cut (its numbers are final). */
+		boolean fell;
 
 		Tree(WoodcuttingMethod method, String label, int objectId, long tile, long clickedAt)
 		{
@@ -181,8 +181,15 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 	private int takeClickTick = Integer.MIN_VALUE;
 	private boolean entNestClaimed;
 	private Tree tree;
-	private String felledText;
-	private long felledAt = -1L;
+	/**
+	 * The tree CURRENT TREE shows: the one being cut once it gave something,
+	 * else the previous one (fallen or left) until a new tree gives its first
+	 * log -- the section never collapses between trees.
+	 */
+	private Tree shownTree;
+	/** "Last tree: 4 logs" -- the most recent tree that fell; null = none yet. */
+	private String lastTreeText;
+	private String lastTreeTooltip;
 	private long revision;
 	private long lastForestryRevision = -1L;
 
@@ -278,14 +285,25 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 		{
 			if (tree.produced > 0 && tree.firstAt >= 0)
 			{
-				felledText = tree.label + " fell: " + String.format(java.util.Locale.ROOT, "%,d", tree.produced) + " "
-					+ DEF.focusCountCaption(tree.method.getKey()).toLowerCase(java.util.Locale.ROOT)
+				tree.fell = true;
+				lastTreeText = "Last tree: " + countText(tree.produced, tree.method);
+				lastTreeTooltip = tree.label + " fell: " + countText(tree.produced, tree.method)
 					+ (tree.lastAt > tree.firstAt ? " in " + clock((tree.lastAt - tree.firstAt) / 1000) : "");
-				felledAt = nowMillis;
 			}
 			tree = null;
 			revision++;
 		}
+	}
+
+	/** "1 log", "4 logs", "1 bark" -- the tree's own unit with the right number. */
+	static String countText(long count, WoodcuttingMethod method)
+	{
+		String unit = DEF.focusCountCaption(method.getKey()).toLowerCase(java.util.Locale.ROOT);
+		if (count == 1 && unit.endsWith("s"))
+		{
+			unit = unit.substring(0, unit.length() - 1);
+		}
+		return String.format(java.util.Locale.ROOT, "%,d", count) + " " + unit;
 	}
 
 	public void onObjectSpawned(int objectId, long nowMillis)
@@ -748,6 +766,8 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 			return;
 		}
 		tree.produced += quantity;
+		// New-tree evidence: this tree's own log replaces whatever CURRENT TREE showed.
+		shownTree = tree;
 		if (tree.firstAt < 0)
 		{
 			tree.firstAt = atMillis;
@@ -955,11 +975,6 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 			out.add(new SkillCompanionView.ContextLine(basket.getKind().getLabel() + " full", SkillCompanionView.ContextLine.Tone.ALERT,
 				"Your basket is full: new logs go to your inventory until you empty it"));
 		}
-		if (felledText != null && felledAt >= 0 && nowMillis - felledAt <= FELLED_LINE_MILLIS)
-		{
-			out.add(new SkillCompanionView.ContextLine(felledText, SkillCompanionView.ContextLine.Tone.QUIET,
-				"The tree you were cutting fell (its own logs, from your first to your last)"));
-		}
 		return out;
 	}
 
@@ -967,12 +982,16 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 	@Override
 	public SkillCompanionView.FocusView focus(long nowMillis)
 	{
-		Tree t = tree;
+		// The tree being cut once it gave something; until then the previous one stays (never a collapse between trees).
+		Tree t = tree != null && tree.firstAt >= 0 ? tree : shownTree;
 		if (t == null || !t.method.hasFocus() || t.firstAt < 0 || nowMillis - t.lastAt > FOCUS_IDLE_MILLIS)
 		{
 			return null;
 		}
-		return new SkillCompanionView.FocusView(t.label, t.produced, Math.max(0L, nowMillis - t.firstAt));
+		// A tree no longer being cut keeps its final time (from its first log to its last).
+		long elapsed = t == tree ? nowMillis - t.firstAt : t.lastAt - t.firstAt;
+		SkillCompanionView.FocusView view = new SkillCompanionView.FocusView(t.label, t.produced, Math.max(0L, elapsed));
+		return lastTreeText == null ? view : view.withNote(lastTreeText, lastTreeTooltip);
 	}
 
 	@Override
@@ -1007,8 +1026,9 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 		takeClickTick = Integer.MIN_VALUE;
 		entNestClaimed = false;
 		tree = null;
-		felledText = null;
-		felledAt = -1L;
+		shownTree = null;
+		lastTreeText = null;
+		lastTreeTooltip = null;
 		revision++;
 	}
 
@@ -1033,8 +1053,9 @@ public final class WoodcuttingCompanionTracker implements SkillTracker
 		dropClickTick = Integer.MIN_VALUE;
 		takeClickTick = Integer.MIN_VALUE;
 		tree = null;
-		felledText = null;
-		felledAt = -1L;
+		shownTree = null;
+		lastTreeText = null;
+		lastTreeTooltip = null;
 		revision++;
 	}
 

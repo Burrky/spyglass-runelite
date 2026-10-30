@@ -360,6 +360,29 @@ public class MiningCompanionTrackerTest
 	}
 
 	@Test
+	public void withdrawingBankedOre_neverLowersBanked_redepositingNeverCountsAgain()
+	{
+		login();
+		mineIron(28);
+		deposit(IRON, 28);
+		settle();
+		assertEquals(28L, bankedOf(IRON));
+		// Withdraw 10 of the banked ore, then put it back: neither changes what this session banked.
+		t.setBankOpen(true);
+		inv.merge(IRON, 10L, Long::sum);
+		bank.merge(IRON, -10L, Long::sum);
+		pushInventory();
+		pushBank();
+		step();
+		settle();
+		assertEquals("withdrawing never decrements banked", 28L, bankedOf(IRON));
+		deposit(IRON, 10);
+		settle();
+		assertEquals("redepositing never counts again", 28L, bankedOf(IRON));
+		assertEquals(28L, total(IRON));
+	}
+
+	@Test
 	public void droppedThenBanked_banksOnlyWhatIsStillHeld()
 	{
 		login();

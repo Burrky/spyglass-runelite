@@ -26,6 +26,8 @@ public final class HerbloreCompanionDefinition implements SkillCompanionDefiniti
 	public static final String STORAGE_NAME = "Potion Storage";
 
 	private final Map<Integer, SkillResource> resources = new LinkedHashMap<>();
+	/** The process that makes each output item (the first recipe wins), for {@link #producedGroup}. */
+	private final Map<Integer, HerbloreProcess> outputProcess = new java.util.HashMap<>();
 
 	private HerbloreCompanionDefinition()
 	{
@@ -33,6 +35,7 @@ public final class HerbloreCompanionDefinition implements SkillCompanionDefiniti
 		{
 			for (Integer out : r.getOutputItems())
 			{
+				outputProcess.putIfAbsent(out, r.getProcess());
 				String name = HerbloreRecipes.name(out);
 				String shortName = r.getOutputName();
 				resources.putIfAbsent(out, new SkillResource(out, name == null ? shortName : name, shortName, SkillResource.Role.PRIMARY, null,
@@ -129,6 +132,22 @@ public final class HerbloreCompanionDefinition implements SkillCompanionDefiniti
 		}
 	}
 
+	/** Pass 28: cleaned herbs and unfinished potions never share the potions grid. */
+	@Override
+	public String producedGroup(int itemId)
+	{
+		HerbloreProcess p = outputProcess.get(itemId);
+		if (p == HerbloreProcess.CLEANING)
+		{
+			return "Herbs cleaned";
+		}
+		if (p == HerbloreProcess.UNFINISHED_POTION)
+		{
+			return "Unfinished potions";
+		}
+		return "Potions";
+	}
+
 	@Override
 	public String producedVerb()
 	{
@@ -216,47 +235,57 @@ public final class HerbloreCompanionDefinition implements SkillCompanionDefiniti
 		return HerbloreCompanionTracker.MIX;
 	}
 
-	/** CLEANED for herb cleaning, MIXES for every recipe that mixes; none for unfinished potions (their count IS the production). */
+	/**
+	 * POTIONS CREATED: every finished potion of the whole session, whatever
+	 * recipe made it (30 super attacks then 20 prayer potions = 50 -- a recipe
+	 * switch never resets it); HERBS CLEANED while cleaning. Unfinished
+	 * potions are not potions created (their count is the production).
+	 */
 	@Override
 	public String actionCaption(String methodKey)
 	{
 		HerbloreRecipe r = HerbloreRecipes.recipe(methodKey);
-		if (r == null || r.getProcess() == HerbloreProcess.UNFINISHED_POTION)
+		if (r == null)
 		{
 			return null;
 		}
-		return r.getProcess() == HerbloreProcess.CLEANING ? "CLEANED" : "MIXES";
+		return r.getProcess() == HerbloreProcess.CLEANING ? "HERBS CLEANED" : "POTIONS CREATED";
 	}
 
-	/** INPUTS USED: the current recipe's own exact inputs this session (doses for a base potion), never for herb cleaning. */
 	@Override
-	public List<SkillCompanionView.EventView.Field> inputFields(String methodKey, Map<Integer, Long> consumed, Map<String, Long> occurrences)
+	public String actionRateCaption(String methodKey)
 	{
 		HerbloreRecipe r = HerbloreRecipes.recipe(methodKey);
-		if (r == null || r.getProcess() == HerbloreProcess.CLEANING)
+		return r != null && r.getProcess() == HerbloreProcess.CLEANING ? "HERBS / HR" : "POTIONS / HR";
+	}
+
+	/** Every recipe of the session in the same family of actions as the shown one: cleaning, or making finished potions. */
+	@Override
+	public Set<String> actionMethods(String methodKey, Set<String> sessionMethods)
+	{
+		HerbloreRecipe shown = HerbloreRecipes.recipe(methodKey);
+		boolean cleaning = shown != null && shown.getProcess() == HerbloreProcess.CLEANING;
+		Set<String> out = new java.util.LinkedHashSet<>();
+		for (String key : sessionMethods)
 		{
-			return Collections.emptyList();
-		}
-		List<SkillCompanionView.EventView.Field> fields = new ArrayList<>();
-		for (HerbloreRecipe.Input in : r.getInputs())
-		{
-			long n = 0L;
-			for (Map.Entry<Integer, Integer> item : in.getItems().entrySet())
-			{
-				Long used = occurrences.get(HerbloreCompanionTracker.USED + r.getKey() + ":" + item.getKey());
-				if (used != null && used > 0)
-				{
-					n += used * (in.isDosed() ? item.getValue() : 1);
-				}
-			}
-			if (n <= 0)
+			HerbloreRecipe r = HerbloreRecipes.recipe(key);
+			if (r == null || r.getProcess() == HerbloreProcess.UNFINISHED_POTION)
 			{
 				continue;
 			}
-			fields.add(new SkillCompanionView.EventView.Field(in.isDosed() ? in.getCaption() + " DOSES" : in.getCaption(), fmt(n),
-				in.getName() + " this recipe actually used this session" + (in.isDosed() ? " (doses)" : "")));
+			if ((r.getProcess() == HerbloreProcess.CLEANING) == cleaning)
+			{
+				out.add(key);
+			}
 		}
-		return fields;
+		return out;
+	}
+
+	/** Herblore keeps the account's supplies in IN BANK (the tracker's stock view): no session input cells. */
+	@Override
+	public List<SkillCompanionView.EventView.Field> inputFields(String methodKey, Map<Integer, Long> consumed, Map<String, Long> occurrences)
+	{
+		return Collections.emptyList();
 	}
 
 	@Override
@@ -271,7 +300,21 @@ public final class HerbloreCompanionDefinition implements SkillCompanionDefiniti
 		return Collections.singletonList(fmt(saved) + (saved == 1 ? " secondary saved" : " secondaries saved"));
 	}
 
-	/** "+36 bonus doses" -- only what an amulet was seen to add (never an expected rate). */
+	/** Live: only secondaries prescription goggles saved (doses are the production's own number, never "+N bonus doses" prose). */
+	@Override
+	public List<String> liveOccurrenceLines(String methodKey, Map<String, Long> occurrences)
+	{
+		return occurrences == null ? Collections.<String>emptyList() : inputLines(methodKey, occurrences);
+	}
+
+	/** Herblore's target is a level: potions are made to be used, not stockpiled here. */
+	@Override
+	public boolean offersResourceTarget()
+	{
+		return false;
+	}
+
+	/** "+36 bonus doses" (History) -- only what an amulet was seen to add (never an expected rate). */
 	@Override
 	public List<String> occurrenceLines(String methodKey, Map<String, Long> occurrences)
 	{

@@ -477,8 +477,45 @@ public class WoodcuttingCompanionTrackerTest
 		assertTrue(f.getElapsedMillis() > 0);
 		s.t.onObjectDespawned(YEW_TREE, TILE, s.now);
 		s.step();
-		assertNull(s.t.focus(s.now));
-		assertTrue(s.t.context(s.now).get(0).getText().startsWith("Yew tree fell: 4 logs"));
+		SkillCompanionView.FocusView fallen = s.t.focus(s.now);
+		assertNotNull("the fallen tree stays until a new tree gives a log (no collapse)", fallen);
+		assertEquals("Yew tree", fallen.getLabel());
+		assertEquals(4L, fallen.getProduced());
+		assertEquals("Last tree: 4 logs", fallen.getNote());
+		assertTrue(fallen.getNoteTooltip().startsWith("Yew tree fell: 4 logs"));
+		assertTrue("no separate fell line", s.t.context(s.now).isEmpty());
+	}
+
+	@Test
+	public void currentTree_staysStableBetweenTrees_untilTheNewTreeGivesItsFirstLog()
+	{
+		s.login();
+		s.click("Yew tree", YEW_TREE, TILE);
+		s.cuts(YEW, 1);
+		s.t.onObjectDespawned(YEW_TREE, TILE, s.now);
+		s.step();
+		long frozen = s.t.focus(s.now).getElapsedMillis();
+		s.steps(5);
+		assertEquals("a fallen tree's time is final", frozen, (long) s.t.focus(s.now).getElapsedMillis());
+		assertEquals("singular", "Last tree: 1 log", s.t.focus(s.now).getNote());
+		// Clicking the next tree is only a click: the previous tree stays shown.
+		s.click("Yew tree", YEW_TREE, TILE + 7);
+		assertEquals(1L, s.t.focus(s.now).getProduced());
+		s.cuts(YEW, 2);
+		SkillCompanionView.FocusView next = s.t.focus(s.now);
+		assertEquals("the new tree's own logs replace it", 2L, next.getProduced());
+		assertEquals("the last fallen tree is still noted", "Last tree: 1 log", next.getNote());
+		s.t.onObjectDespawned(YEW_TREE, TILE + 7, s.now);
+		assertEquals("Last tree: 2 logs", s.t.focus(s.now).getNote());
+	}
+
+	@Test
+	public void lastTreeText_pluralsAndUnits()
+	{
+		assertEquals("1 log", WoodcuttingCompanionTracker.countText(1, WoodcuttingMethod.YEW));
+		assertEquals("4 logs", WoodcuttingCompanionTracker.countText(4, WoodcuttingMethod.YEW));
+		assertEquals("1,204 logs", WoodcuttingCompanionTracker.countText(1_204, WoodcuttingMethod.YEW));
+		assertEquals("3 bark", WoodcuttingCompanionTracker.countText(3, WoodcuttingMethod.HOLLOW));
 	}
 
 	@Test
@@ -494,8 +531,9 @@ public class WoodcuttingCompanionTrackerTest
 		s.cuts(YEW, 1);
 		assertEquals(1L, s.t.focus(s.now).getProduced());
 		s.t.onSceneLoading(s.now);
-		assertNull(s.t.focus(s.now));
-		assertTrue("a scene reload is never a fallen tree", s.t.context(s.now).isEmpty());
+		assertEquals("a scene reload keeps the last tree shown (no collapse)", 1L, s.t.focus(s.now).getProduced());
+		assertNull("a scene reload is never a fallen tree", s.t.focus(s.now).getNote());
+		assertTrue(s.t.context(s.now).isEmpty());
 	}
 
 	@Test

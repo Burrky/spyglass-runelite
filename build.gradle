@@ -27,7 +27,7 @@ dependencies {
 }
 
 group = 'com.osrstelemetry'
-version = '0.1.0-SNAPSHOT'
+version = '0.2.0'
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
@@ -54,6 +54,23 @@ tasks.register('run', JavaExec) {
     description = 'Launches a local RuneLite client with this plugin loaded, for manual testing.'
     classpath = sourceSets.test.runtimeClasspath
     mainClass.set('com.osrstelemetry.plugin.OsrsTelemetryPluginTest')
-    jvmArgs "-ea"
+    // Assertions on everywhere, as RuneLite's development launcher requires: ExternalPluginManager.loadBuiltin refuses to
+    // start unless its own class has assertions enabled. Off for exactly one class: RuneLite's GPU ModelUploader, whose
+    // internal assertion (uploadSortedModel) was the client thread's last log line before the 2026-10-21 dev-client freeze
+    // (cause unconfirmed). Release RuneLite runs that class without assertions, as here. Class-specific -da overrides -ea.
+    jvmArgs "-ea", "-da:net.runelite.client.plugins.gpu.ModelUploader"
     args "--developer-mode", "--debug"
+}
+
+// Route data: regenerates navigation/routes.json from the bundled collision map, transition
+// tables, travel catalogue, network entrances and patch markers. A build tool in the test source set (not shipped). Takes a
+// few minutes and about 3 GB of heap. Run after changing any of those inputs; RouteTable refuses data generated from other
+// transitions, so a stale file fails the tests rather than misguiding.
+tasks.register('generateRoutes', JavaExec) {
+    group = 'build setup'
+    description = 'Regenerates src/main/resources/com/osrstelemetry/plugin/navigation/routes.json.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass.set('com.osrstelemetry.plugin.navigation.RouteTableGenerator')
+    maxHeapSize = '4g'
+    args file('src/main/resources/com/osrstelemetry/plugin/navigation/routes.json').path
 }
